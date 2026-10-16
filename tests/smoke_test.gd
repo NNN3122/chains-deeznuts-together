@@ -11,7 +11,9 @@ var is_client: bool = false
 var _passed: int = 0
 var _failed: int = 0
 var _seq: int = 0
+var _stack: LevelStack
 var _level: YellowRooms
+var _pizzeria: Pizzeria
 var _host: Player
 var _mate: ChainBody  # the other end of the chain: second player, or the Ballast in solo
 
@@ -29,16 +31,21 @@ func _run_host() -> void:
 	var players := await _wait_for_players(expected_players, 25.0)
 	_check("players spawned", players.size() >= expected_players, "%d of %d" % [players.size(), expected_players])
 	_host = Net.find_player(1)
-	_level = get_tree().get_first_node_in_group("level") as YellowRooms
-	if _host == null or _level == null:
+	_stack = get_tree().get_first_node_in_group("level") as LevelStack
+	if _host == null or _stack == null:
 		_finish()
 		return
+	_level = _stack.yellow
+	_pizzeria = _stack.pizzeria
 	_host.bot_controlled = true
-	_freeze_custodians(true)  # the monster gets its own test; keep it out of the others
+	_freeze_custodians(true)  # the monsters get their own tests; keep them out of the others
+	_pizzeria.pappy.debug_frozen = true
 	await _wait(0.6)
 	var bodies := Net.get_chain_bodies()
 	_mate = bodies[1] if bodies.size() > 1 else null
 	_check("level built: 4 floors with test points", _level.floors.size() == 4 and _level.test_points.has("exit"), "%d floors, %d points" % [_level.floors.size(), _level.test_points.size()])
+	_check("pizzeria built on top: 3 floors, 3 desks, 2 shutters, Pappy", _pizzeria.desks.size() == 3 and _pizzeria.shutters.size() == 2 and _pizzeria.pappy != null and _pizzeria.base_y() > 19.0,
+		"desks %d, shutters %d, base y %.1f, points %d" % [_pizzeria.desks.size(), _pizzeria.shutters.size(), _pizzeria.base_y(), _pizzeria.test_points.size()])
 	var chain := _chain()
 	var segs := chain.segments.size() if chain != null else -1
 	_check("chain links every body (Ballast in solo)", segs == bodies.size() - 1 and segs >= 1, "%d segments, %d bodies" % [segs, bodies.size()])
@@ -54,6 +61,15 @@ func _run_host() -> void:
 	await _test_extras()
 	_test_invites()
 	await _test_exit()
+	await _test_p_desk()
+	await _test_p_pappy()
+	await _test_p_shutter()
+	await _test_p_dumbwaiter()
+	await _test_p_lift()
+	await _test_p_power()
+	await _test_p_items()
+	await _test_p_scares()
+	await _test_p_exit()
 	_finish()
 
 
@@ -371,11 +387,265 @@ func _test_exit() -> void:
 	var bodies := Net.get_chain_bodies()
 	for i in bodies.size():
 		bodies[i].teleport_to(exit + Vector3(-0.6 + 0.6 * float(i), 0.1, 0.0), 0.0)
+	var car := _level.get_node_or_null("Floor3/FreightCar") as FreightCar
+	var closed := false
+	for i in 160:
+		await _wait(0.1)
+		if car != null and car.door_closed:
+			closed = true
+		if car != null and car.has_arrived() and not car.door_closed:
+			break
+	var top := _pizzeria.base_y()
+	_check("everyone in the freight elevator: the door shuts and the car rides up into the pizzeria",
+		closed and car != null and car.has_arrived() and _host.global_position.y > top - 0.5,
+		"door shut %s, phase %d, host y %.2f (pizzeria floor %.1f)" % [closed, car.phase if car != null else -1, _host.global_position.y, top])
+	await _wait(0.5)
+	_check("Receiving checkpoint (2.1) recorded on arrival", GameState.checkpoint_index >= 4, "index %d" % GameState.checkpoint_index)
+	_check("night clock runs from 12:00 AM", _pizzeria.clock_text().ends_with("AM") and _pizzeria.night_seconds > 0.0, _pizzeria.clock_text())
+
+
+# --- Level 2 ------------------------------------------------------------------------------------------
+
+func _p(key: String) -> Vector3:
+	return _pizzeria.test_points[key]
+
+
+func _test_p_desk() -> void:
+	var desk := _pizzeria.desks[0]
+	_place(_p("p_desk0"), 0.0)
+	await _wait(0.5)
+	_check("standing at the Host Stand desk clips you into the cameras", desk.occupant_peer == 1, "occupant %d" % desk.occupant_peer)
+	var cam0 := desk.cam_index
+	var power0 := _pizzeria.power
+	await _press_use()
+	await _wait(0.6)
+	_check("F flips to the next camera; the cameras drain the power bank", desk.cam_index == (cam0 + 1) % desk.cams.size() and _pizzeria.power < power0,
+		"cam %d -> %d, power %.1f -> %.1f" % [cam0, desk.cam_index, power0, _pizzeria.power])
+	_pizzeria.pappy.debug_frozen = false
+	await _wait(0.3)
+	_check("the first camera check wakes Pappy", _pizzeria.pappy.pstate != PappyPepperoni.PState.DORMANT, "state %d" % _pizzeria.pappy.pstate)
+	_pizzeria.pappy.debug_frozen = true
+	_place(_p("p_arrive"), PI)
+	await _wait(0.4)
+	_check("walking away unclips you", desk.occupant_peer == 0, "occupant %d" % desk.occupant_peer)
+
+
+func _test_p_pappy() -> void:
+	var pappy := _pizzeria.pappy
+	var node := _pizzeria.node_position(0, 1)  # the Dining Hall
+	pappy.debug_reset(0, 1)
+	pappy.debug_frozen = false
+	_place(node + Vector3(0.0, 0.1, 9.0), 0.0)  # 9 m away, looking at him (yaw 0 = toward -z)
+	await _wait(1.0)
+	_check("Pappy is pinned while someone looks at him", pappy.watched and pappy.pstate == PappyPepperoni.PState.ROAM, "watched %s, state %d" % [pappy.watched, pappy.pstate])
+	pappy.debug_force_step()
+	await _wait(0.5)
+	_check("...and he doesn't move while watched, even on a full timer", pappy.node_index == 1 and pappy.steps_taken == 0, "node %d, steps %d" % [pappy.node_index, pappy.steps_taken])
+	# A live camera on his node pins him too: clip into the desk with your back to him.
+	pappy.debug_reset(0, 1)
+	var desk := _pizzeria.desks[0]
+	_place(_p("p_desk0"), PI * 0.5)  # facing -x: away from the dining hall
+	await _wait(0.4)
+	desk.cam_index = _pizzeria.node_cam(0, 1)
+	await _wait(0.4)
+	var cam_pins := pappy.watched and desk.occupant_peer == 1
+	_place(node + Vector3(0.0, 0.1, 9.0), PI)  # back in the hall, back turned
+	await _wait(0.4)
+	_check("a camera showing his room pins him; looking away with no camera frees him", cam_pins and not pappy.watched, "camera %s, after %s" % [cam_pins, pappy.watched])
+	pappy.debug_reset(0, 1)
+	await _wait(0.2)
+	var d0 := pappy.global_position.distance_to(_host.global_position)
+	pappy.debug_force_step()
+	await _wait(0.4)
+	var d1 := pappy.global_position.distance_to(_host.global_position)
+	_check("unwatched, his Step brings him closer (never seen moving)", pappy.steps_taken >= 1 and d1 < d0 - 2.0, "%.1f m -> %.1f m, steps %d" % [d0, d1, pappy.steps_taken])
+	# The popper shoves him back a room; the air horn locks him up.
+	_give("popper")
+	await _press_use()
+	await _wait(0.3)
+	_check("party popper pushes him back toward his end of the floor", pappy.node_index == 0, "node %d (%s)" % [pappy.node_index, pappy.node_name()])
+	pappy.debug_reset(0, 1)
+	pappy.debug_force_step()
+	await _wait(0.4)
+	_give("airhorn")
+	await _press_use()
+	await _wait(0.2)
+	_check("air horn stuns him", pappy.pstate == PappyPepperoni.PState.STUNNED, "state %d" % pappy.pstate)
+	_host.server_drop_item(false)
+	# Within reach and unwatched: lunge, grab, and (unrescued) a layoff.
+	var wipes0 := GameState.wipes
+	pappy.debug_reset(0, 1)
+	_place(node + Vector3(0.0, 0.1, 4.0), PI)  # back turned, 4 m away
+	await _wait(0.3)
+	pappy.debug_force_step()
+	var grabbed := false
+	for i in 60:
+		await _wait(0.1)
+		if pappy.grab_peer == 1:
+			grabbed = true
+		if GameState.wipes > wipes0:
+			break
+	_check("unwatched and close: he lunges, grabs, and takes you (layoff)", grabbed and GameState.wipes > wipes0, "grabbed %s, wipes %d -> %d" % [grabbed, wipes0, GameState.wipes])
+	await _wait(1.6)
+	_check("the layoff resets Pappy and the power bank", pappy.pstate == PappyPepperoni.PState.ROAM and pappy.node_index == 0 and _pizzeria.power >= 99.0, "state %d, node %d, power %.0f" % [pappy.pstate, pappy.node_index, _pizzeria.power])
+	# A rescue: a flashlight in his face while he holds someone.
+	if _mate is Player:
+		pappy.debug_reset(0, 1)
+		_mate.teleport_to(node + Vector3(0.0, 0.1, 3.0), PI)
+		_host.teleport_to(node + Vector3(0.0, 0.1, 7.0), 0.0)
+		_give("flashlight")
+		await _press_use()
+		pappy.debug_force_step()
+		var released := false
+		for i in 40:
+			await _wait(0.1)
+			if pappy.grab_peer != 0:
+				_host._apply_input(Vector2.ZERO, 0.0, 0.0, _seq << Player.JUMP_SEQ_SHIFT)
+			if pappy.pstate == PappyPepperoni.PState.STUNNED:
+				released = true
+				break
+		_check("a flashlight in his face makes him drop a teammate", released, "state %d" % pappy.pstate)
+		_host.server_drop_item(false)
+	pappy.debug_frozen = true
+
+
+func _test_p_shutter() -> void:
+	var sh := _pizzeria.shutters[0]
+	var pappy := _pizzeria.pappy
+	_place(_p("p_shutter0"), 0.0)
+	_bot(Vector2.ZERO, 0.0, Player.FLAG_BRACE)
+	await _wait(0.4)
+	var held := sh.closed and sh.holders >= 1
+	_bot(Vector2.ZERO, 0.0, 0)
+	await _wait(0.4)
+	_check("bracing at the pull chain rolls the shutter down; letting go rolls it up", held and not sh.closed, "held %s, after %s" % [held, sh.closed])
+	# Pappy at a held shutter: three bangs, then back to his end of the floor.
+	sh.debug_hold = true
+	_place(_p("p_dumbwaiter") + Vector3(1.5, 0.0, 1.5), 0.0)  # past the shutter, in the dumbwaiter room
+	pappy.debug_reset(0, 5)  # the hall outside it
+	pappy.debug_frozen = false
+	await _wait(0.3)
+	pappy.debug_force_step()
+	await _wait(0.5)
+	var banging := pappy.pstate == PappyPepperoni.PState.BANGING
+	await _wait(3.5)
+	_check("a closed shutter stops him: three bangs, dented, then he goes home", banging and sh.dented and pappy.node_index == 0 and pappy.pstate == PappyPepperoni.PState.ROAM,
+		"banging %s, dented %s, node %d, state %d" % [banging, sh.dented, pappy.node_index, pappy.pstate])
+	sh.debug_hold = false
+	pappy.debug_frozen = true
+
+
+func _test_p_dumbwaiter() -> void:
+	var dw := _pizzeria.dumbwaiter
+	var top_y := _pizzeria.base_y() + Pizzeria.FLOOR_H
+	if _mate is Player:
+		_mate.teleport_to(_p("p_dumbwaiter") + Vector3(0.0, 0.3, 0.0), 0.0)
+		_host.teleport_to(_p("p_rope0"), 0.0)
+		_bot(Vector2.ZERO, 0.0, Player.FLAG_BRACE)
+		await _wait(8.5)
+		var rider_y := _mate.global_position.y
+		_bot(Vector2.ZERO, 0.0, 0)
+		await _wait(1.5)
+		_check("dumbwaiter: a teammate hauling at the rope carries the rider up; let go and it sinks", rider_y > top_y - 0.6 and dw.position.y < top_y - 0.3,
+			"rider y %.2f (kitchen %.1f), car y after %.2f" % [rider_y, top_y, dw.position.y])
+	else:
+		_host.teleport_to(_p("p_dumbwaiter") + Vector3(0.0, 0.3, 0.0), 0.0)
+		if _mate != null:
+			_mate.teleport_to(_p("p_dumbwaiter") + Vector3(0.0, 0.3, 2.0), 0.0)
+		_bot(Vector2.ZERO, 0.0, Player.FLAG_BRACE)
+		await _wait(8.5)
+		_bot(Vector2.ZERO, 0.0, 0)
+		_check("dumbwaiter solo: brace inside the car to haul yourself up to the Kitchen", _host.global_position.y > top_y - 0.6, "host y %.2f (kitchen %.1f)" % [_host.global_position.y, top_y])
+	_place(_p("p_checkpoint5"), 0.0)
+	await _wait(0.5)
+	_check("Dry Storage checkpoint (2.2) recorded", GameState.checkpoint_index >= 5, "index %d" % GameState.checkpoint_index)
+
+
+func _test_p_lift() -> void:
+	var lift := _pizzeria.stage_lift
+	var top_y := _pizzeria.base_y() + Pizzeria.FLOOR_H * 2.0
+	var power0 := _pizzeria.power
+	if _mate is Player:
+		_mate.teleport_to(_p("p_lift") + Vector3(0.0, 0.4, 0.0), 0.0)
+		_host.teleport_to(_p("p_lever"), 0.0)
+		_bot(Vector2.ZERO, 0.0, Player.FLAG_BRACE)
+		await _wait(10.5)
+		var rider_y := _mate.global_position.y
+		var moved := lift.position.y
+		_bot(Vector2.ZERO, 0.0, 0)
+		await _wait(2.0)
+		_check("stage lift: holding the lever runs it up; it drinks power; letting go sinks it", rider_y > top_y - 0.6 and moved > top_y - 0.6 and lift.position.y < moved - 0.5 and _pizzeria.power < power0 - 4.0,
+			"rider y %.2f (stage %.1f), lift %.2f -> %.2f, power %.0f -> %.0f" % [rider_y, top_y, moved, lift.position.y, power0, _pizzeria.power])
+	else:
+		_host.teleport_to(_p("p_lever"), 0.0)
+		if _mate != null:
+			_mate.teleport_to(_p("p_lever") + Vector3(0.0, 0.3, 1.0), 0.0)
+		_bot(Vector2.ZERO, 0.0, Player.FLAG_BRACE)
+		await _wait(0.5)
+		_bot(Vector2.ZERO, 0.0, 0)
+		_host.teleport_to(_p("p_lift") + Vector3(0.0, 0.4, 0.0), 0.0)
+		await _wait(10.5)
+		_check("stage lift solo: the lever locks, the lift carries you up, and it drinks power", _host.global_position.y > top_y - 0.6 and _pizzeria.power < power0 - 4.0,
+			"host y %.2f (stage %.1f), power %.0f -> %.0f" % [_host.global_position.y, top_y, power0, _pizzeria.power])
+	_place(_p("p_checkpoint6"), 0.0)
+	await _wait(0.5)
+	_check("Coat Check checkpoint (2.3) recorded", GameState.checkpoint_index >= 6, "index %d" % GameState.checkpoint_index)
+
+
+func _test_p_power() -> void:
+	_pizzeria.power = 0.0
+	await _wait(0.3)
+	_check("at 0% the power is out: blackout, Pappy's Step drops to 3 s", _pizzeria.blackout() and _pizzeria.pappy.step_length() < 4.0, "blackout %s, step %.1f" % [_pizzeria.blackout(), _pizzeria.pappy.step_length()])
+	_place(_p("p_checkpoint6"), 0.0)
+	await _wait(Pizzeria.GENERATOR_SECONDS + 0.8)
+	_check("standing in a Break Room restarts the generator", _pizzeria.power >= 99.0, "power %.0f" % _pizzeria.power)
+
+
+func _test_p_items() -> void:
+	_check("Level 2 items are registered", ItemRegistry.get_data("popper") != null and ItemRegistry.get_data("airhorn") != null, str(ItemRegistry.all_ids()))
+	var n := 0
+	for p in get_tree().get_nodes_in_group("pickups"):
+		if (p as ItemPickup).global_position.y > _pizzeria.base_y() - 1.0:
+			n += 1
+	_check("pizzeria loot spawned on its floors", n >= 10, "%d pickups upstairs" % n)
+
+
+func _test_p_scares() -> void:
+	var before := ScareDirector.scares_played
+	var kinds := ["jukebox_skip", "balloon", "vent_patter", "pepperoni_eyes", "bell", "static_face", "counter_bell", "order_window", "curtain", "costume_rack", "birthday_song"]
+	for kind in kinds:
+		ScareDirector.trigger_for(kind, _host)
+		await _wait(0.15)
+	await _wait(0.5)
+	_check("every pizzeria scare type plays", ScareDirector.scares_played - before >= kinds.size(), "%d played" % (ScareDirector.scares_played - before))
+	var pool: Array = _stack.scare_pool(_host.global_position)
+	_check("the procedural pool follows the level you're on", pool == Pizzeria.SCARE_POOL and _stack.scare_pool(Vector3.ZERO) == YellowRooms.SCARE_POOL, "%d kinds upstairs" % pool.size())
+
+
+func _test_p_exit() -> void:
+	# The last climb: the case, then the loft, like the crates downstairs.
+	_place(_p("p_cases"), PI)
+	await _wait(0.5)
+	var y0 := _host.global_position.y
+	_bot(Vector2(0.0, -1.0), PI, 0, true)  # face -z into the case
+	await _wait(0.5)
+	_bot(Vector2.ZERO, PI, 0)
+	await _wait(0.4)
+	_check("mantle onto the speaker case", _host.global_position.y - y0 > 0.8, "rose %.2f m" % (_host.global_position.y - y0))
+	_bot(Vector2(1.0, 0.0), -PI * 0.5, 0, true)  # +x onto the loft
+	await _wait(0.5)
+	_bot(Vector2.ZERO, -PI * 0.5, 0)
+	await _wait(0.4)
+	_check("...and from the case onto the prop loft", _host.global_position.y - y0 > 1.8, "rose %.2f m" % (_host.global_position.y - y0))
+	var loft: Vector3 = _p("p_loft")
+	var bodies := Net.get_chain_bodies()
+	for i in bodies.size():
+		bodies[i].teleport_to(loft + Vector3(-1.0 + 1.0 * float(i), 0.1, 0.0), 0.0)
 	for i in 70:
 		await _wait(0.1)
 		if GameState.escaped:
 			break
-	_check("everyone in the freight elevator: ESCAPED", GameState.escaped, "escaped=%s" % GameState.escaped)
+	_check("everyone on the prop loft: ROOF ACCESS, ESCAPED", GameState.escaped, "escaped=%s" % GameState.escaped)
 	await _wait(2.0)
 
 
@@ -396,8 +666,13 @@ func _run_client() -> void:
 	_check("client: pickups replicated", get_tree().get_nodes_in_group("pickups").size() >= 10, "%d" % get_tree().get_nodes_in_group("pickups").size())
 	var saw_thrown := false
 	var saw_grab := false
+	var saw_pappy := false
+	var saw_shutter := false
+	var saw_car_top := false
+	var pappy := get_tree().get_first_node_in_group("pappy") as PappyPepperoni
+	var pappy_node0 := pappy.node_index if pappy != null else -1
 	t = 0.0
-	while t < 180.0 and not GameState.escaped:
+	while t < 320.0 and not GameState.escaped:
 		await _wait(0.2)
 		t += 0.2
 		if _find_thrown("decoy") != null or _find_thrown("bomb") != null:
@@ -405,11 +680,20 @@ func _run_client() -> void:
 		for c in get_tree().get_nodes_in_group("custodian"):
 			if int(c.get("grab_peer")) != 0:
 				saw_grab = true
+		if pappy != null and (pappy.grab_peer != 0 or pappy.node_index != pappy_node0):
+			saw_pappy = true
+		for s in get_tree().get_nodes_in_group("shutters"):
+			if (s as Shutter).closed:
+				saw_shutter = true
+		var car := get_tree().current_scene.get_node_or_null("World/Level/YellowRooms/Floor3/FreightCar") as FreightCar
+		if car != null and car.has_arrived():
+			saw_car_top = true
 	_check("client: received ESCAPED", GameState.escaped, "after %.1f s" % t)
 	_check("client: saw thrown items replicate", saw_thrown, "")
 	_check("client: saw the Custodian grab replicate", saw_grab, "")
-	_check("client: received the layoff and checkpoints", GameState.wipes >= 1 and GameState.checkpoint_index >= 1, "wipes %d, checkpoint %d" % [GameState.wipes, GameState.checkpoint_index])
-	_check("client: played the scares", ScareDirector.scares_played >= 9, "%d" % ScareDirector.scares_played)
+	_check("client: received the layoff and checkpoints", GameState.wipes >= 1 and GameState.checkpoint_index >= 6, "wipes %d, checkpoint %d" % [GameState.wipes, GameState.checkpoint_index])
+	_check("client: played the scares", ScareDirector.scares_played >= 20, "%d" % ScareDirector.scares_played)
+	_check("client: rode the freight car up and saw Pappy and the shutter replicate", saw_car_top and saw_pappy and saw_shutter, "car %s, pappy %s, shutter %s" % [saw_car_top, saw_pappy, saw_shutter])
 	_finish()
 
 

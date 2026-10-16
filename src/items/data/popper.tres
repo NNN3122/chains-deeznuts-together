@@ -1,0 +1,14 @@
+[gd_resource type="Resource" script_class="ItemData" load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://src/items/item_data.gd" id="1_data"]
+[ext_resource type="Script" path="res://src/items/party_popper.gd" id="2_logic"]
+
+[resource]
+script = ExtResource("1_data")
+id = "popper"
+display_name = "Party Popper"
+description = "Bang. Confetti. Pappy goes back a room. One shot."
+color = Color(1, 0.4, 0.7, 1)
+rarity = 0
+logic_script = ExtResource("2_logic")
+hud_hint = "F fires it at him"

@@ -1,7 +1,10 @@
 extends Node
 ## Autoload "ScareDirector". The server decides WHEN and WHERE (scripted triggers plus a
 ## procedural director that picks on whoever wandered off); every peer plays the scare locally.
-## Scares: lunge, lights_out, tile, figure, whisper, phone, slam, dennis, stain_pass.
+## Office scares: lunge, lights_out, tile, figure, whisper, phone, slam, dennis, stain_pass.
+## Pizzeria scares (played by Pizzeria.play_scare): jukebox_skip, balloon, vent_patter,
+## pepperoni_eyes, bell, static_face, counter_bell, order_window, curtain, costume_rack,
+## birthday_song. Each level offers its own pool (level.scare_pool) for where the target stands.
 
 const FIRST_DELAY: float = 50.0
 const MIN_GAP: float = 38.0
@@ -36,6 +39,13 @@ func blackout_active() -> bool:
 	return Time.get_ticks_msec() < _blackout_until
 
 
+## Local: every light within radius of center goes dark for a while.
+func blackout(center: Vector3, radius: float, msec: int) -> void:
+	blackout_center = center
+	blackout_radius = radius
+	_blackout_until = Time.get_ticks_msec() + msec
+
+
 ## Server: called at the start of every run.
 func reset_director() -> void:
 	_next_t = FIRST_DELAY
@@ -52,22 +62,27 @@ func _process(delta: float) -> void:
 	if _next_t > 0.0:
 		return
 	_next_t = _rng.randf_range(MIN_GAP, MAX_GAP)
-	for c in get_tree().get_nodes_in_group("custodian"):
+	for c in get_tree().get_nodes_in_group("monster"):
 		if c.call("is_hunting"):
 			_next_t = 12.0  # never pile a fake scare on top of a real one
 			return
 	var players := Net.get_players()
 	if players.is_empty():
 		return
-	trigger_for(_pick_kind(), _pick_target(players))
+	var target := _pick_target(players)
+	trigger_for(_pick_kind(target.global_position), target)
 
 
-func _pick_kind() -> String:
+func _pick_kind(at: Vector3) -> String:
+	var pool := POOL
+	var level := get_tree().get_first_node_in_group("level")
+	if level != null and level.has_method("scare_pool"):
+		pool = level.call("scare_pool", at)
 	var total := 0
-	for e in POOL:
+	for e in pool:
 		total += int(e[1])
 	var r := _rng.randi() % total
-	for e in POOL:
+	for e in pool:
 		r -= int(e[1])
 		if r < 0:
 			return String(e[0])
@@ -101,14 +116,18 @@ func trigger_for(kind: String, p: Player) -> void:
 			var fx := Effects.find(p)
 			if fx != null:
 				var level := get_tree().get_first_node_in_group("level")
-				var base_y: float = float(level.call("floor_of", feet.y)) * 5.0 if level != null else feet.y
-				fx.fx_tile_drop.rpc(Vector3(feet.x + fwd.x * 1.2, base_y + 3.18, feet.z + fwd.z * 1.2))
+				var top: float = float(level.call("ceiling_y", feet)) if level != null and level.has_method("ceiling_y") else feet.y + 3.18
+				fx.fx_tile_drop.rpc(Vector3(feet.x + fwd.x * 1.2, top - 0.02, feet.z + fwd.z * 1.2))
 			pos = feet
-		"figure":
+		"figure", "pepperoni_eyes":
 			pos = _visible_point(p, fwd, 9.0, 14.0)
-		"dennis", "whisper":
+		"dennis", "whisper", "balloon":
 			pos = feet - fwd * 2.4
-		"phone", "slam":
+			if kind == "balloon":
+				p.apply_knockback(fwd * 2.5 + Vector3.UP * 1.5)  # the flinch jerks the Line
+		"vent_patter":
+			pos = feet + fwd * 1.5
+		"phone", "slam", "bell":
 			pos = feet + Vector3(_rng.randf_range(-1.0, 1.0), 0.0, _rng.randf_range(-1.0, 1.0)).normalized() * _rng.randf_range(7.0, 12.0)
 		"stain_pass":
 			pos = feet + fwd * 8.0
@@ -189,6 +208,11 @@ func play_local(kind: String, pos: Vector3, target_peer: int = 0) -> void:
 			Sfx.play_at(self, "thump", pos + Vector3.UP * 3.5, -2.0, 0.7, 30.0)
 			Sfx.play_at(self, "creak", pos + Vector3.UP * 3.5, 0.0, 1.2, 30.0)
 			GameState.post_message_local("...something is moving in the ceiling.", 3.0)
+		_:
+			# A level's own scare (the pizzeria has its curtain, its jukebox, its bell).
+			var level := get_tree().get_first_node_in_group("level")
+			if level != null and level.has_method("play_scare"):
+				level.call("play_scare", kind, pos, targeted)
 
 
 func _flash(alpha: float) -> void:

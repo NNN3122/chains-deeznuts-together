@@ -96,6 +96,7 @@ func _enter_tree() -> void:
 
 func _ready() -> void:
 	add_to_group("custodian")
+	add_to_group("monster")
 	_rng.seed = 7919 * (floor_index + 1)
 	global_position = Vector3(bounds.get_center().x, floor_y + PLENUM_HEIGHT, bounds.get_center().y)
 	synced_position = global_position

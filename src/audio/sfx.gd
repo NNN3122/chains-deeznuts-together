@@ -9,6 +9,7 @@ const IDS: Array[String] = [
 	"hum", "drone", "step", "clink", "creak", "thump", "stinger", "shot", "boom", "squeak",
 	"whisper", "phone", "slam", "heartbeat", "jet", "gulp", "pickup", "lift", "ding", "tile",
 	"growl", "scrape", "click", "flashlight",
+	"jukebox", "servo", "shutter", "bell", "klaxon", "static", "popper", "airhorn", "birthday", "bang",
 ]
 
 ## Sounds that get an on-screen caption (Settings.captions), with direction worked out by the HUD.
@@ -16,6 +17,9 @@ const CAPTIONS: Dictionary = {
 	"growl": "something snarls", "phone": "a phone is ringing", "whisper": "someone whispers",
 	"slam": "a door slams", "tile": "a ceiling tile crashes down", "boom": "explosion",
 	"shot": "gunshot", "squeak": "squeaky toy", "ding": "elevator chime",
+	"servo": "servo whine, rising", "shutter": "a shutter rolls", "bell": "the counter bell rings",
+	"klaxon": "overload klaxon", "popper": "party popper", "airhorn": "AIR HORN", "bang": "BANG on the shutter",
+	"birthday": "the band sings, slowly",
 }
 
 static var _cache: Dictionary = {}
@@ -125,6 +129,16 @@ static func _build(id: String) -> AudioStreamWAV:
 		"scrape": return _pack(_scrape(), true)
 		"click": return _pack(_click())
 		"flashlight": return _pack(_click(0.5))
+		"jukebox": return _pack(_jukebox(), true)
+		"servo": return _pack(_servo())
+		"shutter": return _pack(_shutter())
+		"bell": return _pack(_chime([2093.0, 2637.0, 3136.0], 1.1))
+		"klaxon": return _pack(_klaxon())
+		"static": return _pack(_static(), true)
+		"popper": return _pack(_popper())
+		"airhorn": return _pack(_airhorn())
+		"birthday": return _pack(_birthday())
+		"bang": return _pack(_bang())
 	push_warning("Sfx: unknown sound '%s'" % id)
 	return _pack(PackedFloat32Array([0.0]))
 
@@ -456,4 +470,150 @@ static func _click(pitch: float = 1.0) -> PackedFloat32Array:
 	for i in b.size():
 		var t := float(i) / RATE
 		b[i] = 0.5 * sin(TAU * 2200.0 * pitch * t) * exp(-t * 90.0)
+	return b
+
+
+# --- Level 2 --------------------------------------------------------------------------------------
+
+## A plinky party tune played at half speed through a blown speaker, looping forever.
+static func _jukebox() -> PackedFloat32Array:
+	var notes := [262.0, 330.0, 392.0, 330.0, 440.0, 392.0, 330.0, 294.0, 262.0, 262.0, 392.0, 330.0, 294.0, 294.0, 330.0, 262.0]
+	var step := 0.5  # seconds per note: half speed
+	var b := _buf(step * float(notes.size()))
+	var r := _rng(77)
+	var lp := 0.0
+	var a := _lp_coef(1800.0)
+	for i in b.size():
+		var t := float(i) / RATE
+		var k := int(t / step) % notes.size()
+		var u := fmod(t, step) / step
+		var f: float = notes[k] * (1.0 + 0.004 * sin(TAU * 5.5 * t))  # warped record wobble
+		var tone := 0.35 * sin(TAU * f * t) + 0.18 * sin(TAU * f * 2.0 * t) + 0.08 * signf(sin(TAU * f * 0.5 * t))
+		var env := minf(1.0, u * 25.0) * exp(-u * 2.2)
+		var bass := 0.2 * sin(TAU * f * 0.25 * t) * (0.5 + 0.5 * sin(TAU * 2.0 * t / step))
+		lp += a * (tone * env + bass + r.randf_range(-0.03, 0.03) - lp)
+		b[i] = lp * 0.9
+	return b
+
+
+## A servo winding up: the Step is coming.
+static func _servo() -> PackedFloat32Array:
+	var b := _buf(1.6)
+	var phase := 0.0
+	for i in b.size():
+		var t := float(i) / RATE
+		var u := t / 1.6
+		var f := 200.0 + 600.0 * u * u
+		phase += f / RATE
+		var saw := 2.0 * (phase - floorf(phase)) - 1.0
+		var env := sin(PI * minf(u * 1.1, 1.0))
+		b[i] = (0.25 * saw + 0.2 * sin(TAU * phase) + 0.1 * sin(TAU * phase * 3.01)) * env
+	return b
+
+
+## Corrugated steel rolling on its drum.
+static func _shutter() -> PackedFloat32Array:
+	var b := _buf(0.9)
+	var r := _rng(83)
+	var lp := 0.0
+	var a := _lp_coef(900.0)
+	for i in b.size():
+		var t := float(i) / RATE
+		lp += a * (r.randf_range(-1.0, 1.0) - lp)
+		var rattle := 0.6 + 0.4 * sin(TAU * 27.0 * t)
+		var env := sin(PI * minf(t / 0.9, 1.0))
+		b[i] = (lp * 1.5 * rattle + 0.2 * sin(TAU * 90.0 * t)) * env + 0.4 * sin(TAU * 60.0 * t) * exp(-maxf(0.0, t - 0.8) * 30.0) * step_f(t, 0.8)
+	return b
+
+
+static func step_f(t: float, at: float) -> float:
+	return 1.0 if t >= at else 0.0
+
+
+static func _klaxon() -> PackedFloat32Array:
+	var b := _buf(1.2)
+	for i in b.size():
+		var t := float(i) / RATE
+		var on := 1.0 if fmod(t, 0.4) < 0.25 else 0.0
+		var f := 520.0 + 40.0 * sin(TAU * 8.0 * t)
+		b[i] = on * 0.4 * (signf(sin(TAU * f * t)) * 0.5 + sin(TAU * f * 1.5 * t) * 0.5)
+	return b
+
+
+static func _static() -> PackedFloat32Array:
+	var b := _buf(1.0)
+	var r := _rng(91)
+	var hp := 0.0
+	var ah := _lp_coef(300.0)
+	for i in b.size():
+		var n := r.randf_range(-1.0, 1.0)
+		hp += ah * (n - hp)
+		var t := float(i) / RATE
+		b[i] = (n - hp) * 0.5 * (0.7 + 0.3 * sin(TAU * 50.0 * t))
+	return _seamless(b, 0.1)
+
+
+static func _popper() -> PackedFloat32Array:
+	var b := _buf(0.7)
+	var r := _rng(97)
+	var lp := 0.0
+	var a := _lp_coef(3500.0)
+	for i in b.size():
+		var t := float(i) / RATE
+		lp += a * (r.randf_range(-1.0, 1.0) - lp)
+		var pop := lp * 1.8 * exp(-t * 30.0)
+		var streamer := 0.12 * sin(TAU * (1500.0 - 900.0 * t) * t) * exp(-t * 4.0) * step_f(t, 0.05)
+		b[i] = pop + streamer
+	return b
+
+
+static func _airhorn() -> PackedFloat32Array:
+	var b := _buf(1.4)
+	for i in b.size():
+		var t := float(i) / RATE
+		var env := minf(1.0, t * 40.0) * (1.0 if t < 1.1 else exp(-(t - 1.1) * 25.0))
+		var s := 0.0
+		for f: float in [392.0, 494.0, 587.0]:
+			var ph := TAU * f * t
+			s += 0.14 * (sin(ph) + 0.5 * sin(ph * 2.0) + 0.3 * sin(ph * 3.0) + 0.15 * signf(sin(ph)))
+		b[i] = s * env
+	return b
+
+
+## The birthday song, sung slow and wrong by a dying animatronic band.
+static func _birthday() -> PackedFloat32Array:
+	var notes := [262.0, 262.0, 294.0, 262.0, 349.0, 330.0, 262.0, 262.0, 294.0, 262.0, 392.0, 349.0]
+	var lens := [0.5, 0.25, 0.75, 0.75, 0.75, 1.5, 0.5, 0.25, 0.75, 0.75, 0.75, 1.5]
+	var total := 0.0
+	for l in lens:
+		total += float(l)
+	var b := _buf(total + 0.3)
+	var r := _rng(101)
+	var lp := 0.0
+	var a := _lp_coef(1200.0)
+	for i in b.size():
+		var t := float(i) / RATE
+		var acc := 0.0
+		var k := 0
+		while k < notes.size() - 1 and t >= acc + float(lens[k]):
+			acc += float(lens[k])
+			k += 1
+		var u := (t - acc) / float(lens[k])
+		var slow := 1.0 - 0.06 * (t / total)  # the pitch sags as the batteries die
+		var f: float = notes[k] * 0.5 * slow * (1.0 + 0.01 * sin(TAU * 4.0 * t))
+		var voice := 0.3 * sin(TAU * f * t) + 0.2 * sin(TAU * f * 2.0 * t) + 0.1 * sin(TAU * f * 3.0 * t)
+		var env := minf(1.0, u * 12.0) * (1.0 if u < 0.85 else exp(-(u - 0.85) * 20.0))
+		lp += a * (voice * env + r.randf_range(-0.04, 0.04) - lp)
+		b[i] = lp
+	return b
+
+
+## A fist the size of a ham on corrugated steel.
+static func _bang() -> PackedFloat32Array:
+	var b := _thump(0.8, 48.0)
+	var r := _rng(103)
+	for i in b.size():
+		var t := float(i) / RATE
+		var ring := 0.3 * sin(TAU * 310.0 * t) * exp(-t * 6.0) + 0.15 * sin(TAU * 470.0 * t) * exp(-t * 9.0)
+		b[i] = b[i] * 1.2 + ring + r.randf_range(-0.6, 0.6) * exp(-t * 40.0)
 	return b

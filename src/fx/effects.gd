@@ -127,6 +127,48 @@ func fx_dust(pos: Vector3) -> void:
 	fx_dust_local(pos, 18)
 
 
+## Party popper confetti: a burst of colored squares that flutter down.
+@rpc("authority", "call_local", "reliable")
+func fx_confetti(pos: Vector3) -> void:
+	var p := GPUParticles3D.new()
+	p.amount = 60
+	p.lifetime = 2.5
+	p.one_shot = true
+	p.explosiveness = 0.95
+	var pm := ParticleProcessMaterial.new()
+	pm.direction = Vector3(0.0, 1.0, 0.0)
+	pm.spread = 60.0
+	pm.initial_velocity_min = 3.0
+	pm.initial_velocity_max = 7.0
+	pm.gravity = Vector3(0.0, -2.5, 0.0)
+	pm.damping_min = 2.0
+	pm.damping_max = 4.0
+	pm.angular_velocity_min = -400.0
+	pm.angular_velocity_max = 400.0
+	var ramp := Gradient.new()
+	ramp.set_color(0, Color(1.0, 0.3, 0.6, 1.0))
+	ramp.add_point(0.33, Color(1.0, 0.9, 0.2, 1.0))
+	ramp.add_point(0.66, Color(0.3, 0.9, 1.0, 1.0))
+	ramp.set_color(1, Color(0.4, 1.0, 0.4, 0.0))
+	var rt := GradientTexture1D.new()
+	rt.gradient = ramp
+	pm.color_initial_ramp = rt
+	p.process_material = pm
+	var q := QuadMesh.new()
+	q.size = Vector2(0.05, 0.08)
+	var qm := StandardMaterial3D.new()
+	qm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	qm.vertex_color_use_as_albedo = true
+	qm.cull_mode = BaseMaterial3D.CULL_DISABLED
+	q.material = qm
+	p.draw_pass_1 = q
+	add_child(p)
+	p.global_position = pos
+	p.emitting = true
+	get_tree().create_timer(p.lifetime + 0.5).timeout.connect(p.queue_free)
+	_local_shake(pos, 0.3, 5.0)
+
+
 func fx_dust_local(pos: Vector3, amount: int) -> void:
 	var p := GPUParticles3D.new()
 	p.amount = amount

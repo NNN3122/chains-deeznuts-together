@@ -5,8 +5,9 @@ extends Node3D
 ## Each floor: a Break Room you arrive in (checkpoint), a maze of halls / cubicles / meeting rooms
 ## / storage / dark rooms, a Custodian in the ceiling, loot, scripted scares, and one ascent:
 ##   B4 crates through a ceiling hole, B3 a plate-and-lift, B2 a shelf shaft (stand on a teammate
-##   or use the jetpack), B1 the freight elevator out.
-## Server only: populates pickups, runs layoffs (group respawn), the exit sequence.
+##   or use the jetpack), B1 the freight car up to Level 2 (the pizzeria, built right above).
+## Lives under LevelStack, which handles layoffs and regroups for the whole building.
+## Server only: populates pickups, starts the freight car once everyone is inside.
 
 const CELL: float = 6.0
 const GRID: int = 6
@@ -18,9 +19,8 @@ const WALL_T: float = 0.2
 const DOOR_W: float = 1.4
 const DOOR_H: float = 2.3
 const HOLE: float = 2.6
+const CAR_HOLE: float = 3.3  # the freight car's shaft through B1's ceiling
 const SEED: int = 1931
-const KILL_Y: float = -8.0
-const LAYOFF_DELAY: float = 1.1
 
 enum Ascent { CRATES, LIFT, BOOST, ELEVATOR }
 enum Conn { NONE, DOOR, OPEN }
@@ -31,7 +31,7 @@ const OBJECTIVES: Array[String] = [
 	"B4 Orientation: find the maintenance hole in the ceiling and climb to B3. Stay quiet: something lives up there.",
 	"B3: find the service lift. One holds the plate, the lift carries the rest. Then hoist them up with the chain.",
 	"B2: the shelf shaft is too tall. Stand on a teammate's head, or find the jetpack.",
-	"B1: find the freight elevator. Everyone inside to clock out.",
+	"B1: find the freight elevator. Everyone inside to ride it up out of the Yellow Rooms.",
 ]
 const FLOOR_LOOT: Array = [
 	["flashlight", "decoy"],
@@ -43,6 +43,10 @@ const POSTERS: Array[String] = [
 	"SAFETY IS A\nTEAM SPORT", "HOLD ON TO\nEACH OTHER", "IF YOU HEAR IT,\nIT HEARS YOU",
 	"QUIET IS\nPROFESSIONAL", "REPORT ALL\nCEILING STAINS", "DO NOT\nLOOK UP", "THE LINE IS\nYOUR FRIEND",
 	"RUNNING IN THE\nHALLS IS LOUD", "YOU ARE BEING\nASSESSED", "BRACE FOR\nSYNERGY",
+]
+## Procedural scares that fit an office: [kind, weight].
+const SCARE_POOL: Array = [
+	["lights_out", 2], ["tile", 2], ["whisper", 2], ["slam", 2], ["figure", 2], ["phone", 1], ["dennis", 1],
 ]
 const SCRIPTED_SCARES: Array = [
 	[[2, "stain_pass"], [4, "dennis"]],
@@ -56,29 +60,18 @@ var spawn_facing: float = PI
 var test_points: Dictionary = {}
 var floors: Array = []  # per floor: {arrive, ascent, conn, types, path}
 var _lights: LightController
-var _layoff_pending: bool = false
 var _exit_area: Area3D
-var _exit_door: StaticBody3D
-var _exit_door_shape: CollisionShape3D
-var _exit_t: float = -1.0
+var _car: FreightCar
 var _jetpack_check_t: float = 0.0
 var _boost_jetpack_pos: Vector3 = Vector3.ZERO
 var _drone: AudioStreamPlayer
 var _pending_signs: Array = []
-var _last_regroup_msec: int = -100000
-const REGROUP_COOLDOWN_MS: int = 15000
 
 
 func _ready() -> void:
-	add_to_group("level")
 	_lights = LightController.new()
 	_lights.name = "Lights"
 	add_child(_lights)
-	var we := WorldEnvironment.new()
-	we.name = "WorldEnvironment"
-	we.environment = LevelKit.make_environment(Settings.quality)
-	we.camera_attributes = LevelKit.make_camera_attributes()
-	add_child(we)
 	_generate_layout()
 	for i in FLOORS:
 		_build_floor(i)
@@ -209,14 +202,36 @@ func cell_of(p: Vector3) -> Vector2i:
 	return Vector2i(clampi(int(floor(p.x / CELL)), 0, GRID - 1), clampi(int(floor(p.z / CELL)), 0, GRID - 1))
 
 
-## False where a climb hole is cut through this floor's ceiling (the Custodian can't grab there).
+## False where a climb hole is cut through this floor's ceiling (the Custodian can't grab there),
+## and inside the freight car.
 func has_ceiling_at(p: Vector3) -> bool:
 	var i := floor_of(p.y)
-	if ASCENTS[i] == Ascent.ELEVATOR:
-		return true
 	var hole_c: Vector2i = floors[i]["ascent"]
 	var center := cell_center(i, hole_c)
-	return not (absf(p.x - center.x) < HOLE * 0.5 + 0.3 and absf(p.z - center.z) < HOLE * 0.5 + 0.3)
+	var half := (CAR_HOLE if ASCENTS[i] == Ascent.ELEVATOR else HOLE) * 0.5 + 0.3
+	return not (absf(p.x - center.x) < half and absf(p.z - center.z) < half)
+
+
+## Floor-level center of the freight car on B1 (the pizzeria is built around the shaft above it).
+func elevator_center() -> Vector3:
+	return cell_center(FLOORS - 1, floors[FLOORS - 1]["ascent"])
+
+
+## Local: hide floors far from the camera (they're behind concrete anyway).
+func cull_floors(cam_floor: int) -> void:
+	for i in FLOORS:
+		var root := get_node_or_null("Floor%d" % i) as Node3D
+		if root != null:
+			root.visible = absi(i - cam_floor) <= 1
+
+
+func set_ambience(on: bool) -> void:
+	if _drone == null:
+		return
+	if on:
+		Sfx.start_loop(_drone)
+	else:
+		_drone.stop()
 
 
 func _build_floor(i: int) -> void:
@@ -233,7 +248,7 @@ func _build_floor(i: int) -> void:
 	var types: Dictionary = f["types"]
 	var conn: Dictionary = f["conn"]
 	var floor_hole := i > 0  # the arrive cell has the hole you climbed up through
-	var ceiling_hole: bool = ASCENTS[i] != Ascent.ELEVATOR
+	var hole_size: float = CAR_HOLE if ASCENTS[i] == Ascent.ELEVATOR else HOLE
 	for x in GRID:
 		for z in GRID:
 			var c := Vector2i(x, z)
@@ -243,9 +258,9 @@ func _build_floor(i: int) -> void:
 				_hazard_ring(batch, center + Vector3(0.0, 0.006, 0.0))
 			else:
 				batch.add(center + Vector3(0.0, -SLAB * 0.5, 0.0), Vector3(CELL, SLAB, CELL), "carpet")
-			if ceiling_hole and c == ascent:
-				_holed_slab(batch, center + Vector3(0.0, CEIL_H + 0.025, 0.0), 0.05, "ceiling")
-				_hole_lining(batch, center, base)
+			if c == ascent:
+				_holed_slab(batch, center + Vector3(0.0, CEIL_H + 0.025, 0.0), 0.05, "ceiling", hole_size)
+				_hole_lining(batch, center, base, hole_size)
 			else:
 				batch.add(center + Vector3(0.0, CEIL_H + 0.025, 0.0), Vector3(CELL, 0.05, CELL), "ceiling")
 	_build_walls(batch, i, conn)
@@ -286,14 +301,14 @@ func _build_floor(i: int) -> void:
 		test_points["checkpoint%d" % i] = cell_center(i, arrive) + Vector3(0.0, 0.1, -2.2)
 
 
-## A slab with a HOLE x HOLE opening in the middle (4 strips).
-func _holed_slab(batch: LevelKit.BoxBatch, center: Vector3, thickness: float, key: String) -> void:
-	var side := (CELL - HOLE) * 0.5
-	var off := HOLE * 0.5 + side * 0.5
+## A slab with a hole x hole opening in the middle (4 strips).
+func _holed_slab(batch: LevelKit.BoxBatch, center: Vector3, thickness: float, key: String, hole: float = HOLE) -> void:
+	var side := (CELL - hole) * 0.5
+	var off := hole * 0.5 + side * 0.5
 	batch.add(center + Vector3(-off, 0.0, 0.0), Vector3(side, thickness, CELL), key)
 	batch.add(center + Vector3(off, 0.0, 0.0), Vector3(side, thickness, CELL), key)
-	batch.add(center + Vector3(0.0, 0.0, -off), Vector3(HOLE, thickness, side), key)
-	batch.add(center + Vector3(0.0, 0.0, off), Vector3(HOLE, thickness, side), key)
+	batch.add(center + Vector3(0.0, 0.0, -off), Vector3(hole, thickness, side), key)
+	batch.add(center + Vector3(0.0, 0.0, off), Vector3(hole, thickness, side), key)
 
 
 func _hazard_ring(batch: LevelKit.BoxBatch, center: Vector3) -> void:
@@ -307,14 +322,14 @@ func _hazard_ring(batch: LevelKit.BoxBatch, center: Vector3) -> void:
 
 
 ## Concrete walls lining the hole through the plenum, so the shaft is solid to climb against.
-func _hole_lining(batch: LevelKit.BoxBatch, center: Vector3, base: float) -> void:
+func _hole_lining(batch: LevelKit.BoxBatch, center: Vector3, base: float, hole: float = HOLE) -> void:
 	var h := FLOOR_H - CEIL_H
 	var y := base + CEIL_H + h * 0.5
-	var e := HOLE * 0.5 + 0.05
-	batch.add(Vector3(center.x - e, y, center.z), Vector3(0.1, h, HOLE + 0.2), "concrete")
-	batch.add(Vector3(center.x + e, y, center.z), Vector3(0.1, h, HOLE + 0.2), "concrete")
-	batch.add(Vector3(center.x, y, center.z - e), Vector3(HOLE, h, 0.1), "concrete")
-	batch.add(Vector3(center.x, y, center.z + e), Vector3(HOLE, h, 0.1), "concrete")
+	var e := hole * 0.5 + 0.05
+	batch.add(Vector3(center.x - e, y, center.z), Vector3(0.1, h, hole + 0.2), "concrete")
+	batch.add(Vector3(center.x + e, y, center.z), Vector3(0.1, h, hole + 0.2), "concrete")
+	batch.add(Vector3(center.x, y, center.z - e), Vector3(hole, h, 0.1), "concrete")
+	batch.add(Vector3(center.x, y, center.z + e), Vector3(hole, h, 0.1), "concrete")
 
 
 func _build_walls(batch: LevelKit.BoxBatch, i: int, conn: Dictionary) -> void:
@@ -801,43 +816,11 @@ func _dennis(root: Node3D, _batch: LevelKit.BoxBatch, i: int, rng: RandomNumberG
 	root.add_child(ScareDirector.build_dennis(pos, rng.randf() * TAU))
 
 
-func _build_elevator(root: Node3D, batch: LevelKit.BoxBatch, _i: int, center: Vector3) -> void:
+func _build_elevator(root: Node3D, _batch: LevelKit.BoxBatch, _i: int, center: Vector3) -> void:
 	# Centered in its cell with a 1.5 m corridor all round, so any doorway can reach the open front.
-	var w := 2.8
-	var h := 2.9
-	var back := center
-	# Car: back and side walls, roof, a lip floor, open toward -z.
-	batch.add(back + Vector3(0.0, h * 0.5, w * 0.5), Vector3(w + 0.2, h, 0.1), "elevator")
-	batch.add(back + Vector3(-w * 0.5, h * 0.5, 0.0), Vector3(0.1, h, w), "elevator")
-	batch.add(back + Vector3(w * 0.5, h * 0.5, 0.0), Vector3(0.1, h, w), "elevator")
-	batch.add(back + Vector3(0.0, h + 0.05, 0.0), Vector3(w + 0.2, 0.1, w + 0.2), "elevator")
-	batch.add(back + Vector3(0.0, 0.02, 0.0), Vector3(w, 0.04, w), "metal", false)
-	batch.add(back + Vector3(0.0, h - 0.15, -w * 0.5), Vector3(w + 0.2, 0.3, 0.12), "hazard", false)
-	var lamp := OmniLight3D.new()
-	lamp.light_color = Color(0.8, 1.0, 0.85)
-	lamp.light_energy = 1.6
-	lamp.omni_range = 5.0
-	lamp.position = back + Vector3(0.0, h - 0.4, 0.0)
-	root.add_child(lamp)
-	_sign(root, "FREIGHT ELEVATOR\nEVERYONE IN TO CLOCK OUT", back + Vector3(0.0, h - 0.5, -w * 0.5 - 0.14), PI)
-	# Door that drops shut once everyone is inside.
-	_exit_door = StaticBody3D.new()
-	_exit_door.name = "ExitDoor"
-	_exit_door.collision_layer = ChainBody.LAYER_WORLD
-	var dm := MeshInstance3D.new()
-	var dbox := BoxMesh.new()
-	dbox.size = Vector3(w, h, 0.08)
-	dm.mesh = dbox
-	dm.material_override = LevelKit.mat("elevator")
-	_exit_door.add_child(dm)
-	_exit_door_shape = CollisionShape3D.new()
-	var ds := BoxShape3D.new()
-	ds.size = Vector3(w, h, 0.08)
-	_exit_door_shape.shape = ds
-	_exit_door_shape.disabled = true
-	_exit_door.add_child(_exit_door_shape)
-	_exit_door.position = back + Vector3(0.0, h * 0.5 + h, -w * 0.5 - 0.05)
-	root.add_child(_exit_door)
+	_car = FreightCar.create("FreightCar", center, FLOOR_H)
+	root.add_child(_car)
+	var w := FreightCar.WIDTH
 	_exit_area = Area3D.new()
 	_exit_area.name = "ExitArea"
 	_exit_area.collision_layer = 0
@@ -848,9 +831,9 @@ func _build_elevator(root: Node3D, batch: LevelKit.BoxBatch, _i: int, center: Ve
 	es.shape = eb
 	es.position = Vector3(0.0, 1.25, 0.0)
 	_exit_area.add_child(es)
-	_exit_area.position = back
+	_exit_area.position = center
 	root.add_child(_exit_area)
-	test_points["exit"] = back + Vector3(0.0, 0.1, 0.0)
+	test_points["exit"] = center + Vector3(0.0, 0.1, 0.0)
 
 
 func _build_custodian(i: int) -> void:
@@ -932,54 +915,24 @@ func server_populate() -> void:
 		Net.spawn_pickup("jetpack", _boost_jetpack_pos, 0)
 
 
-func request_layoff(reason: String) -> void:
-	if not multiplayer.is_server() or _layoff_pending or GameState.escaped:
-		return
-	_layoff_pending = true
-	GameState.layoff(reason)
-	await get_tree().create_timer(LAYOFF_DELAY).timeout
-	_respawn_group()
-	_layoff_pending = false
+## Server: the Line was sent back to a checkpoint. Still in the Yellow Rooms: the car comes back down.
+func server_on_respawn() -> void:
+	if _car != null and GameState.checkpoint_index < FLOORS:
+		_car.server_reset()
 
 
-## Server: "I'm stuck." Brings the whole Line back to the last Break Room without a layoff.
-func regroup(requester: String) -> void:
-	if not multiplayer.is_server() or _layoff_pending or GameState.escaped:
-		return
-	var now := Time.get_ticks_msec()
-	if now - _last_regroup_msec < REGROUP_COOLDOWN_MS:
-		GameState.post_message("Regroup is on cooldown. Hold on a few seconds.", 2.5)
-		return
-	_last_regroup_msec = now
-	_respawn_group()
-	GameState.post_message("%s called everyone back to the Break Room." % requester, 3.5)
-
-
-func _respawn_group() -> void:
-	var bodies := Net.get_chain_bodies()
-	var facing := GameState.checkpoint_facing
-	var right := Vector3(cos(facing), 0.0, -sin(facing))
-	var n := bodies.size()
-	for i in n:
-		var offset := right * (float(i) * 1.0 - float(n - 1) * 0.5)
-		bodies[i].teleport_to(GameState.checkpoint_position + offset + Vector3(0.0, 0.2, 0.0), facing)
-	for c in get_tree().get_nodes_in_group("custodian"):
-		if c.has_method("blast"):
-			c.call("blast")
+func car_busy() -> bool:
+	return _car != null and _car.is_busy()
 
 
 func _physics_process(delta: float) -> void:
 	if not multiplayer.is_server():
 		return
-	for b in Net.get_chain_bodies():
-		if b.global_position.y < KILL_Y:
-			request_layoff("Someone fell out of the building. Somehow.")
-			break
 	_jetpack_check_t -= delta
 	if _jetpack_check_t <= 0.0:
 		_jetpack_check_t = 6.0
 		_ensure_boost_jetpack()
-	_tick_exit(delta)
+	_tick_exit()
 
 
 ## The shelf shaft must stay solvable solo: if no jetpack exists anywhere, put one back.
@@ -995,45 +948,16 @@ func _ensure_boost_jetpack() -> void:
 	Net.spawn_pickup("jetpack", _boost_jetpack_pos, 0)
 
 
-func _tick_exit(delta: float) -> void:
-	if _exit_area == null or GameState.escaped:
+## Everyone on the Line inside the freight car: up to the pizzeria.
+func _tick_exit() -> void:
+	if _exit_area == null or _car == null or _car.phase != FreightCar.Phase.WAITING:
 		return
-	if _exit_t < 0.0:
-		var bodies := Net.get_chain_bodies()
-		if bodies.is_empty():
+	var bodies := Net.get_chain_bodies()
+	if bodies.is_empty():
+		return
+	var inside := _exit_area.get_overlapping_bodies()
+	for b in bodies:
+		if not inside.has(b):
 			return
-		var inside := _exit_area.get_overlapping_bodies()
-		for b in bodies:
-			if not inside.has(b):
-				return
-		_exit_t = 0.0
-		_rpc_close_elevator.rpc()
-		GameState.post_message("Everyone's in. The doors are closing. Don't look up.", 3.0)
-		return
-	var before := _exit_t
-	_exit_t += delta
-	if before < 1.7 and _exit_t >= 1.7:
-		var fx := Effects.find(self)
-		if fx != null:
-			fx.fx_sound.rpc("slam", _exit_area.global_position + Vector3.UP * 3.0, 6.0, 0.7)
-			fx.fx_dust.rpc(_exit_area.global_position + Vector3.UP * 2.8)
-		_rpc_elevator_bang.rpc()
-	if before < 3.8 and _exit_t >= 3.8:
-		GameState.set_escaped()
-
-
-@rpc("authority", "call_local", "reliable")
-func _rpc_close_elevator() -> void:
-	_exit_door_shape.disabled = false
-	var tw := create_tween()
-	tw.tween_property(_exit_door, "position:y", _exit_door.position.y - 2.9, 0.9).set_trans(Tween.TRANS_BOUNCE).set_ease(Tween.EASE_OUT)
-	Sfx.play_at(self, "ding", _exit_area.global_position + Vector3.UP * 2.0, 0.0, 1.0)
-	Sfx.play_at(self, "lift", _exit_area.global_position, -4.0, 0.7)
-
-
-@rpc("authority", "call_local", "reliable")
-func _rpc_elevator_bang() -> void:
-	var me := Net.get_local_player()
-	if me != null:
-		me.add_shake(0.9)
-	Sfx.play(self, "growl", -2.0, 0.7)
+	_car.server_start_ride()
+	GameState.post_message("Everyone's in. The doors are closing. Going up.", 3.0)

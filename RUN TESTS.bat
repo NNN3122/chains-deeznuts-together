@@ -1,5 +1,5 @@
 @echo off
-rem Headless smoke tests: solo, then a host and a client playing through Level 1 by script.
+rem Headless smoke tests: solo, then a host and a client playing through both levels by script.
 set "GODOT=%LOCALAPPDATA%\Microsoft\WinGet\Packages\GodotEngine.GodotEngine_Microsoft.Winget.Source_8wekyb3d8bbwe\Godot_v4.7.2-stable_win64_console.exe"
 cd /d "%~dp0"
 echo === SOLO

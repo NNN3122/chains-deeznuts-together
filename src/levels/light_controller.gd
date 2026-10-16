@@ -19,6 +19,7 @@ class Tube:
 	var hum: AudioStreamPlayer3D
 
 var tubes: Array[Tube] = []
+var blackout: bool = false  # the pizzeria's power bank is empty: every tube off
 var _t: float = 0.0
 var _acc: float = 0.0
 var _shadow_t: float = 0.0
@@ -71,6 +72,8 @@ func _process(delta: float) -> void:
 				if hunting and _rng.randf() < 0.25:
 					e *= 0.2
 		if ScareDirector.blackout_active() and tube.light.global_position.distance_to(ScareDirector.blackout_center) < ScareDirector.blackout_radius:
+			e = 0.0
+		if blackout:
 			e = 0.0
 		tube.light.light_energy = tube.base_energy * e
 		tube.panel.set_instance_shader_parameter("glow", e)

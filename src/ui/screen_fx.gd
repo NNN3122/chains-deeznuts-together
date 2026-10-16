@@ -71,7 +71,7 @@ func _process(delta: float) -> void:
 	if me != null:
 		grabbed = (me.synced_flags & Player.SFLAG_GRABBED) != 0
 		buff = me.buff_state
-		for c in get_tree().get_nodes_in_group("custodian"):
+		for c in get_tree().get_nodes_in_group("monster"):
 			if c.get("hunt_peer") == me.peer_id:
 				hunted = true
 	var k := clampf(delta * 4.0, 0.0, 1.0)

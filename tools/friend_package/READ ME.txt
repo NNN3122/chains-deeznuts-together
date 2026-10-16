@@ -3,6 +3,8 @@ CHAINS DEEZNUTS TOGETHER
 
 A 1-6 player co-op horror-comedy. You are chained to your friends.
 Climb out of the building. Stay quiet: something lives in the ceiling.
+This build has two levels: the Yellow Rooms, then Pappy Pepperoni's Night Shift
+(a haunted pizzeria, stacked on top).
 
 
 PLAY
@@ -60,3 +62,20 @@ HOW TO SURVIVE
   the people you're chained to.
 - A dangling teammate drags you toward the edge unless you brace or keep walking to hoist them.
 - Lost or stuck? Esc, then "Stuck? Regroup" pulls the whole team back to the last break room.
+- Everyone into the freight elevator on B1 and it rides you up into the pizzeria.
+
+THE NIGHT SHIFT (UPSTAIRS)
+--------------------------
+- Pappy Pepperoni only moves while nobody is looking at him and no camera shows him.
+  One of you keeps eyes on him, the rest move. The top-right panel says if he's pinned.
+- Cameras: stand on the painted spot at a security desk, F flips cameras. A camera on his
+  room pins him too. Cameras drain the power; at 0% the lights die and nothing stops him.
+  Stand in a break room a few seconds to restart the generator.
+- Shutters: hold Ctrl at the pull chain to keep the EMPLOYEES ONLY shutter down. He bangs
+  three times and leaves. Then run for it.
+- The dumbwaiter takes one rider; someone holds Ctrl at the hand rope to haul (alone: step
+  in and hold Ctrl). The stage lift runs while someone holds Ctrl at the lever; three ride,
+  the last one gets hoisted up on the chain.
+- If he grabs someone: air horn, party popper, or a flashlight in his face. Guns do nothing.
+  The walk-in freezer is safe.
+- The way out: cross the stage, climb the speaker case to the prop loft. Everyone up there.

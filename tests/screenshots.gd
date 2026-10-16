@@ -5,6 +5,7 @@ extends Node
 var out_dir: String = ""
 var title_only: bool = false
 var _host: Player
+var _stack: LevelStack
 var _level: YellowRooms
 
 
@@ -19,10 +20,11 @@ func _ready() -> void:
 		return
 	await _wait(3.0)
 	_host = Net.find_player(1)
-	_level = get_tree().get_first_node_in_group("level") as YellowRooms
-	if _host == null or _level == null:
+	_stack = get_tree().get_first_node_in_group("level") as LevelStack
+	if _host == null or _stack == null:
 		get_tree().quit(1)
 		return
+	_level = _stack.yellow
 	_host.bot_controlled = true
 	for c in get_tree().get_nodes_in_group("custodian"):
 		(c as Custodian).debug_frozen = true
@@ -97,7 +99,63 @@ func _ready() -> void:
 	pause.visible = false
 	Net.invite = {}
 	Net.invite_changed.emit()
+	await _tour_pizzeria()
 	get_tree().quit()
+
+
+## Level 2: the freight car's arrival, the rooms, the desk and its feed, Pappy, the climbs.
+func _tour_pizzeria() -> void:
+	var pz := _stack.pizzeria
+	var tp := pz.test_points
+	pz.pappy.debug_frozen = true
+	var car := _level.get_node_or_null("Floor3/FreightCar") as FreightCar
+	if car != null:
+		car.server_park_top()
+	await _wait(0.3)
+	var arrive: Vector3 = tp["p_arrive"]
+	await _shot("20_receiving", arrive + Vector3(0.0, 0.0, -0.5), PI, -0.1, false)
+	await _shot("21_host_stand", pz.cell_center(0, 0, 3) + Vector3(0.0, 0.1, 1.5), 0.0, -0.05, true)
+	var dining := pz.node_position(0, 1)
+	pz.pappy.debug_reset(0, 1)
+	await _shot("22_dining_hall_pappy", dining + Vector3(0.0, 0.1, 9.0), 0.0, -0.05, true)
+	await _shot("23_dining_hall_third_person", dining + Vector3(-5.0, 0.1, 6.0), 0.6, -0.15, false)
+	await _shot("24_counter", pz.cell_center(0, 3, 1) + Vector3(0.0, 0.1, 0.0), -PI * 0.5, 0.0, true)
+	await _shot("25_arcade", pz.cell_center(0, 4, 2) + Vector3(0.0, 0.1, 1.0), -PI * 0.5, 0.0, true)
+	await _shot("26_party_room", pz.cell_center(0, 4, 4) + Vector3(-1.5, 0.1, 1.5), -PI * 0.5 + 0.4, 0.0, true)
+	# The camera desk with its feed (the host clips in), Pappy on camera.
+	pz.pappy.debug_reset(0, 1)
+	var desk := pz.desks[0]
+	await _shot("27_desk_clipped_in", desk.spot(), desk.rotation.y + PI, -0.2, true)
+	desk.cam_index = pz.node_cam(0, 1)
+	await _wait(4.5)  # past the Counter Bell's static
+	await _capture_to(out_dir.path_join("28_camera_feed_pappy.png"))
+	# The shutter, held, with Pappy banging on it.
+	var sh := pz.shutters[0]
+	sh.debug_hold = true
+	pz.pappy.debug_reset(0, 5)
+	pz.pappy.debug_frozen = false
+	await _wait(0.2)
+	pz.pappy.debug_force_step()
+	await _wait(0.6)
+	await _shot("29_shutter_held_pappy_banging", sh.pull_point() + Vector3(1.5, 0.0, 1.5), PI * 0.25, -0.05, true)
+	pz.pappy.debug_frozen = true
+	sh.debug_hold = false
+	await _shot("30_dumbwaiter", tp["p_dumbwaiter"] + Vector3(2.5, 0.0, 3.2), 0.6, 0.05, true)
+	await _shot("31_kitchen", tp["p_kitchen"], 0.0, -0.05, true)
+	await _shot("32_freezer", tp["p_freezer"] + Vector3(0.0, 0.0, 2.0), 0.0, 0.0, true)
+	await _shot("33_managers_office", pz.cell_center(1, 5, 1) + Vector3(-1.5, 0.1, 1.5), 0.3, 0.0, true)
+	await _shot("34_stage_lift", tp["p_lever"] + Vector3(-0.5, 0.0, 0.0), PI * 0.5 + 0.5, -0.1, false)
+	# The stage: curtain scare fired, band lit, Pappy's empty mark, the loft and the hatch.
+	pz.play_scare("curtain", tp["p_stage"], true)
+	await _wait(3.8)
+	await _shot("35_stage_from_floor", tp["p_floor"] + Vector3(0.0, 0.0, 3.0), 0.0, 0.1, true)
+	await _shot("36_stage_loft_climb", tp["p_cases"] + Vector3(2.0, 0.0, 3.0), 0.5, 0.25, false)
+	pz.pappy.debug_reset(2, 1)
+	await _shot("37_pappy_on_stage", tp["p_stage"] + Vector3(0.0, 0.0, 6.0), 0.0, 0.05, true)
+	await _shot("38_coat_check", tp["p_checkpoint6"], PI * 0.5, 0.0, false)
+	await _shot("39_dressing_room_suit", tp["p_rack"] + Vector3(1.5, 0.0, 0.0), PI * 0.5, 0.0, true)
+	var loft: Vector3 = tp["p_loft"]
+	await _shot("40_prop_loft_exit", loft + Vector3(-2.0, 0.0, 0.0), -PI * 0.5, 0.3, false)
 
 
 func _find_cell(i: int, kind: String) -> Vector2i:

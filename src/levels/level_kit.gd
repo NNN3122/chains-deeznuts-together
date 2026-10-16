@@ -183,6 +183,134 @@ void fragment() {
 }
 """
 
+# --- Level 2: the pizzeria -------------------------------------------------------------------
+
+const CHECKER_SHADER: String = """
+shader_type spatial;
+uniform vec3 light_color = vec3(0.86, 0.80, 0.62);
+uniform vec3 dark_color = vec3(0.09, 0.07, 0.07);
+varying vec3 wpos;
+%s
+void fragment() {
+	vec2 cell = floor(wpos.xz / 0.45);
+	float k = mod(cell.x + cell.y, 2.0);
+	vec3 col = mix(dark_color, light_color, k);
+	// Grout lines, scuffs, and years of spilled soda.
+	vec2 f = abs(fract(wpos.xz / 0.45) - 0.5);
+	float grout = smoothstep(0.47, 0.5, max(f.x, f.y));
+	col = mix(col, vec3(0.3, 0.27, 0.24), grout * 0.6);
+	col *= 0.8 + 0.3 * fbm(wpos.xz * 0.6);
+	float sticky = smoothstep(0.58, 0.75, fbm(wpos.xz * 0.3 + vec2(3.0, 9.0)));
+	col = mix(col, col * vec3(0.6, 0.5, 0.35), sticky * 0.7);
+	ALBEDO = col;
+	ROUGHNESS = mix(0.35, 0.7, sticky);
+	SPECULAR = 0.4;
+}
+void vertex() {
+	wpos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+}
+"""
+
+const PIZZA_WALL_SHADER: String = """
+shader_type spatial;
+uniform vec3 base_color = vec3(0.82, 0.74, 0.56);
+uniform vec3 stripe_a = vec3(0.6, 0.1, 0.08);
+uniform vec3 stripe_b = vec3(0.12, 0.35, 0.18);
+uniform float floor_height = 5.0;
+varying vec3 wpos;
+varying vec3 wnrm;
+%s
+void vertex() {
+	wpos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	wnrm = normalize(MODEL_NORMAL_MATRIX * NORMAL);
+}
+void fragment() {
+	float h = mod(wpos.y + 0.001, floor_height);
+	float along = abs(wnrm.z) > abs(wnrm.x) ? wpos.x : wpos.z;
+	vec3 col = base_color * (0.9 + 0.2 * fbm(vec2(along, wpos.y) * 2.1));
+	// A red-and-green party band at eye height, wainscot below it.
+	float band = step(1.25, h) * step(h, 1.55);
+	float seg = step(0.5, fract(along * 0.8));
+	col = mix(col, mix(stripe_a, stripe_b, seg), band);
+	float wain = step(h, 1.0);
+	col = mix(col, vec3(0.3, 0.17, 0.1) * (0.85 + 0.3 * fbm(vec2(along * 3.0, wpos.y * 6.0))), wain);
+	float rail = step(1.0, h) * step(h, 1.08);
+	col = mix(col, vec3(0.2, 0.12, 0.07), rail);
+	// Grease and sauce low down, soot up high.
+	float grime = smoothstep(0.45, 0.75, fbm(vec2(along * 0.5, h * 0.9) + vec2(5.0, 1.0)));
+	col = mix(col, col * vec3(0.5, 0.42, 0.3), grime * 0.7 * (1.0 - wain));
+	col *= 1.0 - 0.35 * smoothstep(3.0, 4.2, h);
+	ALBEDO = col;
+	ROUGHNESS = mix(0.85, 0.5, wain + rail);
+}
+"""
+
+const KITCHEN_TILE_SHADER: String = """
+shader_type spatial;
+varying vec3 wpos;
+varying vec3 wnrm;
+%s
+void vertex() {
+	wpos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	wnrm = normalize(MODEL_NORMAL_MATRIX * NORMAL);
+}
+void fragment() {
+	vec2 p = abs(wnrm.y) > 0.5 ? wpos.xz : (abs(wnrm.x) > 0.5 ? wpos.zy : wpos.xy);
+	vec2 cell = floor(p / 0.15);
+	vec2 f = abs(fract(p / 0.15) - 0.5);
+	float grout = smoothstep(0.44, 0.48, max(f.x, f.y));
+	vec3 col = vec3(0.78, 0.8, 0.76) * (0.9 + 0.12 * hash(cell));
+	col = mix(col, vec3(0.42, 0.4, 0.36), grout);
+	float grease = smoothstep(0.5, 0.8, fbm(p * 0.7 + vec2(2.0, 7.0)));
+	col = mix(col, col * vec3(0.55, 0.5, 0.35), grease * 0.8);
+	ALBEDO = col;
+	ROUGHNESS = mix(0.25, 0.65, grease + grout * 0.5);
+	SPECULAR = 0.5;
+}
+"""
+
+const CURTAIN_SHADER: String = """
+shader_type spatial;
+uniform vec3 color = vec3(0.45, 0.04, 0.05);
+varying vec3 wpos;
+varying vec3 wnrm;
+%s
+void vertex() {
+	wpos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	wnrm = normalize(MODEL_NORMAL_MATRIX * NORMAL);
+}
+void fragment() {
+	float along = abs(wnrm.z) > abs(wnrm.x) ? wpos.x : wpos.z;
+	float fold = 0.55 + 0.45 * sin(along * 14.0) * sin(along * 3.7 + 1.0);
+	vec3 col = color * (0.45 + 0.7 * fold) * (0.9 + 0.2 * fbm(vec2(along, wpos.y) * 3.0));
+	col *= 0.85 + 0.15 * smoothstep(0.0, 0.6, wpos.y - floor(wpos.y / 5.0) * 5.0);
+	ALBEDO = col;
+	ROUGHNESS = 0.95;
+}
+"""
+
+const SHUTTER_SHADER: String = """
+shader_type spatial;
+varying vec3 wpos;
+varying vec3 wnrm;
+%s
+void vertex() {
+	wpos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	wnrm = normalize(MODEL_NORMAL_MATRIX * NORMAL);
+}
+void fragment() {
+	// Corrugated galvanized steel: horizontal slats, scuffed and dented.
+	float slat = 0.6 + 0.4 * abs(sin(wpos.y * 31.0));
+	vec3 col = vec3(0.5, 0.52, 0.54) * slat;
+	float along = abs(wnrm.z) > abs(wnrm.x) ? wpos.x : wpos.z;
+	float rust = smoothstep(0.55, 0.8, fbm(vec2(along, wpos.y) * 2.3));
+	col = mix(col, vec3(0.35, 0.2, 0.12), rust * 0.7);
+	ALBEDO = col;
+	ROUGHNESS = 0.5 + 0.4 * rust;
+	METALLIC = 0.7 * (1.0 - rust);
+}
+"""
+
 static var _mats: Dictionary = {}
 
 
@@ -276,19 +404,67 @@ static func _make(key: String) -> Material:
 		"fabric": return _std(Color(0.2, 0.22, 0.28), 1.0)
 		"cabinet": return _std(Color(0.58, 0.58, 0.55), 0.4, 0.55)
 		"mug": return _std(Color(0.85, 0.83, 0.78), 0.3)
+		# Level 2: the pizzeria.
+		"checker": return _shader_mat(CHECKER_SHADER)
+		"pizza_wall": return _shader_mat(PIZZA_WALL_SHADER)
+		"ktile": return _shader_mat(KITCHEN_TILE_SHADER)
+		"curtain": return _shader_mat(CURTAIN_SHADER)
+		"shutter": return _shader_mat(SHUTTER_SHADER)
+		"stage_wood": return _std(Color(0.22, 0.13, 0.08), 0.6)
+		"booth": return _std(Color(0.55, 0.06, 0.06), 0.45)
+		"booth_dark": return _std(Color(0.3, 0.04, 0.04), 0.5)
+		"laminate": return _std(Color(0.9, 0.86, 0.72), 0.3)
+		"steel": return _std(Color(0.62, 0.64, 0.66), 0.3, 0.9)
+		"rubber": return _std(Color(0.06, 0.06, 0.06), 0.9)
+		"neon_red": return _emissive(Color(1.0, 0.1, 0.1), 3.0)
+		"neon_green": return _emissive(Color(0.2, 1.0, 0.3), 2.5)
+		"neon_pink": return _emissive(Color(1.0, 0.3, 0.7), 2.5)
+		"crt": return _emissive(Color(0.45, 0.75, 0.95), 0.9)
+		"crt_off": return _std(Color(0.08, 0.1, 0.1), 0.2)
+		"chef_white": return _std(Color(0.88, 0.86, 0.8), 0.7)
+		"chef_skin": return _std(Color(0.82, 0.62, 0.5), 0.55)
+		"pepperoni": return _emissive(Color(1.0, 0.12, 0.05), 4.0)
+		"teeth": return _std(Color(0.9, 0.85, 0.7), 0.35)
+		"mustache": return _std(Color(0.05, 0.04, 0.04), 0.8)
+		"kerchief": return _std(Color(0.7, 0.08, 0.08), 0.6)
+		"dough": return _std(Color(0.85, 0.75, 0.5), 0.9)
+		"balloon_red": return _std(Color(0.85, 0.1, 0.1), 0.2)
+		"balloon_yellow": return _std(Color(0.95, 0.8, 0.1), 0.2)
+		"balloon_blue": return _std(Color(0.15, 0.4, 0.9), 0.2)
+		"arcade": return _std(Color(0.1, 0.08, 0.14), 0.5)
+		"arcade_screen": return _emissive(Color(0.3, 0.9, 1.0), 2.2)
+		"jukebox": return _std(Color(0.35, 0.1, 0.08), 0.35)
+		"jukebox_glow": return _emissive(Color(1.0, 0.5, 0.15), 2.0)
+		"freezer": return _std(Color(0.7, 0.72, 0.75), 0.35, 0.6)
+		"frost": return _std(Color(0.85, 0.9, 0.95), 0.9)
+		"pizza_crust": return _std(Color(0.8, 0.6, 0.3), 0.8)
+		"pizza_sauce": return _std(Color(0.6, 0.12, 0.05), 0.5)
+		"crate": return _std(Color(0.55, 0.45, 0.28), 0.9)
+		"flour": return _std(Color(0.9, 0.88, 0.82), 1.0)
+		"brass": return _std(Color(0.75, 0.6, 0.25), 0.3, 0.9)
+		"rope": return _std(Color(0.6, 0.5, 0.3), 0.95)
+		"hazard_dark": return _std(Color(0.15, 0.14, 0.1), 0.7)
+		"gold": return _std(Color(0.9, 0.75, 0.3), 0.3, 0.8)
+		"speaker": return _std(Color(0.1, 0.1, 0.1), 0.8)
+		"stage_light": return _emissive(Color(1.0, 0.85, 0.6), 2.5)
+		"party_cloth": return _std(Color(0.95, 0.35, 0.5), 0.8)
+		"camera": return _std(Color(0.85, 0.85, 0.82), 0.4, 0.3)
+		"led_red": return _emissive(Color(1.0, 0.05, 0.05), 5.0)
 	push_warning("LevelKit: unknown material '%s'" % key)
 	return _std(Color(0.5, 0.5, 0.5))
 
 
 ## The lighting look: dark, warm, foggy, with bloom on the tubes. Quality 0-2 trades
-## volumetric fog and SSAO for speed.
-static func make_environment(quality: int) -> Environment:
+## volumetric fog and SSAO for speed. level 1 (the pizzeria) is colder: house lights off, red
+## exit signs and screens doing the work.
+static func make_environment(quality: int, level: int = 0) -> Environment:
 	var env := Environment.new()
+	var pizzeria := level == 1
 	env.background_mode = Environment.BG_COLOR
 	env.background_color = Color(0.008, 0.008, 0.01)
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	env.ambient_light_color = Color(0.62, 0.55, 0.4)
-	env.ambient_light_energy = 0.16
+	env.ambient_light_color = Color(0.55, 0.42, 0.42) if pizzeria else Color(0.62, 0.55, 0.4)
+	env.ambient_light_energy = 0.2 if pizzeria else 0.16
 	env.tonemap_mode = Environment.TONE_MAPPER_AGX
 	env.tonemap_exposure = 1.05
 	env.glow_enabled = true
@@ -309,12 +485,12 @@ static func make_environment(quality: int) -> Environment:
 	env.ssil_enabled = quality == 1
 	env.ssil_intensity = 1.2
 	env.volumetric_fog_enabled = quality >= 2
-	env.volumetric_fog_density = 0.022
-	env.volumetric_fog_albedo = Color(0.92, 0.86, 0.66)
+	env.volumetric_fog_density = 0.028 if pizzeria else 0.022
+	env.volumetric_fog_albedo = Color(0.8, 0.62, 0.6) if pizzeria else Color(0.92, 0.86, 0.66)
 	env.volumetric_fog_length = 48.0
 	env.volumetric_fog_anisotropy = 0.3
 	env.fog_enabled = quality < 2
-	env.fog_light_color = Color(0.22, 0.19, 0.11)
+	env.fog_light_color = Color(0.16, 0.1, 0.1) if pizzeria else Color(0.22, 0.19, 0.11)
 	env.fog_density = 0.018
 	env.adjustment_enabled = true
 	env.adjustment_contrast = 1.08

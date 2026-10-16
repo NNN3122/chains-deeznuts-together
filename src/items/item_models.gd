@@ -32,6 +32,14 @@ static func build(id: String) -> Node3D:
 			_cyl(root, 0.03, 0.03, 0.04, Vector3(0.0, 0.11, 0.0), _m(Color(0.5, 0.5, 0.5), 0.3, 0.8), false)
 			_cyl(root, 0.006, 0.006, 0.07, Vector3(0.0, 0.16, 0.0), _m(Color(0.6, 0.5, 0.3), 0.8), false)
 			_sphere(root, 0.015, Vector3(0.0, 0.2, 0.0), _glow(Color(1.0, 0.3, 0.05), 3.0))
+		"popper":
+			_cyl(root, 0.012, 0.05, 0.18, Vector3(0.0, 0.0, -0.02), _m(Color(1.0, 0.4, 0.7), 0.4), true)
+			_cyl(root, 0.05, 0.05, 0.01, Vector3(0.0, 0.0, -0.115), _m(Color(0.95, 0.9, 0.3), 0.5), true)
+			_cyl(root, 0.004, 0.004, 0.06, Vector3(0.0, 0.0, 0.1), _m(Color(0.9, 0.9, 0.9), 0.8), true)
+		"airhorn":
+			_cyl(root, 0.035, 0.035, 0.14, Vector3(0.0, -0.02, 0.04), _m(Color(0.85, 0.12, 0.1), 0.35), false)
+			_cyl(root, 0.03, 0.06, 0.11, Vector3(0.0, 0.0, -0.08), _m(Color(0.1, 0.1, 0.1), 0.5), true)
+			_cyl(root, 0.012, 0.012, 0.05, Vector3(0.0, 0.0, -0.015), _m(Color(0.8, 0.8, 0.82), 0.3, 0.8), true)
 		"jetpack":
 			var steel := _m(Color(0.7, 0.7, 0.72), 0.25, 0.9)
 			_cyl(root, 0.09, 0.09, 0.5, Vector3(-0.11, 0.0, 0.0), steel, false)

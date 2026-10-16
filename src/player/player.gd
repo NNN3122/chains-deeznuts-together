@@ -349,7 +349,7 @@ func _tick_heartbeat(delta: float) -> void:
 	if synced_flags & SFLAG_GRABBED:
 		period = 0.45
 	else:
-		for c in get_tree().get_nodes_in_group("custodian"):
+		for c in get_tree().get_nodes_in_group("monster"):
 			if c.get("hunt_peer") == peer_id:
 				period = 0.8
 	if period <= 0.0:

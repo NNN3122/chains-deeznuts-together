@@ -163,7 +163,7 @@ func _start(mode: String, player_name: String, ip: String, port: int) -> void:
 		return
 	_enter_game(mode.to_upper(), player_name)
 	if multiplayer.is_server():
-		var level := world.get_node("Level") as YellowRooms
+		var level := world.get_node("Level") as LevelStack
 		level.server_populate()
 		ScareDirector.reset_director()
 		if mode == "host":
@@ -274,7 +274,7 @@ func _build_world() -> void:
 	world = Node3D.new()
 	world.name = "World"
 	add_child(world)
-	var level := YellowRooms.new()
+	var level := LevelStack.new()  # the whole building: the Yellow Rooms with the pizzeria on top
 	level.name = "Level"
 	world.add_child(level)
 	_add_spawned_root("Players", "PlayerSpawner", Net.spawn_player_node)

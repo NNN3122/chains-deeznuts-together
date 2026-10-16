@@ -2,7 +2,7 @@
 
 1–6 player co-op horror-comedy. You are chained to your friends. Climb out of the building. Stay quiet: something lives in the ceiling.
 
-This build is **Level 1 of 5: The Yellow Rooms**. Play it solo (you're chained to the Ballast, a 35 kg iron nut with a smiley face) or with up to 5 friends online.
+This build is **Levels 1 and 2 of 5: The Yellow Rooms, then Pappy Pepperoni's Night Shift**, a haunted family pizzeria stacked on top of the office. Play it solo (you're chained to the Ballast, a 35 kg iron nut with a smiley face) or with up to 5 friends online.
 
 ## Download and play (Windows)
 
@@ -44,7 +44,7 @@ While you host, the game asks your router (UPnP) to let friends in, and closes i
 
 ## How to survive
 
-- **Climb up through four floors**, from B4 to B1: crates through a hole in the ceiling, a service lift someone has to hold the plate for, a shelf shaft too tall to climb alone, then the freight elevator out. Everyone has to be inside the elevator.
+- **Climb up through four floors**, from B4 to B1: crates through a hole in the ceiling, a service lift someone has to hold the plate for, a shelf shaft too tall to climb alone, then the freight elevator. Everyone has to be inside: it rides you up into the pizzeria.
 - **Follow the green "THIS WAY" signs** over doorways. A hint pops up the first time you reach each climb.
 - **Lost or stuck?** Esc, then "Stuck? Regroup" pulls the whole team back to the last break room. It doesn't count as a death.
 - **The Custodian hunts by sound.** Running, gunshots, landing hard, jetpacks and a yanked chain are loud. Walk, or sneak with Ctrl.
@@ -52,6 +52,15 @@ While you host, the game asks your router (UPnP) to let friends in, and closes i
 - **Throw the squeaky decoy** to send it somewhere else. The bomb launches everyone nearby, including the people you're chained to.
 - **A dangling teammate drags you toward the edge** unless you brace or keep walking to hoist them.
 
+### The Night Shift (Level 2)
+
+- **Pappy Pepperoni only moves while nobody is looking at him and no camera shows him.** Someone keeps eyes on him; the rest move. The top-right panel tells you whether he's pinned and how long until his next step.
+- **Cameras:** stand on the painted spot at a security desk (Host Stand, Manager's Office, Sound Booth) and F flips cameras. A camera showing his room pins him too. Cameras drain the power bank; at 0% the lights go out, the lift locks and nothing stops him. Stand in a break room for a few seconds to restart the generator.
+- **Shutters:** hold Ctrl at the pull chain to keep the EMPLOYEES ONLY shutter down. He bangs three times and goes back to his end of the floor. That's your window.
+- **The dumbwaiter** takes one rider; someone holds Ctrl at the hand rope to haul. Solo, step in and hold Ctrl. **The stage lift** runs while someone holds Ctrl at the lever (it locks when you're alone); three ride, the last one gets hoisted up on the chain.
+- **If he grabs someone:** air horn (stuns him), party popper (shoves him back a room), or a flashlight in his face. Guns do nothing. The walk-in freezer is safe.
+- **The way out:** cross the stage, climb the speaker case to the prop loft. Everyone up there.
+
 ## Tests
 
-`RUN TESTS.bat` plays through the whole level by script, headless: solo, then a host and a client over the network. See `CLAUDE.md` for details.
+`RUN TESTS.bat` plays through both levels by script, headless: solo, then a host and a client over the network. See `CLAUDE.md` for details.

@@ -11,7 +11,8 @@ Look: move the mouse (push it against the side of the window to keep turning)
 Use item: F or left click     Drop: G     Camera: V
 Auto-walk: R     Pause and settings: Esc
 
-The thing in the ceiling hunts by sound. Running, shooting, falling and a rattling chain are loud. If it grabs someone, stand next to them and BRACE."""
+The thing in the ceiling hunts by sound. Running, shooting, falling and a rattling chain are loud. If it grabs someone, stand next to them and BRACE.
+Upstairs in the pizzeria: Pappy only moves while nobody looks at him and no camera shows him. Stand at a security desk for cameras (F flips them), hold Ctrl at a shutter to keep it down."""
 
 var screen_fx: ScreenFx
 var _objective: Label
@@ -42,6 +43,7 @@ var _fps_label: Label
 var _fps_t: float = 0.0
 var _invite_label: Label  # host waiting alone: the invite code, until a friend joins
 var _hints_shown: Dictionary = {}
+var _night: NightShiftPanel
 
 ## One-time tips the first time you reach each climb: [test point, co-op text, solo text].
 const HINTS: Array = [
@@ -51,8 +53,20 @@ const HINTS: Array = [
 		"THE LIFT: step on the yellow plate (it locks), then hop onto the lift."],
 	["boost_shelf", "TOO TALL: from the shelf, climb onto a teammate's head. Or use the jetpack in this room.",
 		"TOO TALL: grab the jetpack in this room, stand under the hole and hold F."],
-	["exit", "THE WAY OUT: everyone into the freight elevator to clock out.",
-		"THE WAY OUT: step into the freight elevator. Bring your Ballast."],
+	["exit", "THE WAY UP: everyone into the freight elevator. It goes up to the pizzeria.",
+		"THE WAY UP: step into the freight elevator with your Ballast. It goes up to the pizzeria."],
+	["p_arrive", "NIGHT SHIFT: he only moves while nobody is looking at him and no camera shows him. Keep eyes on him. Split up: cameras, shutter, climbers.",
+		"NIGHT SHIFT: he only moves while you're not looking at him and no camera shows him. Look at him, then move while he's pinned."],
+	["p_desk0", "CAMERAS: stand on the painted spot to clip in. F flips cameras. While a camera shows him, he's stuck.",
+		"CAMERAS: stand on the painted spot to clip in. F flips cameras. While a camera shows him, he's stuck. It drains power."],
+	["p_shutter0", "SHUTTER: one of you holds Ctrl at the chain to keep it down. He bangs three times and leaves. Then run for it.",
+		"SHUTTER: hold Ctrl at the chain to keep it down. He bangs three times and leaves. Then run for it."],
+	["p_dumbwaiter", "DUMBWAITER: one rider. Someone holds Ctrl at the hand rope to haul. Whoever's up top hauls the next one.",
+		"DUMBWAITER: step in and hold Ctrl to haul yourself up. Your Ballast comes up on the chain."],
+	["p_lever", "STAGE LIFT: hold Ctrl at the lever to run it. Three ride. Then the riders hoist the lever-holder up on the chain.",
+		"STAGE LIFT: hold Ctrl at the lever (it locks), hop on. Your Ballast gets dragged up after you."],
+	["p_cases", "ROOF ACCESS: climb the case, then the loft. Everyone up there. Someone keep watching him.",
+		"ROOF ACCESS: climb the case, then the loft, with your Ballast. Look at him between jumps."],
 ]
 
 
@@ -149,7 +163,7 @@ func _ready() -> void:
 	_crosshair.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	root.add_child(_crosshair)
 
-	_grab_label = UiTheme.heading("IT HAS YOU\nshine a light up at it, shoot it, or get your team to BRACE beside you", 30, UiTheme.DANGER)
+	_grab_label = UiTheme.heading("IT HAS YOU\nshine a light at it, shoot it, or get your team to BRACE beside you", 30, UiTheme.DANGER)
 	_grab_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_grab_label.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM, Control.PRESET_MODE_MINSIZE, 150)
 	_grab_label.grow_horizontal = Control.GROW_DIRECTION_BOTH
@@ -189,6 +203,13 @@ func _ready() -> void:
 	_fps_label.grow_horizontal = Control.GROW_DIRECTION_BEGIN
 	_fps_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	root.add_child(_fps_label)
+	_night = NightShiftPanel.new()
+	_night.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT, Control.PRESET_MODE_MINSIZE, 16)
+	_night.offset_top = 64.0
+	_night.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	_night.alignment = BoxContainer.ALIGNMENT_BEGIN
+	_night.visible = false
+	root.add_child(_night)
 	add_to_group("hud")
 	GameState.message_posted.connect(_on_message)
 	GameState.objective_changed.connect(func(t: String) -> void: _objective.text = t)
@@ -263,7 +284,7 @@ func _check_hints(me: Player, level: Node) -> void:
 	var solo := Net.get_players().size() == 1
 	for h in HINTS:
 		var key: String = h[0]
-		if _hints_shown.has(key) or not tp.has(key):
+		if _hints_shown.has(key) or not tp.has(key) or not (tp[key] is Vector3):
 			continue
 		var p: Vector3 = tp[key]
 		var d := Vector2(p.x - me.global_position.x, p.z - me.global_position.z).length()
@@ -272,8 +293,14 @@ func _check_hints(me: Player, level: Node) -> void:
 			_on_message(String(h[2] if solo else h[1]), 8.0)
 
 
+## The Static Face scare, for whoever is on a camera desk.
+func night_static_face() -> void:
+	_night.static_face()
+
+
 func reset() -> void:
 	_hints_shown.clear()
+	_night.visible = false
 	for entry in _caption_lines:
 		(entry[0] as Label).queue_free()
 	_caption_lines.clear()
@@ -315,9 +342,13 @@ func _process(delta: float) -> void:
 		return
 	var level := get_tree().get_first_node_in_group("level")
 	if level != null:
-		var f: int = level.call("floor_of", me.global_position.y)
-		_floor.text = YellowRooms.FLOOR_NAMES[f]
+		_floor.text = String(level.call("floor_name", me.global_position.y))
 		_check_hints(me, level)
+		var pizzeria := level.get("pizzeria") as Pizzeria
+		var in_pizzeria := pizzeria != null and int(level.call("level_index_at", me.global_position)) == 1
+		_night.visible = in_pizzeria
+		if in_pizzeria:
+			_night.refresh(delta, me, pizzeria)
 	# Item card.
 	if me.held_item_id != "":
 		var data := ItemRegistry.get_data(me.held_item_id)
@@ -334,11 +365,13 @@ func _process(delta: float) -> void:
 	var n := clampf(me.noise / 60.0, 0.0, 1.0)
 	_noise_fill.bg_color = Color(0.4, 0.9, 0.4).lerp(Color(1.0, 0.2, 0.15), n)
 	var hunted := false
-	for c in get_tree().get_nodes_in_group("custodian"):
+	var by_pappy := false
+	for c in get_tree().get_nodes_in_group("monster"):
 		if c.get("hunt_peer") == me.peer_id:
 			hunted = true
+			by_pappy = c is PappyPepperoni
 	if hunted:
-		_noise_label.text = "IT HEARS YOU"
+		_noise_label.text = "HE'S COMING FOR YOU" if by_pappy else "IT HEARS YOU"
 		_noise_label.add_theme_color_override("font_color", UiTheme.DANGER if fmod(_t, 0.5) < 0.3 else UiTheme.PAPER)
 	else:
 		_noise_label.text = "NOISE"
@@ -358,7 +391,7 @@ func _process(delta: float) -> void:
 			_chain_label.add_theme_color_override("font_color", Color(0.6, 0.95, 0.6))
 	else:
 		_chain_label.text = ""
-	_crosshair.visible = me.camera_mode == Player.CameraMode.FIRST_PERSON or me.held_item_id == "pistol" or me.held_item_id == "flashlight" or me.held_item_id in ["bomb", "decoy"]
+	_crosshair.visible = me.camera_mode == Player.CameraMode.FIRST_PERSON or me.held_item_id in ["pistol", "flashlight", "bomb", "decoy", "popper", "airhorn"]
 	_grab_label.visible = (me.synced_flags & Player.SFLAG_GRABBED) != 0
 
 

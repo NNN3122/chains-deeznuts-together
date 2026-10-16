@@ -50,10 +50,8 @@ func _ready() -> void:
 	q.item_selected.connect(func(i: int) -> void:
 		Settings.quality = i
 		var level := get_tree().get_first_node_in_group("level")
-		if level != null:
-			var we := level.get_node_or_null("WorldEnvironment") as WorldEnvironment
-			if we != null:
-				we.environment = LevelKit.make_environment(i))
+		if level != null and level.has_method("refresh_environment"):
+			level.call("refresh_environment"))
 	q_row.add_child(q)
 	box.add_child(q_row)
 	box.add_child(UiTheme.button("BACK", _close, 200.0))
