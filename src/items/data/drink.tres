@@ -1,0 +1,14 @@
+[gd_resource type="Resource" script_class="ItemData" load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://src/items/item_data.gd" id="1_data"]
+[ext_resource type="Script" path="res://src/items/energy_drink.gd" id="2_logic"]
+
+[resource]
+script = ExtResource("1_data")
+id = "drink"
+display_name = "DEEZ Juice"
+description = "Eight seconds of greatness. Then the crash."
+color = Color(0.45, 1, 0.25, 1)
+rarity = 0
+logic_script = ExtResource("2_logic")
+hud_hint = "F to chug"

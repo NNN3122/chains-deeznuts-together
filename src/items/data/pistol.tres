@@ -1,0 +1,14 @@
+[gd_resource type="Resource" script_class="ItemData" load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://src/items/item_data.gd" id="1_data"]
+[ext_resource type="Script" path="res://src/items/pistol.gd" id="2_logic"]
+
+[resource]
+script = ExtResource("1_data")
+id = "pistol"
+display_name = "The Snubby"
+description = "Eight shots. Two make it let go. Every one is very, very loud."
+color = Color(0.75, 0.75, 0.8, 1)
+rarity = 1
+logic_script = ExtResource("2_logic")
+hud_hint = "F / left click fires"

@@ -1,0 +1,23 @@
+SENDING CHAINS DEEZNUTS TOGETHER TO FRIENDS
+==========================================
+
+EASIEST: GITHUB
+Double-click PUBLISH UPDATE TO GITHUB.bat in the game folder. Send your friends this link
+once; it always downloads the newest version:
+  https://github.com/NNN3122/chains-deeznuts-together/releases/latest/download/CHAINS-DEEZNUTS-TOGETHER.zip
+After you change the game, run PUBLISH UPDATE TO GITHUB.bat again and tell friends to
+download from the same link again.
+
+BY HAND
+First time: send "CHAINS DEEZNUTS TOGETHER.zip" from this folder. It's too big for a free
+Discord upload, so use Google Drive, OneDrive or WeTransfer and send the link.
+After you change the game: double-click MAKE FRIEND ZIP.bat again and send only
+"CHAINS DEEZNUTS TOGETHER.pck" (small enough for Discord). Friends put it in their game
+folder and replace the old one.
+
+Everyone needs the same version: the game turns away anyone whose copy doesn't match
+yours, and tells them why.
+
+PLAYING
+Click HOST CO-OP, press Esc, click COPY INVITE and paste the code to your friends.
+They click JOIN CO-OP, PASTE, CONNECT.

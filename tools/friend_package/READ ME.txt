@@ -1,0 +1,62 @@
+CHAINS DEEZNUTS TOGETHER
+========================
+
+A 1-6 player co-op horror-comedy. You are chained to your friends.
+Climb out of the building. Stay quiet: something lives in the ceiling.
+
+
+PLAY
+----
+1. Unzip first: right-click the zip, choose "Extract All...".
+2. Open the new folder and double-click "CHAINS DEEZNUTS TOGETHER.exe".
+   If Windows says "Windows protected your PC", click "More info", then "Run anyway".
+
+
+JOIN A FRIEND
+-------------
+1. Your friend clicks HOST CO-OP and sends you an invite code. It looks like K7QM-2XR.
+2. Copy the code, click JOIN CO-OP, click PASTE, then CONNECT.
+You can join any time, even in the middle of a run.
+
+If the game says your copy is a different version, download the newest one again from
+https://github.com/NNN3122/chains-deeznuts-together (or ask your friend for their latest
+"CHAINS DEEZNUTS TOGETHER.pck", put it in this folder and replace the old one).
+
+
+HOST YOUR OWN GAME
+------------------
+Click HOST CO-OP, press Esc, click COPY INVITE and send the code to your friends.
+If Windows Firewall asks about the game, click "Allow".
+
+
+CONTROLS
+--------
+WASD                   Move
+Up / Down arrows       Walk forward / back
+Left / Right, Q / E    Turn
+Mouse                  Look (over TeamViewer: hold it at the side of the window to keep turning)
+Shift                  Run (loud)
+Ctrl or C              Brace and sneak: anchor the chain, move quietly
+Space                  Jump; jump into a ledge to climb it
+F or left click        Use item
+G                      Drop item (hand it to a teammate)
+R                      Auto-walk on/off
+V                      First / third person
+H                      Show / hide controls
+Esc                    Pause, invite code, settings, regroup, leave
+
+Too dark? Esc > Settings has a Brightness slider. Sound captions tell you what you heard
+and from which side.
+
+
+HOW TO SURVIVE
+--------------
+- Climb four floors, B4 to B1. Follow the green "THIS WAY" signs over doorways.
+- The thing in the ceiling hunts by sound. Running, gunshots, hard landings, jetpacks and a
+  yanked chain are loud. Walk, or sneak with Ctrl.
+- If it grabs someone, everyone near them holds Ctrl to brace. Or shine a flashlight up at it,
+  or shoot it twice.
+- The squeaky decoy sends it somewhere else. The bomb launches everyone nearby, including
+  the people you're chained to.
+- A dangling teammate drags you toward the edge unless you brace or keep walking to hoist them.
+- Lost or stuck? Esc, then "Stuck? Regroup" pulls the whole team back to the last break room.

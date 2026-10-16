@@ -1,0 +1,14 @@
+[gd_resource type="Resource" script_class="ItemData" load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://src/items/item_data.gd" id="1_data"]
+[ext_resource type="Script" path="res://src/items/throwable.gd" id="2_logic"]
+
+[resource]
+script = ExtResource("1_data")
+id = "bomb"
+display_name = "Deez Charge"
+description = "Launches everyone nearby. Including the people you're chained to."
+color = Color(1, 0.3, 0.1, 1)
+rarity = 1
+logic_script = ExtResource("2_logic")
+hud_hint = "F throws it (2.4 s fuse)"
