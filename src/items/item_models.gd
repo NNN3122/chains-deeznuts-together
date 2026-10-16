@@ -40,6 +40,11 @@ static func build(id: String) -> Node3D:
 			_cyl(root, 0.035, 0.035, 0.14, Vector3(0.0, -0.02, 0.04), _m(Color(0.85, 0.12, 0.1), 0.35), false)
 			_cyl(root, 0.03, 0.06, 0.11, Vector3(0.0, 0.0, -0.08), _m(Color(0.1, 0.1, 0.1), 0.5), true)
 			_cyl(root, 0.012, 0.012, 0.05, Vector3(0.0, 0.0, -0.015), _m(Color(0.8, 0.8, 0.82), 0.3, 0.8), true)
+		"ammo":
+			_box(root, Vector3(0.14, 0.09, 0.1), Vector3.ZERO, _m(Color(0.45, 0.32, 0.12), 0.7))
+			_box(root, Vector3(0.142, 0.03, 0.102), Vector3(0.0, 0.03, 0.0), _m(Color(0.85, 0.7, 0.3), 0.4, 0.6))
+			for k in 3:
+				_cyl(root, 0.012, 0.012, 0.05, Vector3(-0.04 + 0.04 * float(k), 0.06, 0.0), _m(Color(0.8, 0.65, 0.2), 0.3, 0.9), false)
 		"jetpack":
 			var steel := _m(Color(0.7, 0.7, 0.72), 0.25, 0.9)
 			_cyl(root, 0.09, 0.09, 0.5, Vector3(-0.11, 0.0, 0.0), steel, false)

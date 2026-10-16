@@ -10,7 +10,10 @@ extends Node3D
 ## (pushes him back a node), a flashlight in his face (drops whoever he's holding).
 ## Server simulates; position, node and state are replicated; visuals run on every peer.
 
-enum PState { DORMANT, ROAM, BANGING, LUNGE, GRAB, STUNNED, TRAVEL }
+## RUSH is the one time he is seen moving: a visible charge at walking-plus speed, eyes or no
+## eyes. It happens when a shutter's holder lets go while he's banging on it, and for as long as
+## the power is out. The answer is running, not staring.
+enum PState { DORMANT, ROAM, BANGING, LUNGE, GRAB, STUNNED, TRAVEL, RUSH }
 
 const STEP_BASE: float = 14.0  # s between moves for 1-2 players
 const STEP_PER_EXTRA_PLAYER: float = 1.0
@@ -30,6 +33,13 @@ const TRAVEL_TIME: float = 9.0  # s to appear on a new floor
 const NOISE_SKIP: float = 70.0  # a noise this loud near him skips his timer
 const NOISE_RANGE: float = 22.0
 const BURN_TO_RELEASE: float = 1.2  # s of flashlight in his face to make him drop someone
+const BURN_RANGE: float = 16.0
+const BURN_ANGLE: float = 0.5  # rad: the beam's whole cone counts
+const BURN_DECAY: float = 0.25  # per second while the beam is off him
+const RUSH_SPEED: float = 2.6  # m/s: the one time he is seen walking (blackout, or after a shutter)
+const RUSH_SECONDS: float = 7.0
+const RUSH_CHANCE: float = 0.45  # after three bangs and the holder letting go
+const QUIET_STEP_CHANCE: float = 0.3  # a Step with no servo tell first
 const CHEST_HEIGHT: float = 1.5
 const HEAD_HEIGHT: float = 2.35
 
@@ -43,8 +53,13 @@ var watched: bool = false  # replicated: someone (or a camera) has him right now
 var hunt_peer: int = 0  # replicated: who he's going for
 var grab_peer: int = 0  # replicated
 var step_fraction: float = 0.0  # replicated: 0..1 of the way to his next Step (HUD)
+var burn_fraction: float = 0.0  # replicated: 0..1 of the light he has taken (HUD feedback)
 var debug_frozen: bool = false  # tests
 var steps_taken: int = 0  # server stat
+var _hiss_t: float = 0.0
+var _rush_t: float = 0.0
+var _quiet_step: bool = false
+var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
 
 var _step_t: float = 0.0
 var _dormant_t: float = DORMANT_SECONDS
@@ -74,6 +89,7 @@ var _shown_state: int = -1
 var _shown_grab: int = 0
 var _caption_t: float = 0.0
 var _creak_t: float = 0.0
+var _stomp_t: float = 0.0
 
 
 func _enter_tree() -> void:
@@ -83,7 +99,7 @@ func _enter_tree() -> void:
 	sync.name = "Sync"
 	var cfg := SceneReplicationConfig.new()
 	# Everything ALWAYS, like the Custodian: a late joiner then sees him where he is at once.
-	for prop in ["synced_position", "synced_yaw", "step_fraction", "floor_index", "node_index", "pstate", "watched", "hunt_peer", "grab_peer"]:
+	for prop in ["synced_position", "synced_yaw", "step_fraction", "burn_fraction", "floor_index", "node_index", "pstate", "watched", "hunt_peer", "grab_peer"]:
 		var path := NodePath(".:" + prop)
 		cfg.add_property(path)
 		cfg.property_set_replication_mode(path, SceneReplicationConfig.REPLICATION_MODE_ALWAYS)
@@ -94,6 +110,7 @@ func _enter_tree() -> void:
 func _ready() -> void:
 	add_to_group("monster")
 	add_to_group("pappy")
+	_rng.seed = 2207
 	_build_visuals()
 	if multiplayer.is_server():
 		_place_at(0, level.home_node(0))
@@ -259,7 +276,7 @@ func head_point() -> Vector3:
 
 
 func is_hunting() -> bool:
-	return pstate == PState.LUNGE or pstate == PState.GRAB
+	return pstate == PState.LUNGE or pstate == PState.GRAB or pstate == PState.RUSH
 
 
 func is_active() -> bool:
@@ -283,7 +300,7 @@ func _physics_process(delta: float) -> void:
 	if multiplayer.is_server():
 		_server_tick(delta)
 	else:
-		if pstate == PState.LUNGE or pstate == PState.GRAB:
+		if pstate == PState.LUNGE or pstate == PState.GRAB or pstate == PState.RUSH:
 			global_position = global_position.lerp(synced_position, clampf(delta * 14.0, 0.0, 1.0))
 		else:
 			global_position = synced_position
@@ -322,7 +339,11 @@ func _server_tick(delta: float) -> void:
 				pstate = PState.ROAM
 				_step_t = 0.0
 				_told = false
+		PState.RUSH:
+			_tick_rush(delta)
 	step_fraction = clampf(_step_t / step_length(), 0.0, 1.0) if pstate == PState.ROAM else 0.0
+	if pstate != PState.GRAB:
+		burn_fraction = 0.0
 	synced_position = global_position
 	synced_yaw = _model.rotation.y
 
@@ -352,23 +373,111 @@ func _tick_roam(delta: float) -> void:
 		_fx("servo", -6.0, 0.6)
 		return
 	watched = _is_observed()
-	var blackout := level.blackout()
-	if watched and not blackout:
+	if level.blackout():
+		_start_rush(INF)  # nothing stops him in the dark: he walks, and keeps walking
+		return
+	if watched:
 		return  # pinned: eyes on him, or a camera
 	# Loud things on his floor skip his timer.
 	if _noise_cd <= 0.0 and _loud_nearby():
 		_noise_cd = 3.0
 		_step_t = maxf(_step_t, step_length() - 0.3)
-	_step_t += delta
 	var length := step_length()
-	if not _told and _step_t >= length - TELL_LEAD and not blackout:
+	if _step_t <= 0.0 and not _told:
+		_quiet_step = _rng.randf() < QUIET_STEP_CHANCE  # some Steps come with no warning at all
+	_step_t += delta
+	# Anticipation: halfway through a Step, something clatters near him (a pan, a chair).
+	if _step_t >= length * 0.5 and _step_t - delta < length * 0.5 and _rng.randf() < 0.6:
+		_fx("clink", -4.0, _rng.randf_range(0.4, 0.7))
+	if not _told and _step_t >= length - TELL_LEAD:
 		_told = true
-		_fx("servo", 0.0, 1.0)
+		if not _quiet_step:
+			_fx("servo", 0.0, 1.0)
 	if _step_t < length:
 		return
 	_step_t = 0.0
 	_told = false
 	_do_step()
+
+
+# --- The Rush: the one time he walks ------------------------------------------------------------
+
+func _start_rush(seconds: float) -> void:
+	if pstate == PState.RUSH:
+		_rush_t = seconds
+		return
+	pstate = PState.RUSH
+	_rush_t = seconds
+	_bang_shutter = null
+	hunt_peer = 0
+	level.set_jukebox(false)
+	_fx("servo", 4.0, 1.5)
+	_fx("growl", 2.0, 0.5)
+	GameState.post_message("HE'S COMING. RUN. (A Break Room or the freezer is safe.)", 3.0)
+
+
+## Walks node to node toward the nearest player, through open doors only, and lunges when close.
+func _tick_rush(delta: float) -> void:
+	if not level.blackout():
+		if is_inf(_rush_t):
+			_rush_t = 3.0  # the generator came back: a few more steps and he's on his timer again
+		_rush_t -= delta
+	var target_floor := level.line_floor()
+	if target_floor != floor_index:
+		_abort_hunt()
+		return
+	var nearest := _nearest_player()
+	if nearest == null or (_rush_t <= 0.0 and not level.blackout()):
+		_end_rush()
+		return
+	var goal := level.nearest_node(floor_index, nearest.global_position)
+	var here := level.nearest_node(floor_index, global_position)
+	node_index = here
+	var dest := nearest.global_position
+	if goal != here:
+		var next := level.next_node(floor_index, here, goal)
+		if next < 0:
+			_end_rush()
+			return
+		var shutter := level.shutter_between(floor_index, here, next)
+		if shutter != null and shutter.closed:
+			pstate = PState.BANGING  # he met a held shutter at a run: the usual three bangs
+			_bang_shutter = shutter
+			_bangs_done = 0
+			_bang_t = 0.2
+			_teleport(shutter.global_position - shutter.normal * 1.2)
+			_face(shutter.global_position + shutter.normal * 3.0)
+			return
+		dest = level.node_position(floor_index, next)
+	if level.is_safe_spot(nearest.global_position) and goal == here:
+		# They made it somewhere he won't go: he stands at the door and gives up when the time runs out.
+		_face(nearest.global_position)
+		if level.blackout():
+			return
+		_rush_t = minf(_rush_t, 2.0)
+		return
+	var to := dest - global_position
+	to.y = 0.0
+	if to.length() > 0.05:
+		var step := to.normalized() * minf(RUSH_SPEED * delta, to.length())
+		global_position += step
+		global_position.y = level.node_position(floor_index, here).y
+		synced_position = global_position
+		_face(dest)
+	hunt_peer = nearest.peer_id
+	if _can_lunge_at(nearest) and nearest.global_position.distance_to(global_position) < 3.0:
+		_start_lunge(nearest)
+
+
+func _end_rush() -> void:
+	pstate = PState.ROAM
+	hunt_peer = 0
+	_step_t = 0.0
+	_told = false
+	node_index = level.nearest_node(floor_index, global_position)
+	_teleport(level.node_position(floor_index, node_index))
+	level.set_jukebox(true)
+	GameState.post_message("He stopped. He's back on his timer.", 2.5)
 
 
 ## One Step: toward the Line, through a shutter if it's open, into a lunge if someone is close.
@@ -381,15 +490,19 @@ func _do_step() -> void:
 		return
 	var goal := level.nearest_node(floor_index, nearest.global_position)
 	if goal == node_index:
-		# Same room but out of reach: step up next to them.
 		var toward := nearest.global_position - global_position
 		toward.y = 0.0
-		if toward.length() > LUNGE_RANGE * 0.6:
-			_teleport(global_position + toward.normalized() * (toward.length() - LUNGE_RANGE * 0.5))
-			_face(nearest.global_position)
-			_fx("thump", -2.0, 0.55)
-			steps_taken += 1
-		return
+		if _has_line_to(nearest):
+			# Same room but out of reach: step up next to them.
+			if toward.length() > LUNGE_RANGE * 0.6:
+				_teleport(global_position + toward.normalized() * (toward.length() - LUNGE_RANGE * 0.5))
+				_face(nearest.global_position)
+				_fx("thump", -2.0, 0.55)
+				steps_taken += 1
+			return
+		# A wall between us: they're really in the next room. Go round by the graph instead of
+		# standing at the wall forever.
+		goal = level.nearest_node(floor_index, nearest.global_position, node_index)
 	var next := level.next_node(floor_index, node_index, goal)
 	if next < 0 or next == node_index:
 		return
@@ -416,9 +529,8 @@ func _tick_banging(delta: float) -> void:
 	if _bang_t > 0.0:
 		return
 	if _bang_shutter == null or not _bang_shutter.closed:
-		# They let go mid-bang: through he comes.
-		pstate = PState.ROAM
-		_step_t = step_length() - 0.1
+		# They let go mid-bang: through he comes, at a run. Hold it for all three or don't hold it.
+		_start_rush(RUSH_SECONDS)
 		return
 	_bangs_done += 1
 	_bang_t = BANG_INTERVAL
@@ -448,6 +560,10 @@ func _can_lunge_at(p: Player) -> bool:
 		return false
 	if level.is_safe_spot(p.global_position):
 		return false
+	return _has_line_to(p)
+
+
+func _has_line_to(p: Player) -> bool:
 	var space := get_world_3d().direct_space_state
 	var q := PhysicsRayQueryParameters3D.create(chest_point(), p.global_position + Vector3.UP, ChainBody.LAYER_WORLD)
 	return space.intersect_ray(q).is_empty()
@@ -519,6 +635,8 @@ func _abort_hunt() -> void:
 	pstate = PState.ROAM
 	_step_t = 0.0
 	_told = false
+	node_index = level.nearest_node(floor_index, global_position)
+	_teleport(level.node_position(floor_index, node_index))
 
 
 ## Server. Lets go of whoever he holds. killed: they were taken.
@@ -535,6 +653,8 @@ func release(killed: bool) -> void:
 		pstate = PState.ROAM
 		_step_t = 0.0
 		_told = false
+		node_index = level.nearest_node(floor_index, global_position)
+		_teleport(level.node_position(floor_index, node_index))
 
 
 ## Server: air horn, blast. He locks up for a few seconds and drops whoever he holds.
@@ -591,6 +711,8 @@ func debug_reset(floor_i: int, node_i: int) -> void:
 	_bang_shutter = null
 	hunt_peer = 0
 	grab_peer = 0
+	_rush_t = 0.0
+	burn_fraction = 0.0
 
 
 func debug_force_step() -> void:
@@ -683,25 +805,36 @@ func _loud_nearby() -> bool:
 	return false
 
 
-## A flashlight held in his face while he holds someone makes him drop them.
+## A flashlight held in his face while he holds someone makes him drop them. His face or his
+## chest both count (he's 2.6 m tall: nobody aims at the hat), and only walls block the beam.
 func _tick_burn(delta: float) -> bool:
 	var lit := false
 	var space := get_world_3d().direct_space_state
-	var target := head_point()
 	for p in Net.get_players():
 		if p.held_item == null or p.held_item.data.id != "flashlight" or not p.held_item.is_active:
 			continue
 		var eye := p.eye_position()
-		var to := target - eye
-		var d := to.length()
-		if d > 14.0 or d < 0.1 or p.aim_direction().angle_to(to / d) > 0.4:
-			continue
-		var q := PhysicsRayQueryParameters3D.create(eye, target - (to / d) * 0.3, ChainBody.LAYER_WORLD)
-		q.exclude = [p.get_rid()]
-		if space.intersect_ray(q).is_empty():
-			lit = true
+		for target: Vector3 in [head_point(), chest_point()]:
+			var to := target - eye
+			var d := to.length()
+			if d > BURN_RANGE or d < 0.1 or p.aim_direction().angle_to(to / d) > BURN_ANGLE:
+				continue
+			var q := PhysicsRayQueryParameters3D.create(eye, target - (to / d) * 0.3, ChainBody.LAYER_WORLD)
+			q.exclude = [p.get_rid()]
+			if space.intersect_ray(q).is_empty():
+				lit = true
+				break
+		if lit:
 			break
-	_burn = _burn + delta if lit else maxf(0.0, _burn - delta * 0.5)
+	if lit:
+		_burn += delta
+		_hiss_t -= delta
+		if _hiss_t <= 0.0:
+			_hiss_t = 0.35
+			_fx("scrape", -4.0, 1.8)
+	else:
+		_burn = maxf(0.0, _burn - delta * BURN_DECAY)
+	burn_fraction = clampf(_burn / BURN_TO_RELEASE, 0.0, 1.0)
 	return _burn >= BURN_TO_RELEASE
 
 
@@ -738,10 +871,27 @@ func _update_visuals(delta: float) -> void:
 			var tw := create_tween()
 			tw.tween_property(_arm_l, "rotation:x", -2.4, 0.2)
 			tw.parallel().tween_property(_arm_r, "rotation:x", -2.4, 0.2)
+		elif pstate == PState.RUSH:
+			var tw := create_tween()
+			tw.tween_property(_arm_l, "rotation:x", -1.4, 0.3)
+			tw.parallel().tween_property(_arm_r, "rotation:x", -1.4, 0.3)
+			Sfx.caption(self, "heavy footsteps, fast", chest_point())
 		elif pstate != PState.GRAB:
 			var tw := create_tween()
 			tw.tween_property(_arm_l, "rotation:x", 0.0, 0.6)
 			tw.parallel().tween_property(_arm_r, "rotation:x", 0.0, 0.6)
+	if pstate == PState.RUSH:
+		# Stomps: he's the heaviest thing in the building, and now he's running.
+		_stomp_t -= delta
+		if _stomp_t <= 0.0:
+			_stomp_t = 0.46
+			Sfx.play_at(self, "thump", global_position, 2.0, 0.55, 40.0)
+			var me := Net.get_local_player()
+			if me != null and me.global_position.distance_to(global_position) < 14.0:
+				me.add_shake(0.2)
+		_model.position.y = absf(sin(Time.get_ticks_msec() * 0.0137)) * 0.08
+	else:
+		_model.position.y = 0.0
 	if grab_peer != _shown_grab:
 		_shown_grab = grab_peer
 		var victim := Net.find_player(grab_peer)

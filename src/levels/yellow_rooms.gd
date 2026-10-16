@@ -37,7 +37,7 @@ const FLOOR_LOOT: Array = [
 	["flashlight", "decoy"],
 	["pistol", "drink", "decoy"],
 	["flashlight", "bomb", "drink"],
-	["bomb", "decoy", "pistol"],
+	["bomb", "decoy", "ammo"],
 ]
 const POSTERS: Array[String] = [
 	"SAFETY IS A\nTEAM SPORT", "HOLD ON TO\nEACH OTHER", "IF YOU HEAR IT,\nIT HEARS YOU",
@@ -47,6 +47,15 @@ const POSTERS: Array[String] = [
 ## Procedural scares that fit an office: [kind, weight].
 const SCARE_POOL: Array = [
 	["lights_out", 2], ["tile", 2], ["whisper", 2], ["slam", 2], ["figure", 2], ["phone", 1], ["dennis", 1],
+	["breath", 2], ["footsteps", 2], ["stalker", 1],
+]
+## What to do on each floor, ticked off on the HUD. [text, ...]; completion is checked in
+## _tick_tasks.
+const TASKS: Array = [
+	["Follow the green signs to MAINTENANCE ACCESS", "Climb the crates up through the ceiling (walk into one, tap Space)"],
+	["Find the SERVICE LIFT", "One of you stands on the yellow plate: the lift rises", "Hoist the plate-holder up on the chain"],
+	["Find the SHELF SHAFT", "Grab the jetpack in that room (or stack up on a teammate)", "Everyone up through the hole"],
+	["Find the FREIGHT ELEVATOR", "Everyone inside: it rides up to the pizzeria"],
 ]
 const SCRIPTED_SCARES: Array = [
 	[[2, "stain_pass"], [4, "dennis"]],
@@ -66,6 +75,7 @@ var _jetpack_check_t: float = 0.0
 var _boost_jetpack_pos: Vector3 = Vector3.ZERO
 var _drone: AudioStreamPlayer
 var _pending_signs: Array = []
+var _tasks_floor: int = -1
 
 
 func _ready() -> void:
@@ -210,6 +220,15 @@ func has_ceiling_at(p: Vector3) -> bool:
 	var center := cell_center(i, hole_c)
 	var half := (CAR_HOLE if ASCENTS[i] == Ascent.ELEVATOR else HOLE) * 0.5 + 0.3
 	return not (absf(p.x - center.x) < half and absf(p.z - center.z) < half)
+
+
+## Break Rooms are safe: the Custodian never comes to look at a camper there.
+func is_safe_spot(p: Vector3) -> bool:
+	var i := floor_of(p.y)
+	if i < 0 or i >= floors.size():
+		return false
+	var types: Dictionary = floors[i]["types"]
+	return String(types.get(cell_of(p), "")) == "breakroom"
 
 
 ## Floor-level center of the freight car on B1 (the pizzeria is built around the shaft above it).
@@ -519,12 +538,16 @@ func _add_light(root: Node3D, batch: LevelKit.BoxBatch, i: int, center: Vector3,
 	var at := center + (Vector3(-1.9, 0.0, -1.9) if holed else Vector3.ZERO)
 	var kind := 0
 	var r := rng.randf()
+	# Dark rooms are mostly dead; storage is dying; the rest flicker now and then. Break Rooms
+	# and the climbs stay lit so the route always reads.
 	if t == "dark":
-		kind = 3 if r < 0.6 else 2
+		kind = 3 if r < 0.65 else 2
+	elif t == "storage":
+		kind = 2 if r < 0.55 else (1 if r < 0.8 else 0)
 	elif t != "breakroom" and t != "ascent":
-		if r < 0.12:
+		if r < 0.16:
 			kind = 1
-		elif r < 0.18:
+		elif r < 0.26:
 			kind = 2
 	var panel := MeshInstance3D.new()
 	var pm := BoxMesh.new()
@@ -733,6 +756,19 @@ func _ascent(root: Node3D, batch: LevelKit.BoxBatch, i: int, c: Vector2i, center
 			_sign(root, "MAINTENANCE ACCESS\nCLIMB ->", center + Vector3(-2.88, 2.0, 0.0), PI * 0.5)
 			test_points["crates_start"] = center + Vector3(-2.0, 0.1, -1.4)  # in front of the first crate, facing +z
 			test_points["crates"] = [center + Vector3(-2.0, 1.25, 0.0), center + Vector3(-0.6, 2.25, 0.0), center + Vector3(0.6, 3.25, 0.0)]
+			# The cable tray: an optional 0.5 m ledge hung from the ceiling at 1.9 m, a step from the
+			# first crate, with a stash at its far end. Narrow enough that the chain decides it.
+			var tray_y := 1.9
+			var tray_z := -1.2
+			batch.add(center + Vector3(0.2, tray_y - 0.03, tray_z), Vector3(5.2, 0.06, 0.5), "metal")
+			batch.add(center + Vector3(0.2, tray_y + 0.001, tray_z), Vector3(5.2, 0.005, 0.5), "hazard", false)
+			for k in 4:
+				var hx := -1.6 + 1.2 * float(k)
+				batch.add(center + Vector3(hx, tray_y + (CEIL_H - tray_y) * 0.5, tray_z), Vector3(0.04, CEIL_H - tray_y, 0.04), "steel_dark", false)
+			batch.add(center + Vector3(2.5, tray_y + 0.08, tray_z), Vector3(0.6, 0.1, 0.4), "cardboard", false)
+			_sign(root, "CABLE TRAY\nNOT A WALKWAY", center + Vector3(1.5, 2.65, -2.88), 0.0)
+			test_points["tray_start"] = center + Vector3(-1.9, tray_y + 0.1, tray_z)
+			test_points["tray_end"] = center + Vector3(2.4, tray_y + 0.1, tray_z)
 		Ascent.LIFT:
 			var plate := PressurePlate.create("PlateLift", center + Vector3(-2.0, 0.0, -2.0))
 			root.add_child(plate)
@@ -913,6 +949,65 @@ func server_populate() -> void:
 			Net.spawn_pickup(loot[k], cell_center(i, c) + off, 0)
 	if _boost_jetpack_pos != Vector3.ZERO:
 		Net.spawn_pickup("jetpack", _boost_jetpack_pos, 0)
+	if test_points.has("tray_end"):
+		var te: Vector3 = test_points["tray_end"]
+		Net.spawn_pickup("drink", te + Vector3(-0.4, 0.0, 0.0), 0)
+		Net.spawn_pickup("ammo", te + Vector3(0.2, 0.0, 0.0), 0)
+	# Spare rounds for the Snubby, one box per floor after the first, off the main path.
+	for i in range(1, FLOORS):
+		var f: Dictionary = floors[i]
+		var path: Array[Vector2i] = f["path"]
+		var c: Vector2i = path[maxi(1, path.size() / 2)]
+		Net.spawn_pickup("ammo", cell_center(i, c) + Vector3(-1.2, 0.1, -1.2), 0)
+	_tasks_floor = -1
+
+
+## The HUD checklist for the floor the Line is on (by its last checkpoint), ticked as it's done.
+func _tick_tasks() -> void:
+	if GameState.checkpoint_index >= FLOORS:
+		return  # upstairs: the pizzeria keeps its own list
+	var i := clampi(GameState.checkpoint_index, 0, FLOORS - 1)
+	if i != _tasks_floor:
+		_tasks_floor = i
+		GameState.set_tasks(PackedStringArray(TASKS[i]))
+	if Engine.get_physics_frames() % 10 != 0:
+		return
+	var players := Net.get_players()
+	match i:
+		0:
+			if _anyone_near("crates_start", players, 5.0):
+				GameState.complete_task(0)
+		1:
+			if _anyone_near("plate", players, 5.0):
+				GameState.complete_task(0)
+			var lift := get_node_or_null("Floor1/Lift") as LiftPlatform
+			if lift != null and lift.position.y >= lift.high_y - 0.05:
+				GameState.complete_task(1)
+		2:
+			if _anyone_near("boost_shelf", players, 5.0):
+				GameState.complete_task(0)
+			for p in players:
+				if p.has_item("jetpack"):
+					GameState.complete_task(1)
+		3:
+			if _anyone_near("exit", players, 5.0):
+				GameState.complete_task(0)
+			if _car != null and _car.phase != FreightCar.Phase.WAITING:
+				GameState.complete_task(1)
+	# A checkpoint above means everything on the floor below was done.
+	if GameState.checkpoint_index > i:
+		for k in TASKS[i].size():
+			GameState.complete_task(k)
+
+
+func _anyone_near(key: String, players: Array[Player], radius: float) -> bool:
+	if not test_points.has(key) or not (test_points[key] is Vector3):
+		return false
+	var at: Vector3 = test_points[key]
+	for p in players:
+		if Vector2(p.global_position.x - at.x, p.global_position.z - at.z).length() < radius and absf(p.global_position.y - at.y) < 3.0:
+			return true
+	return false
 
 
 ## Server: the Line was sent back to a checkpoint. Still in the Yellow Rooms: the car comes back down.
@@ -932,6 +1027,7 @@ func _physics_process(delta: float) -> void:
 	if _jetpack_check_t <= 0.0:
 		_jetpack_check_t = 6.0
 		_ensure_boost_jetpack()
+	_tick_tasks()
 	_tick_exit()
 
 
@@ -940,7 +1036,7 @@ func _ensure_boost_jetpack() -> void:
 	if _boost_jetpack_pos == Vector3.ZERO or GameState.escaped:
 		return
 	for p in Net.get_players():
-		if p.held_item_id == "jetpack":
+		if p.has_item("jetpack"):
 			return
 	for pk in get_tree().get_nodes_in_group("pickups"):
 		if pk.get("item_id") == "jetpack":

@@ -35,6 +35,8 @@ func _ready() -> void:
 		Settings.brightness = v
 		LevelKit.apply_brightness(get_tree()))
 	_check(box, "Sound captions (what you hear, and from which direction)", Settings.captions, func(on: bool) -> void: Settings.captions = on)
+	_check(box, "Voice chat: send my microphone to friends nearby (proximity)", Settings.voice_enabled, func(on: bool) -> void: Settings.voice_enabled = on)
+	_slider(box, "Friends' voice volume", 0.0, 2.0, 0.05, Settings.voice_volume, func(v: float) -> void: Settings.voice_volume = v)
 	_check(box, "Show FPS", Settings.show_fps, func(on: bool) -> void: Settings.show_fps = on)
 	_check(box, "When hosting, open my router so friends can join with an invite code (UPnP)", Settings.open_router_port, func(on: bool) -> void: Settings.open_router_port = on)
 	_check(box, "Fullscreen", Settings.fullscreen, func(on: bool) -> void:

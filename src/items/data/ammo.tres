@@ -1,0 +1,14 @@
+[gd_resource type="Resource" script_class="ItemData" load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://src/items/item_data.gd" id="1_data"]
+[ext_resource type="Script" path="res://src/items/ammo_box.gd" id="2_logic"]
+
+[resource]
+script = ExtResource("1_data")
+id = "ammo"
+display_name = "Snubby Rounds"
+description = "Twelve rounds. They go in the pocket of whoever carries the Snubby."
+color = Color(0.85, 0.7, 0.3, 1)
+rarity = 0
+logic_script = ExtResource("2_logic")
+hud_hint = "Goes into a carried Snubby"

@@ -7,10 +7,12 @@ extends Node
 ## birthday_song. Each level offers its own pool (level.scare_pool) for where the target stands.
 
 const FIRST_DELAY: float = 50.0
-const MIN_GAP: float = 38.0
-const MAX_GAP: float = 75.0
+const MIN_GAP: float = 30.0
+const MAX_GAP: float = 70.0
+const REPEAT_PENALTY: float = 0.25  # weight multiplier for the last two kinds played, so runs vary
 const POOL: Array = [
 	["lights_out", 2], ["tile", 2], ["whisper", 2], ["slam", 2], ["figure", 2], ["phone", 1], ["dennis", 1],
+	["breath", 2], ["footsteps", 2], ["stalker", 1],
 ]
 
 var scares_played: int = 0
@@ -21,6 +23,7 @@ var _layer: CanvasLayer
 var _overlay: ColorRect
 var _next_t: float = FIRST_DELAY
 var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
+var _recent: Array[String] = []  # the last kinds played, so the next pick leans elsewhere
 
 
 func _ready() -> void:
@@ -78,14 +81,23 @@ func _pick_kind(at: Vector3) -> String:
 	var level := get_tree().get_first_node_in_group("level")
 	if level != null and level.has_method("scare_pool"):
 		pool = level.call("scare_pool", at)
-	var total := 0
+	var weights: Array[float] = []
+	var total := 0.0
 	for e in pool:
-		total += int(e[1])
-	var r := _rng.randi() % total
-	for e in pool:
-		r -= int(e[1])
-		if r < 0:
-			return String(e[0])
+		var w := float(e[1])
+		if _recent.has(String(e[0])):
+			w *= REPEAT_PENALTY
+		weights.append(w)
+		total += w
+	var r := _rng.randf() * total
+	for i in pool.size():
+		r -= weights[i]
+		if r < 0.0:
+			var kind := String(pool[i][0])
+			_recent.append(kind)
+			while _recent.size() > 2:
+				_recent.pop_front()
+			return kind
 	return "whisper"
 
 
@@ -127,6 +139,10 @@ func trigger_for(kind: String, p: Player) -> void:
 				p.apply_knockback(fwd * 2.5 + Vector3.UP * 1.5)  # the flinch jerks the Line
 		"vent_patter":
 			pos = feet + fwd * 1.5
+		"breath", "stalker":
+			pos = feet - fwd * 1.6  # right behind you
+		"footsteps":
+			pos = feet - fwd * 6.0
 		"phone", "slam", "bell":
 			pos = feet + Vector3(_rng.randf_range(-1.0, 1.0), 0.0, _rng.randf_range(-1.0, 1.0)).normalized() * _rng.randf_range(7.0, 12.0)
 		"stain_pass":
@@ -208,6 +224,34 @@ func play_local(kind: String, pos: Vector3, target_peer: int = 0) -> void:
 			Sfx.play_at(self, "thump", pos + Vector3.UP * 3.5, -2.0, 0.7, 30.0)
 			Sfx.play_at(self, "creak", pos + Vector3.UP * 3.5, 0.0, 1.2, 30.0)
 			GameState.post_message_local("...something is moving in the ceiling.", 3.0)
+		"breath":
+			# The quiet one: a breath at your ear, and nothing there when you turn.
+			if targeted:
+				Sfx.play_at(self, "whisper", pos + Vector3.UP * 1.6, -2.0, 0.55, 6.0)
+				Sfx.caption(self, "breathing, close", pos + Vector3.UP * 1.6)
+		"footsteps":
+			# Someone walking up behind you, slowing as they get close. Then stopping.
+			for k in 6:
+				get_tree().create_timer(0.1 + 0.38 * float(k) + 0.06 * float(k * k)).timeout.connect(func() -> void:
+					if is_inside_tree():
+						var me2 := Net.get_local_player()
+						var back := pos if me2 == null else me2.global_position - (me2.global_position - pos).normalized() * (6.0 - float(k) * 0.9)
+						Sfx.play_at(self, "step", back, -2.0 + float(k) * 0.6, 0.75, 20.0))
+			Sfx.caption(self, "footsteps behind you, closing", pos)
+		"stalker":
+			# Builds: lights gutter, a figure stands behind you for a breath, then the stinger when
+			# you turn. Dread first, bang second.
+			var me3 := Net.get_local_player()
+			blackout_center = pos
+			blackout_radius = 9.0
+			_blackout_until = Time.get_ticks_msec() + 1800
+			_spawn_figure(pos)
+			if me3 != null and me3.global_position.distance_to(pos) < 4.0:
+				get_tree().create_timer(1.1).timeout.connect(func() -> void:
+					if is_inside_tree():
+						Sfx.play(self, "stinger", -2.0)
+						_flash(0.35)
+						_shake(0.6, pos))
 		_:
 			# A level's own scare (the pizzeria has its curtain, its jukebox, its bell).
 			var level := get_tree().get_first_node_in_group("level")

@@ -464,7 +464,7 @@ static func make_environment(quality: int, level: int = 0) -> Environment:
 	env.background_color = Color(0.008, 0.008, 0.01)
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	env.ambient_light_color = Color(0.55, 0.42, 0.42) if pizzeria else Color(0.62, 0.55, 0.4)
-	env.ambient_light_energy = 0.2 if pizzeria else 0.16
+	env.ambient_light_energy = 0.11 if pizzeria else 0.09  # rooms are lit by their own tubes, or not at all
 	env.tonemap_mode = Environment.TONE_MAPPER_AGX
 	env.tonemap_exposure = 1.05
 	env.glow_enabled = true
@@ -514,7 +514,7 @@ static func make_camera_attributes() -> CameraAttributesPractical:
 	ca.auto_exposure_scale = 0.45
 	ca.auto_exposure_speed = 1.2
 	ca.auto_exposure_min_sensitivity = 50.0
-	ca.auto_exposure_max_sensitivity = 220.0  # dark stays dark: don't brighten the scary bits
+	ca.auto_exposure_max_sensitivity = 150.0  # dark stays dark: don't brighten the scary bits
 	return ca
 
 

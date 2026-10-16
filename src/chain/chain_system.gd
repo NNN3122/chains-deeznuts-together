@@ -4,7 +4,7 @@ extends Node3D
 ## rendered as interlocking steel links (simulated on every peer from replicated positions), and
 ## the pull that keeps chained bodies within reach (server only: it moves authoritative bodies).
 
-const MAX_SEGMENT_LENGTH: float = 5.0  # meters of chain between two partners before it bites
+const MAX_SEGMENT_LENGTH: float = 4.3  # meters of chain between two partners before it bites (floors are 5 m: a hoist is always needed)
 const ROPE_POINTS: int = 12
 const ROPE_ITERATIONS: int = 6
 const ROPE_GRAVITY: float = 9.8

@@ -149,7 +149,7 @@ func _physics_process(_delta: float) -> void:
 	if multiplayer.is_server():
 		var n := 0
 		for p in Net.get_players():
-			if p.is_bracing() and p.global_position.distance_to(_pull_point) < HOLD_RADIUS:
+			if p.wants_brace() and p.global_position.distance_to(_pull_point) < HOLD_RADIUS:
 				n += 1
 		holders = n
 		closed = n > 0 or debug_hold

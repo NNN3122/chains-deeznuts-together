@@ -38,17 +38,24 @@ Up / Down arrows       Walk forward / back
 Left / Right, Q / E    Turn
 Mouse                  Look (over TeamViewer: hold it at the side of the window to keep turning)
 Shift                  Run (loud)
-Ctrl or C              Brace and sneak: anchor the chain, move quietly
+Ctrl or C              Crouch: brace the chain, sneak quietly, fit under low things
 Space                  Jump; jump into a ledge to climb it
-F or left click        Use item
-G                      Drop item (hand it to a teammate)
+F or left click        Use the item in your hands
+1 / 2 / 3, wheel       Pick which of your three items you hold
+G                      Drop the item in your hands (hand it to a teammate)
+T                      Reload the Snubby (6 rounds in, a pocket of spares; ammo boxes refill it)
 R                      Auto-walk on/off
 V                      First / third person
 H                      Show / hide controls
 Esc                    Pause, invite code, settings, regroup, leave
 
 Too dark? Esc > Settings has a Brightness slider. Sound captions tell you what you heard
-and from which side.
+and from which side. Back rooms are meant to be dark: that's what the flashlight is for.
+Voice chat: just talk. Friends within about 20 m hear you, muffled through walls.
+The checklist under the objective (top left) ticks off what to do next.
+Don't camp: stand still too long out in the open and the thing in the ceiling comes to look.
+If the chef is banging on a shutter you're holding, HOLD IT for all three bangs. Let go early
+and he comes through at a run. Same when the power is out: run for a break room.
 
 
 HOW TO SURVIVE

@@ -185,7 +185,7 @@ func _physics_process(delta: float) -> void:
 func _server_tick(delta: float) -> void:
 	var held := false
 	for p in Net.get_players():
-		if p.is_bracing() and p.global_position.distance_to(lever_point) < LEVER_RADIUS:
+		if p.wants_brace() and p.global_position.distance_to(lever_point) < LEVER_RADIUS:
 			held = true
 			break
 	var solo := Net.get_players().size() <= 1
@@ -209,6 +209,11 @@ func _server_tick(delta: float) -> void:
 
 func is_rising() -> bool:
 	return powered and position.y < high_y - 0.01
+
+
+## Someone is on the lever (or it's latched) and the lift isn't at the top yet.
+func wants_power() -> bool:
+	return _held_for > 0.0 and position.y < high_y - 0.01
 
 
 func server_reset() -> void:

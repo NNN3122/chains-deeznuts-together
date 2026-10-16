@@ -1,24 +1,42 @@
 extends ItemBase
-## The Snubby: 8 shots. Two hits make the Custodian let go and retreat, but every shot is the
-## loudest thing in the building. Hitting a teammate just shoves them (and the chain with them).
+## The Snubby: a 6-round magazine and a pocket of spares. T reloads (or fire on empty). Two hits
+## make the Custodian let go and retreat, but every shot is the loudest thing in the building.
+## Hitting a teammate just shoves them (and the chain with them). Ammo boxes top up the pocket.
 
-const AMMO: int = 8
+const MAG: int = 6
+const RESERVE_START: int = 12
+const RESERVE_MAX: int = 30
 const RANGE: float = 60.0
 const COOLDOWN: float = 0.3
+const RELOAD_TIME: float = 1.6
 
-var ammo: int = AMMO
+var ammo: int = MAG
+var reserve: int = RESERVE_START
 var _cooldown: float = 0.0
+var _reload_t: float = 0.0
 
 
 func _tick(delta: float, _held: bool, pressed: bool) -> void:
 	_cooldown -= delta
 	is_active = false
+	if _reload_t > 0.0:
+		_reload_t -= delta
+		if _reload_t <= 0.0:
+			var take := mini(MAG - ammo, reserve)
+			ammo += take
+			reserve -= take
+			var f0 := fx()
+			if f0 != null:
+				f0.fx_sound.rpc("click", holder.global_position + Vector3.UP, -4.0, 1.4)
+		return
 	if not pressed or _cooldown > 0.0:
 		return
 	_cooldown = COOLDOWN
 	var f := fx()
 	if ammo <= 0:
-		if f != null:
+		if reserve > 0:
+			_reload()
+		elif f != null:
 			f.fx_sound.rpc("click", holder.global_position + Vector3.UP, -6.0, 1.0)
 		return
 	ammo -= 1
@@ -44,5 +62,37 @@ func _tick(delta: float, _held: bool, pressed: bool) -> void:
 		f.fx_shot.rpc(from + dir * 0.6, to)
 
 
+func _reload() -> void:
+	if _reload_t > 0.0 or ammo >= MAG or reserve <= 0:
+		return
+	_reload_t = RELOAD_TIME
+	var f := fx()
+	if f != null:
+		f.fx_sound.rpc("click", holder.global_position + Vector3.UP, -8.0, 0.7)
+
+
+func add_reserve(rounds: int) -> int:
+	var take := mini(rounds, RESERVE_MAX - reserve)
+	reserve += take
+	return take
+
+
 func charge() -> float:
-	return float(ammo) / float(AMMO)
+	if _reload_t > 0.0:
+		return 1.0 - _reload_t / RELOAD_TIME
+	return float(ammo) / float(MAG)
+
+
+func ammo_text() -> String:
+	if _reload_t > 0.0:
+		return "RELOADING"
+	return "%d / %d" % [ammo, reserve]
+
+
+func carry_state() -> Dictionary:
+	return {"ammo": ammo, "reserve": reserve}
+
+
+func restore_state(s: Dictionary) -> void:
+	ammo = int(s.get("ammo", ammo))
+	reserve = int(s.get("reserve", reserve))

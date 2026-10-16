@@ -8,8 +8,13 @@ signal escaped_changed(escaped: bool)
 signal checkpoint_changed(index: int)
 signal objective_changed(text: String)
 signal layoff_started(count: int, reason: String)
+signal tasks_changed
 
 enum ChainConfig { LINE, RING, PAIRS }
+
+## The current floor's task list under the objective: [[text, done], ...]. Server-owned,
+## pushed to everyone (and to late joiners with the rest of the state).
+var tasks: Array = []
 
 var chain_config: ChainConfig = ChainConfig.LINE
 var checkpoint_index: int = 0
@@ -46,7 +51,66 @@ func reset_run(spawn: Vector3, facing: float, first_objective: String) -> void:
 	run_seconds = 0.0
 	final_time = 0.0
 	final_jerks = 0
+	tasks = []
 	objective_changed.emit(objective)
+	tasks_changed.emit()
+
+
+## Server only. A fresh task list for the current stretch of the building.
+func set_tasks(texts: PackedStringArray) -> void:
+	if not multiplayer.is_server():
+		return
+	_rpc_tasks.rpc(texts, 0)
+
+
+## Server only. Ticks a task off (once) and tells everyone.
+func complete_task(i: int) -> void:
+	if not multiplayer.is_server() or i < 0 or i >= tasks.size() or bool(tasks[i][1]):
+		return
+	_rpc_task_done.rpc(i)
+
+
+func task_done(i: int) -> bool:
+	return i >= 0 and i < tasks.size() and bool(tasks[i][1])
+
+
+func all_tasks_done() -> bool:
+	for t in tasks:
+		if not bool(t[1]):
+			return false
+	return not tasks.is_empty()
+
+
+@rpc("authority", "call_local", "reliable")
+func _rpc_tasks(texts: PackedStringArray, done_mask: int) -> void:
+	tasks = []
+	for i in texts.size():
+		tasks.append([texts[i], (done_mask >> i) & 1 == 1])
+	tasks_changed.emit()
+
+
+@rpc("authority", "call_local", "reliable")
+func _rpc_task_done(i: int) -> void:
+	if i < 0 or i >= tasks.size():
+		return
+	tasks[i][1] = true
+	tasks_changed.emit()
+	post_message_local("DONE: %s" % String(tasks[i][0]), 3.5)
+
+
+func _task_texts() -> PackedStringArray:
+	var out := PackedStringArray()
+	for t in tasks:
+		out.append(String(t[0]))
+	return out
+
+
+func _task_mask() -> int:
+	var m := 0
+	for i in tasks.size():
+		if bool(tasks[i][1]):
+			m |= 1 << i
+	return m
 
 
 ## Server only. Records a newer checkpoint and tells everyone.
@@ -137,6 +201,7 @@ func sync_state_to_peer(peer_id: int) -> void:
 	if not multiplayer.is_server():
 		return
 	_rpc_full_state.rpc_id(peer_id, checkpoint_index, checkpoint_position, checkpoint_facing, objective, escaped, wipes, run_seconds)
+	_rpc_tasks.rpc_id(peer_id, _task_texts(), _task_mask())
 
 
 @rpc("authority", "call_remote", "reliable")
@@ -171,6 +236,10 @@ func _setup_input_map() -> void:
 	_add_keys("brace", [KEY_CTRL, KEY_C])
 	_add_keys("use_item", [KEY_F])
 	_add_keys("drop_item", [KEY_G])
+	_add_keys("reload", [KEY_T])
+	_add_keys("slot_1", [KEY_1])
+	_add_keys("slot_2", [KEY_2])
+	_add_keys("slot_3", [KEY_3])
 	_add_keys("toggle_camera", [KEY_V])
 	_add_keys("auto_run", [KEY_R])
 	_add_keys("help", [KEY_H, KEY_F1])

@@ -90,8 +90,21 @@ const FLOOR_LOOT: Array = [
 ## Procedural scares that fit a pizzeria: [kind, weight].
 const SCARE_POOL: Array = [
 	["jukebox_skip", 2], ["balloon", 2], ["vent_patter", 2], ["pepperoni_eyes", 2], ["bell", 1],
-	["static_face", 1], ["whisper", 1], ["figure", 1],
+	["static_face", 1], ["whisper", 1], ["figure", 1], ["breath", 2], ["footsteps", 1], ["stalker", 1],
 ]
+## What to do on each floor, ticked off on the HUD; completion is checked in _tick_tasks.
+const TASKS: Array = [
+	["Clip into the cameras at the HOST STAND (stand on the painted spot; F flips cameras)",
+		"Get past the EMPLOYEES ONLY shutter (someone holds Ctrl at its chain to keep him out)",
+		"Ride the DUMBWAITER up to the Kitchen, one at a time (someone hauls at the rope)"],
+	["Find the STAGE LIFT past the second shutter (the Manager's Office has cameras)",
+		"Hold Ctrl at the lever: three ride up, then hoist the lever-holder on the chain",
+		"Everyone up to the Stage"],
+	["Cross the stage to the speaker case (keep eyes on him)",
+		"Climb the case onto the PROP LOFT",
+		"Everyone on the loft: ROOF ACCESS"],
+]
+const EXIT_NAG_SECONDS: float = 6.0  # "3 of 4 on the loft" at most this often
 const POSTERS: Array[String] = [
 	"PAPPY SAYS:\nWASH YOUR HANDS", "EMPLOYEE OF THE MONTH\nPAPPY (AGAIN)", "NO RUNNING\nIN THE DINING HALL",
 	"BIRTHDAYS ARE\nFOREVER", "PLEASE DO NOT\nFEED THE BAND", "HE IS WATCHING\nYOU WATCH",
@@ -129,6 +142,10 @@ var _pass_shutter: Node3D
 var _office_door_pos: Vector3 = Vector3.ZERO
 var _first_desk_seen: bool = false
 var _gen_player_t: Dictionary = {}
+var _tasks_floor: int = -1  # which floor's task list is up
+var _exit_nag_t: float = 0.0
+var _lift_top_seen: bool = false
+var _feedback_t: Dictionary = {}  # key -> msec: "why did that not work" notices, throttled
 var _pending_exit_signs: Array = []
 var _pending_shutters: Array = []
 
@@ -278,15 +295,28 @@ func node_count(f: int) -> int:
 	return _graph[f]["nodes"].size()
 
 
-func nearest_node(f: int, p: Vector3) -> int:
-	var best := 0
+## The node that stands for a position: a node in the same room wins over a closer one through
+## a wall; exclude skips a node (the one he is already on, when it got him nowhere).
+func nearest_node(f: int, p: Vector3, exclude: int = -1) -> int:
+	var room := room_at(f, cell_of(p))
+	var best := -1
 	var best_d := INF
+	var best_room := -1
+	var best_room_d := INF
 	for i in node_count(f):
-		var d := Vector2(p.x - node_position(f, i).x, p.z - node_position(f, i).z).length()
+		if i == exclude:
+			continue
+		var np := node_position(f, i)
+		var d := Vector2(p.x - np.x, p.z - np.z).length()
 		if d < best_d:
 			best_d = d
 			best = i
-	return best
+		if room != "." and room_at(f, cell_of(np)) == room and d < best_room_d:
+			best_room_d = d
+			best_room = i
+	if best_room >= 0:
+		return best_room
+	return maxi(best, 0)
 
 
 func node_adjacent_to(f: int, a: int, b: int) -> bool:
@@ -605,6 +635,25 @@ func _build_stage(root: Node3D, batch: LevelKit.BoxBatch, rng: RandomNumberGener
 	batch.add(loft_c + Vector3(0.0, 1.02, loft_size.z * 0.5), Vector3(loft_size.x, 0.05, 0.08), "hazard", false)
 	for k in 5:
 		batch.add(Vector3(loft_c.x - loft_size.x * 0.5 + 0.3 + float(k) * 2.1, base + STAGE_H + (LOFT_H - 0.5) * 0.5, sz + 0.4), Vector3(0.12, LOFT_H - 0.5, 0.12), "steel_dark")
+	# The fly rail: an optional run of hanging planks off the loft's left end, 0.5 m wide with
+	# 1.5 m gaps, out over the band to the fly gallery and its stash. A fall is only the stage,
+	# but it yanks whoever is chained to you off the plank they're on.
+	var rail_y := loft_c.y
+	var left := loft_c.x - loft_size.x * 0.5
+	var plank_z := sz + 1.5
+	# The first plank sits clear of the speaker case (nobody should bump their head on it).
+	for k in 4:
+		var px := left - 2.3 - 1.9 * float(k)
+		batch.add(Vector3(px, rail_y - 0.04, plank_z), Vector3(0.5, 0.08, 1.0), "stage_wood")
+		batch.add(Vector3(px, rail_y + 0.001, plank_z), Vector3(0.5, 0.005, 1.0), "hazard", false)
+		for rz: float in [plank_z - 0.4, plank_z + 0.4]:
+			batch.add(Vector3(px, rail_y + (CEIL_HS[2] - STAGE_H - LOFT_H) * 0.5, rz), Vector3(0.03, CEIL_HS[2] - STAGE_H - LOFT_H, 0.03), "rope", false)
+	var gallery := Vector3(left - 2.3 - 1.9 * 4.0 - 0.9, rail_y, plank_z)
+	batch.add(gallery - Vector3(0.0, 0.1, 0.0), Vector3(1.8, 0.2, 1.4), "metal")
+	batch.add(gallery + Vector3(0.0, 0.5, -0.68), Vector3(1.8, 1.0, 0.04), "steel_dark", true)  # back rail
+	_sign(root, "FLY GALLERY\nMIND THE GAP", gallery + Vector3(0.0, 1.5, -0.6), 0.0, Color(0.9, 0.9, 0.9))
+	test_points["p_rail_start"] = Vector3(left - 0.3, rail_y + 0.1, plank_z)
+	test_points["p_gallery"] = gallery + Vector3(0.0, 0.1, 0.0)
 	# A speaker case to climb at the loft's left end: 1 m up, then the loft.
 	var case_x := loft_c.x - loft_size.x * 0.5 - 0.85
 	batch.add(Vector3(case_x, base + STAGE_H + 0.5, sz + 1.5), Vector3(1.4, 1.0, 1.4), "speaker")
@@ -1163,11 +1212,18 @@ func _build_room_lights(root: Node3D, batch: LevelKit.BoxBatch, f: int, rng: Ran
 				color = Color(0.9, 0.95, 0.85)  # kitchen fluorescents
 				energy = 0.95
 				kind = 1 if rng.randf() < 0.3 else 0
+			# Back-of-house is where the flashlight earns its slot: dying tubes, some dead.
+			if r == "L" or r == "N" or r == "S" or r == "Y":
+				var rr := rng.randf()
+				kind = 3 if rr < 0.3 else (2 if rr < 0.75 else 1)
+				energy = 0.7
 			if r == "R" or r == "B" or r == "E":
 				color = Color(0.95, 0.96, 0.88)
 				energy = 1.3
 			if r == "W" or r == "X":
 				kind = 2 if rng.randf() < 0.5 else 1
+			if r == "D" or r == "V" or r == "A":
+				energy = 0.65  # house lights off: the dining floor is lit by neon and screens
 			var at := c + Vector3(0.0, ceil_h - drop, 0.0)
 			if (f == 0 and r == "R") or (f == 2 and r == "Q") or (f == 1 and r == "T"):
 				at += Vector3(-2.0, 0.0, -2.0)  # off the shaft
@@ -1299,6 +1355,12 @@ func server_populate() -> void:
 		var loot: Array = FLOOR_LOOT[f]
 		for k in loot.size():
 			Net.spawn_pickup(loot[k], spots[k % spots.size()], 0)
+	# The fly gallery stash: worth the planks.
+	if test_points.has("p_gallery"):
+		var g: Vector3 = test_points["p_gallery"]
+		Net.spawn_pickup("ammo", g + Vector3(-0.5, 0.0, 0.0), 0)
+		Net.spawn_pickup("airhorn", g + Vector3(0.5, 0.0, 0.0), 0)
+	Net.spawn_pickup("ammo", cell_center(1, 3, 3) + Vector3(2.0, 0.1, 0.0), 0)
 
 
 func get_power() -> float:
@@ -1368,7 +1430,69 @@ func _physics_process(delta: float) -> void:
 		var who := desks[0].occupant()
 		if who != null:
 			ScareDirector.trigger("counter_bell", _bell_pos, who.peer_id)
+	_tick_tasks(players)
+	_tick_feedback(players)
 	_tick_exit(delta)
+
+
+## The HUD checklist for the floor the Line is on, and ticking it off as things get done.
+func _tick_tasks(players: Array[Player]) -> void:
+	var f := line_floor_for_checkpoint()
+	if GameState.checkpoint_index < checkpoint_base:
+		return
+	if f != _tasks_floor:
+		_tasks_floor = f
+		GameState.set_tasks(PackedStringArray(TASKS[f]))
+	if Engine.get_physics_frames() % 10 != 0:
+		return
+	match f:
+		0:
+			if not desks.is_empty() and desks[0].is_live():
+				GameState.complete_task(0)
+			for p in players:
+				if floor_of(p.global_position.y) == 0 and room_at(0, cell_of(p.global_position)) == "U":
+					GameState.complete_task(1)
+			if GameState.checkpoint_index >= checkpoint_base + 1:
+				GameState.complete_task(2)
+		1:
+			for p in players:
+				if floor_of(p.global_position.y) == 1 and room_at(1, cell_of(p.global_position)) == "T":
+					GameState.complete_task(0)
+			if stage_lift != null and stage_lift.position.y >= stage_lift.high_y - 0.05:
+				_lift_top_seen = true
+			if _lift_top_seen:
+				GameState.complete_task(1)
+			if GameState.checkpoint_index >= checkpoint_base + 2:
+				GameState.complete_task(2)
+		2:
+			var cases: Vector3 = test_points.get("p_cases", Vector3.INF)
+			var loft: Vector3 = test_points.get("p_loft", Vector3.INF)
+			for p in players:
+				if cases != Vector3.INF and p.global_position.distance_to(cases) < 4.0:
+					GameState.complete_task(0)
+				if loft != Vector3.INF and p.global_position.y > loft.y - 0.3 and absf(p.global_position.x - loft.x) < 5.0 and absf(p.global_position.z - loft.z) < 2.5:
+					GameState.complete_task(1)
+			if GameState.escaped:
+				GameState.complete_task(2)
+
+
+## Why something didn't work, said once: a stalled lift, a locked lift, a full dumbwaiter.
+func _tick_feedback(_players: Array[Player]) -> void:
+	if stage_lift != null:
+		if stage_lift.overloaded:
+			_say("lift_over", "The lift is overloaded: 3 riders, no more. One off, then it moves.", 3.5)
+		elif stage_lift.wants_power() and power <= 0.0:
+			_say("lift_power", "No power: the lift is locked. Restart the generator in a Break Room.", 3.5)
+	if dumbwaiter != null and dumbwaiter.overloaded:
+		_say("dumb_over", "The dumbwaiter takes ONE rider. Everyone else off, then haul.", 3.5)
+
+
+func _say(key: String, text: String, seconds: float) -> void:
+	var now := Time.get_ticks_msec()
+	if now - int(_feedback_t.get(key, -100000)) < 8000:
+		return
+	_feedback_t[key] = now
+	GameState.post_message(text, seconds)
 
 
 func _tick_generator(delta: float, players: Array[Player]) -> void:
@@ -1392,23 +1516,39 @@ func _tick_generator(delta: float, players: Array[Player]) -> void:
 	generator_t = clampf(best, 0.0, 1.0)
 
 
+## Every player on the loft ends the shift. The Ballast counts for nothing here: it can't climb
+## a case, so solo it is hauled up through the hatch after you.
 func _tick_exit(delta: float) -> void:
 	if _exit_area == null:
 		return
 	if _exit_t < 0.0:
-		var bodies := Net.get_chain_bodies()
-		if bodies.is_empty():
+		var players := Net.get_players()
+		if players.is_empty():
 			return
 		var inside := _exit_area.get_overlapping_bodies()
-		for b in bodies:
-			if not inside.has(b):
-				return
+		var up := 0
+		for p in players:
+			if inside.has(p):
+				up += 1
+		if up < players.size():
+			if up > 0:
+				_exit_nag_t -= delta
+				if _exit_nag_t <= 0.0:
+					_exit_nag_t = EXIT_NAG_SECONDS
+					GameState.post_message("%d of %d on the prop loft. Everyone up here to open the hatch." % [up, players.size()], 3.0)
+			else:
+				_exit_nag_t = 0.0
+			return
 		_exit_t = 0.0
 		_rpc_exit_fx.rpc()
+		if Net.ballast != null and Net.ballast.active:
+			var loft: Vector3 = test_points["p_loft"]
+			Net.ballast.teleport_to(loft + Vector3(0.0, 0.3, 0.0), 0.0)
 		GameState.post_message("Everyone's on the loft. The hatch is opening. Don't look back.", 3.0)
 		return
 	_exit_t += delta
 	if _exit_t >= EXIT_DELAY:
+		GameState.complete_task(2)
 		GameState.set_escaped()
 
 

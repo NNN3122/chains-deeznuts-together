@@ -108,17 +108,29 @@ func _ready() -> void:
 	box.add_child(_feed_alert)
 
 
-## The Static Face scare: a second of snow, then him, 30 cm from the lens.
+## The Static Face scare: a second of snow, then him, 30 cm from the lens. The snow is a
+## one-shot (Sfx.one_shot) so it always ends; the shader decays back on its own.
 func static_face() -> void:
+	if not _feed_box.visible:
+		return  # a camera scare for someone who isn't on a camera: nothing to snow
 	_static = 1.0
 	_face_until = Time.get_ticks_msec() + 1600
-	if _feed_box.visible:
-		Sfx.play(self, "static", 0.0, 1.0)
+	Sfx.play(self, "static", 0.0, 1.0)
+
+
+## Drops any scare state at once (feed hidden, respawn, new run). Safe to call repeatedly.
+func clear_scare() -> void:
+	_static = 0.08
+	_face_until = 0
+	if _mat != null:
+		_mat.set_shader_parameter("static_amount", _static)
+		_mat.set_shader_parameter("face", 0.0)
 
 
 ## Called by the HUD every frame while the local player is in the pizzeria.
 func refresh(delta: float, me: Player, pizzeria: Pizzeria) -> void:
 	_t += delta
+	_static = lerpf(_static, 0.08, 0.05)  # the snow always decays, feed shown or not
 	var power := int(ceilf(pizzeria.power))
 	_clock.text = "%s   POWER %d%%" % [pizzeria.clock_text(), power]
 	_clock.add_theme_color_override("font_color", UiTheme.DANGER if power <= 15 else UiTheme.PAPER)
@@ -153,9 +165,14 @@ func _refresh_status(me: Player, pizzeria: Pizzeria) -> void:
 			PappyPepperoni.PState.BANGING:
 				text = "HE'S AT THE SHUTTER. HOLD IT (CTRL)."
 				color = UiTheme.DANGER
+			PappyPepperoni.PState.RUSH:
+				text = "HE'S RUNNING. Eyes don't stop him now. RUN: a Break Room or the freezer."
+				color = UiTheme.DANGER
 			PappyPepperoni.PState.LUNGE, PappyPepperoni.PState.GRAB:
 				var who := Net.find_player(pappy.hunt_peer)
 				text = "HE HAS %s. Air horn, popper, or light in his face." % (who.display_name.to_upper() if who != null else "SOMEONE")
+				if pappy.burn_fraction > 0.0:
+					text += "  LIGHT: %d%%" % int(pappy.burn_fraction * 100.0)
 				color = UiTheme.DANGER
 			_:
 				if pappy.floor_index != my_floor:
@@ -183,6 +200,8 @@ func _refresh_feed(me: Player, pizzeria: Pizzeria) -> void:
 			desk = d
 			break
 	var show := desk != null and not pizzeria.blackout()
+	if _feed_box.visible and not show:
+		clear_scare()  # walking off the desk mid-scare must not leave snow for the next look
 	_feed_box.visible = show
 	_sub.render_target_update_mode = SubViewport.UPDATE_ALWAYS if show else SubViewport.UPDATE_DISABLED
 	if not show:
@@ -198,6 +217,5 @@ func _refresh_feed(me: Player, pizzeria: Pizzeria) -> void:
 	_feed_alert.text = "PAPPY ON CAMERA: HE CAN'T MOVE" if on_cam else ""
 	_feed_alert.visible = on_cam and fmod(_t, 0.8) < 0.55
 	var face := 1.0 if Time.get_ticks_msec() < _face_until and Time.get_ticks_msec() > _face_until - 700 else 0.0
-	_static = lerpf(_static, 0.08, 0.05)
 	_mat.set_shader_parameter("static_amount", _static + (0.3 if face > 0.0 else 0.0))
 	_mat.set_shader_parameter("face", face)

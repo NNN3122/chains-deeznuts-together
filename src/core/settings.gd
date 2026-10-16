@@ -19,6 +19,9 @@ static var captions: bool = true  # on-screen captions for important sounds, wit
 static var player_name: String = ""
 static var open_router_port: bool = true  # UPnP while hosting, so friends join with an invite code
 static var last_join: String = ""  # the last invite code or address typed into JOIN
+static var remote_key_gap_ms: int = 650  # learned: the remote side's key-repeat delay (Remote Controls grace)
+static var voice_enabled: bool = true  # proximity voice chat: capture and send the microphone
+static var voice_volume: float = 1.0
 static var remote_autodetected: bool = false
 static var loaded: bool = false
 
@@ -45,6 +48,9 @@ static func load_settings() -> void:
 	player_name = String(cfg.get_value("player", "name", player_name))
 	open_router_port = bool(cfg.get_value("network", "open_router_port", open_router_port))
 	last_join = String(cfg.get_value("network", "last_join", last_join))
+	remote_key_gap_ms = int(cfg.get_value("input", "remote_key_gap_ms", remote_key_gap_ms))
+	voice_enabled = bool(cfg.get_value("audio", "voice_enabled", voice_enabled))
+	voice_volume = float(cfg.get_value("audio", "voice_volume", voice_volume))
 
 
 static func save_settings() -> void:
@@ -62,6 +68,9 @@ static func save_settings() -> void:
 	cfg.set_value("player", "name", player_name)
 	cfg.set_value("network", "open_router_port", open_router_port)
 	cfg.set_value("network", "last_join", last_join)
+	cfg.set_value("input", "remote_key_gap_ms", remote_key_gap_ms)
+	cfg.set_value("audio", "voice_enabled", voice_enabled)
+	cfg.set_value("audio", "voice_volume", voice_volume)
 	cfg.save(PATH)
 
 

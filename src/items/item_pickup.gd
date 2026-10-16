@@ -5,12 +5,16 @@ extends Area3D
 
 const REPICK_DELAY_MS: int = 1500  # the player who dropped it can't instantly re-grab it
 
+const FULL_MESSAGE_GAP_MS: int = 2500  # "hands full" at most this often per player
+
 var item_id: String = ""
 var data: ItemData
 var ignore_peer: int = 0
 var ignore_until_msec: int = 0
+var carry_state: Dictionary = {}  # ammo counts etc. from whoever dropped it
 var _visual: Node3D
 var _t: float = 0.0
+var _full_told: Dictionary = {}  # peer -> msec of the last "hands full" notice
 
 
 func _ready() -> void:
@@ -68,18 +72,32 @@ func _on_body_entered(body: Node3D) -> void:
 	if not multiplayer.is_server() or is_queued_for_deletion() or data == null:
 		return
 	var player := body as Player
-	if player == null or player.held_item != null or player.is_grabbed():
+	if player == null or player.is_grabbed():
 		return
 	if player.peer_id == ignore_peer and Time.get_ticks_msec() < ignore_until_msec:
 		return
 	var logic := data.create_logic()
 	if logic == null:
 		return
+	if not carry_state.is_empty():
+		logic.restore_state(carry_state)
 	if player.server_give_item(logic):
 		var fx := Effects.find(self)
 		if fx != null:
 			fx.fx_sound.rpc("pickup", global_position, -4.0, 1.0)
-		GameState.post_message("%s grabbed the %s. %s" % [player.display_name, data.display_name, data.hud_hint], 3.0)
+		if logic.is_queued_for_deletion():
+			GameState.post_message("%s pocketed the %s." % [player.display_name, data.display_name], 2.5)
+		else:
+			GameState.post_message("%s grabbed the %s. %s" % [player.display_name, data.display_name, data.hud_hint], 3.0)
 		queue_free()
 	else:
 		logic.free()
+		var now := Time.get_ticks_msec()
+		if now - int(_full_told.get(player.peer_id, -100000)) > FULL_MESSAGE_GAP_MS:
+			_full_told[player.peer_id] = now
+			_rpc_hands_full.rpc_id(player.peer_id, data.display_name)
+
+
+@rpc("authority", "call_local", "reliable")
+func _rpc_hands_full(what: String) -> void:
+	GameState.post_message_local("Hands full: you carry 3 things. G drops the selected one to take the %s." % what, 3.0)

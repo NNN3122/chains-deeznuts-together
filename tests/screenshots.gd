@@ -42,6 +42,12 @@ func _ready() -> void:
 	if hall != Vector2i(-1, -1):
 		await _shot("04_hall", _level.cell_center(0, hall) + Vector3(0.0, 0.1, 2.4), 0.0, 0.0, true)
 	await _shot("05_crate_climb", _level.test_points["crates_start"] + Vector3(-0.4, 0.0, -0.8), -0.6, 0.25, false)
+	# The cable tray: the optional ledge, seen from its start with the stash at the far end.
+	_give("pistol")
+	_host.server_give_item(ItemRegistry.get_data("flashlight").create_logic())
+	_host.select_slot(0)
+	await _shot("05b_cable_tray_and_slots", _level.test_points["crates_start"] + Vector3(1.5, 0.0, 2.6), 0.0, 0.3, false)
+	_host.server_drop_all()
 	var dark := _find_cell(0, "dark")
 	if dark != Vector2i(-1, -1):
 		_give("flashlight")
@@ -155,7 +161,28 @@ func _tour_pizzeria() -> void:
 	await _shot("38_coat_check", tp["p_checkpoint6"], PI * 0.5, 0.0, false)
 	await _shot("39_dressing_room_suit", tp["p_rack"] + Vector3(1.5, 0.0, 0.0), PI * 0.5, 0.0, true)
 	var loft: Vector3 = tp["p_loft"]
+	await _shot("41_fly_rail", tp["p_rail_start"] + Vector3(0.0, 0.0, 2.2), PI * 0.5 + 0.5, 0.0, false)
+	# Pappy rushing across the dining hall toward you: the one time he is seen walking.
+	pz.pappy.debug_reset(0, 1)
+	_place_all(dining + Vector3(0.0, 0.1, 9.0), 0.0)
+	pz.pappy.debug_frozen = false
+	pz.pappy.call("_start_rush", 6.0)
+	_host._yaw = 0.0
+	_host._pitch = -0.05
+	_host.camera_mode = Player.CameraMode.FIRST_PERSON
+	_host._apply_camera_mode()
+	await _wait(1.3)  # mid-charge, still a few meters off
+	await _capture_to(out_dir.path_join("42_pappy_rush.png"))
+	pz.pappy.debug_frozen = true
+	pz.pappy.debug_reset(0, 0)
+	# Last: the loft, because everyone standing on it ends the shift.
 	await _shot("40_prop_loft_exit", loft + Vector3(-2.0, 0.0, 0.0), -PI * 0.5, 0.3, false)
+
+
+func _place_all(pos: Vector3, yaw: float) -> void:
+	var bodies := Net.get_chain_bodies()
+	for i in bodies.size():
+		bodies[i].teleport_to(pos + Vector3(1.1 * float(i), 0.0, -0.6 * float(i)), yaw)
 
 
 func _find_cell(i: int, kind: String) -> Vector2i:
@@ -190,8 +217,7 @@ func _capture_to(path: String) -> void:
 
 
 func _give(id: String) -> void:
-	if _host.held_item != null:
-		_host.server_drop_item(false)
+	_host.server_drop_all()
 	_host.server_give_item(ItemRegistry.get_data(id).create_logic())
 
 

@@ -2,13 +2,14 @@ class_name Player
 extends ChainBody
 ## One chained new hire. Simulated ONLY on the server; clients send input by RPC and interpolate
 ## toward replicated state. Cameras, input and the heartbeat exist only on the local peer.
+## Carries up to SLOTS items (1/2/3 or the wheel selects; only the selected one answers F).
 
 # --- Tunables (meters, seconds, m/s) ---------------------------------------------
 const WALK_SPEED: float = 4.2
 const RUN_SPEED: float = 7.0
 const SNEAK_SPEED: float = 2.0  # holding Ctrl: brace against the chain AND creep quietly
 const GROUND_ACCEL: float = 11.0  # m/s^2 speeding up: a body has weight
-const GROUND_DECEL: float = 15.0  # m/s^2 stopping
+const GROUND_DECEL: float = 26.0  # m/s^2 stopping: let go of the key and you stop within a step
 const AIR_ACCEL: float = 8.0
 const TURN_SPEED: float = 9.0  # rad/s the body can swing round to face where it's going
 const JUMP_VELOCITY: float = 7.5  # with gravity 18 -> ~1.55 m jump
@@ -22,6 +23,10 @@ const MANTLE_COOLDOWN: float = 0.3
 const MOUSE_SENSITIVITY: float = 0.0022
 const PITCH_LIMIT: float = 1.45
 const TP_ARM_LENGTH: float = 2.7
+const STAND_HEIGHT: float = 1.8  # capsule, meters
+const CROUCH_HEIGHT: float = 1.25
+const EYE_HEIGHT: float = 1.55
+const CROUCH_EYE_HEIGHT: float = 1.05
 const NOISE_DECAY: float = 30.0  # per second
 const NOISE_RUN: float = 55.0
 const NOISE_WALK: float = 15.0
@@ -31,17 +36,23 @@ const NOISE_JUMP: float = 18.0
 const NOISE_LAND: float = 30.0
 const DRINK_BOOST_TIME: float = 8.0
 const DRINK_CRASH_TIME: float = 5.0
+const SLOTS: int = 3
 
 enum State { NORMAL, MANTLE, GRABBED }
 enum CameraMode { FIRST_PERSON, THIRD_PERSON }
 
-# Input bits, client -> server. Bits 8..15 and 16..23 are press counters (jump, drop) so a lost
-# or repeated unreliable packet can never eat or duplicate a press.
+# Input bits, client -> server. Every press is a counter so a lost or repeated unreliable packet
+# can never eat or duplicate it: jump (8..15), drop (16..23), use taps (24..31), slot changes
+# (32..39) with the slot asked for (40..42), reload (43..50).
 const FLAG_RUN: int = 2
 const FLAG_BRACE: int = 4
 const FLAG_USE: int = 8
 const JUMP_SEQ_SHIFT: int = 8
 const DROP_SEQ_SHIFT: int = 16
+const USE_SEQ_SHIFT: int = 24
+const SLOT_SEQ_SHIFT: int = 32
+const SLOT_REQ_SHIFT: int = 40
+const RELOAD_SEQ_SHIFT: int = 43
 
 # Replicated state bits, server -> clients.
 const SFLAG_GROUNDED: int = 1
@@ -50,6 +61,7 @@ const SFLAG_MANTLING: int = 4
 const SFLAG_USING_ITEM: int = 8
 const SFLAG_GRABBED: int = 16
 const SFLAG_RUNNING: int = 32
+const SFLAG_TALKING: int = 64
 
 # --- Identity (set by Net.spawn_player_node on every peer) -------------------------
 var peer_id: int = 0
@@ -59,8 +71,11 @@ var display_name: String = "Player"
 var synced_yaw: float = 0.0
 var synced_pitch: float = 0.0
 var synced_flags: int = 0
-var held_item_id: String = ""
+var held_item_id: String = ""  # the selected slot's item
+var slot_ids: PackedStringArray = ["", "", ""]
+var selected_slot: int = 0
 var item_charge: float = 0.0
+var ammo_text: String = ""  # "8 / 24" for guns, "" otherwise
 var noise: float = 0.0
 var buff_state: int = 0  # 0 normal, 1 energy drink boost, 2 crash
 
@@ -73,12 +88,17 @@ var bot_controlled: bool = false  # smoke tests feed _apply_input directly
 var _jump_buffer: float = 0.0
 var _last_jump_seq: int = 0
 var _last_drop_seq: int = 0
+var _last_use_seq: int = 0
+var _last_slot_seq: int = 0
+var _last_reload_seq: int = 0
+var _use_taps: int = 0  # taps not yet handed to the item
+var _reload_taps: int = 0
 
 # --- Server-side simulation --------------------------------------------------------
 var state: State = State.NORMAL
 var body_yaw: float = 0.0
 var ignore_gravity_this_tick: bool = false
-var held_item: ItemBase = null
+var slots: Array[ItemBase] = [null, null, null]
 var grabbed_by: Node = null
 var _mantle_t: float = 0.0
 var _mantle_start: Vector3 = Vector3.ZERO
@@ -87,6 +107,7 @@ var _mantle_cooldown: float = 0.0
 var _buff_time: float = 0.0
 var _was_on_floor: bool = true
 var _fall_speed: float = 0.0
+var _crouched: bool = false  # server: the capsule is short (wants to brace, or no headroom to stand)
 
 # --- Local-only ----------------------------------------------------------------------
 var camera_mode: CameraMode = CameraMode.THIRD_PERSON
@@ -105,6 +126,7 @@ var _land_off: float = 0.0
 var _land_v: float = 0.0
 var _roll: float = 0.0
 var _fov_kick: float = 0.0
+var _eye_h: float = EYE_HEIGHT
 
 # --- Visuals (every peer) --------------------------------------------------------------
 var model: PlayerModel
@@ -112,6 +134,7 @@ var _name_label: Label3D
 var _flashlight: SpotLight3D
 var _jet_fx: GPUParticles3D
 var _jet_sound: AudioStreamPlayer3D
+var _shape: CollisionShape3D
 var _last_visual_pos: Vector3
 var _visual_speed: float = 0.0
 var _visual_vel: Vector3 = Vector3.ZERO
@@ -122,6 +145,11 @@ var _phys_curr: Vector3 = Vector3.ZERO
 var is_local: bool:
 	get:
 		return peer_id == multiplayer.get_unique_id()
+
+## The selected slot's item logic (server), for everything that asks "what are they holding".
+var held_item: ItemBase:
+	get:
+		return slots[selected_slot] if selected_slot >= 0 and selected_slot < slots.size() else null
 
 
 # --- Setup -------------------------------------------------------------------------
@@ -134,7 +162,7 @@ func _enter_tree() -> void:
 	var cfg := SceneReplicationConfig.new()
 	for prop in ["synced_position", "synced_yaw", "synced_pitch", "synced_flags", "item_charge", "noise"]:
 		_cfg_add(cfg, prop, SceneReplicationConfig.REPLICATION_MODE_ALWAYS)
-	for prop in ["held_item_id", "display_name", "buff_state"]:
+	for prop in ["held_item_id", "slot_ids", "selected_slot", "ammo_text", "display_name", "buff_state"]:
 		_cfg_add(cfg, prop, SceneReplicationConfig.REPLICATION_MODE_ON_CHANGE)
 	sync.replication_config = cfg
 	add_child(sync)
@@ -151,6 +179,9 @@ func _ready() -> void:
 	add_to_group("players")
 	add_to_group("noise_source")
 	_setup_body_layers()
+	for c in get_children():
+		if c is CollisionShape3D:
+			_shape = c
 	model = PlayerModel.new()
 	model.name = "Model"
 	add_child(model)
@@ -238,7 +269,7 @@ func _setup_cameras() -> void:
 	_rig.name = "CameraRig"
 	_rig.top_level = true  # follows the body through a spring, not rigidly
 	add_child(_rig)
-	_rig_pos = global_position + Vector3(0.0, 1.55, 0.0)
+	_rig_pos = global_position + Vector3(0.0, EYE_HEIGHT, 0.0)
 	_rig.global_position = _rig_pos
 	_pitch_pivot = Node3D.new()
 	_rig.add_child(_pitch_pivot)
@@ -302,9 +333,12 @@ func _update_local_camera(delta: float) -> void:
 		_pitch = lerpf(_pitch, 1.15, clampf(delta * 3.0, 0.0, 1.0))  # it makes you look up
 		add_shake(delta * 0.8)
 	var fp := camera_mode == CameraMode.FIRST_PERSON
+	# The eye drops with a crouch, smoothly, so the view never pops.
+	var crouching := (synced_flags & SFLAG_BRACING) != 0
+	_eye_h = lerpf(_eye_h, CROUCH_EYE_HEIGHT if crouching else EYE_HEIGHT, 1.0 - exp(-10.0 * delta))
 	# Follow the (render-interpolated) body through a spring: tight sideways, softer vertically so
 	# steps, mantles and landings don't jolt the view.
-	var target := _visual_position() + Vector3(0.0, 1.55, 0.0)
+	var target := _visual_position() + Vector3(0.0, _eye_h, 0.0)
 	if _rig_pos.distance_to(target) > 3.0:
 		_rig_pos = target  # teleport / respawn
 	var kh := 1.0 - exp(-(34.0 if fp else 14.0) * delta)
@@ -387,6 +421,7 @@ func _update_visuals(delta: float) -> void:
 	var p := _pitch if is_local else synced_pitch
 	var yw := _yaw if is_local else synced_yaw
 	model.set_held_item(held_item_id)
+	model.set_talking((synced_flags & SFLAG_TALKING) != 0)
 	var aiming := held_item_id == "pistol" or (held_item_id == "flashlight" and using)
 	if aiming:
 		yaw = yw  # turn to face where you point it
@@ -396,13 +431,32 @@ func _update_visuals(delta: float) -> void:
 	_flashlight.visible = on
 	if on:
 		var b := Basis.from_euler(Vector3(p, yw, 0.0))
-		_flashlight.global_transform = Transform3D(b, vis + Vector3(0.0, 1.45, 0.0) + b * Vector3(0.22, -0.1, -0.3))
+		_flashlight.global_transform = Transform3D(b, vis + Vector3(0.0, (1.0 if bracing else 1.45), 0.0) + b * Vector3(0.22, -0.1, -0.3))
 	var jet_on := held_item_id == "jetpack" and using
 	_jet_fx.emitting = jet_on
 	if jet_on:
 		Sfx.start_loop(_jet_sound)
 	elif _jet_sound.playing:
 		_jet_sound.stop()
+	# The capsule follows the replicated crouch on every peer, so collisions match what you see.
+	_apply_capsule(bracing)
+
+
+func _apply_capsule(crouched: bool) -> void:
+	if _shape == null:
+		return
+	var cap := _shape.shape as CapsuleShape3D
+	if cap == null:
+		return
+	var want := CROUCH_HEIGHT if crouched else STAND_HEIGHT
+	if absf(cap.height - want) < 0.001:
+		return
+	# Every player shares the scene's capsule resource: give this body its own before resizing.
+	if cap.resource_local_to_scene == false and _shape.shape.get_reference_count() > 1:
+		cap = cap.duplicate() as CapsuleShape3D
+		_shape.shape = cap
+	cap.height = want
+	_shape.position.y = want * 0.5  # feet stay on the floor
 
 
 func _on_footstep(strength: float) -> void:
@@ -430,6 +484,10 @@ func _send_input() -> void:
 		flags |= FLAG_USE
 	flags |= (input.jump_count() & 0xFF) << JUMP_SEQ_SHIFT
 	flags |= (input.drop_count() & 0xFF) << DROP_SEQ_SHIFT
+	flags |= (input.use_count() & 0xFF) << USE_SEQ_SHIFT
+	flags |= (input.slot_count() & 0xFF) << SLOT_SEQ_SHIFT
+	flags |= (input.slot_request() & 0x7) << SLOT_REQ_SHIFT
+	flags |= (input.reload_count() & 0xFF) << RELOAD_SEQ_SHIFT
 	if multiplayer.is_server():
 		_apply_input(move, _yaw, _pitch, flags)
 	else:
@@ -457,6 +515,25 @@ func _apply_input(move: Vector2, yaw: float, pitch: float, flags: int) -> void:
 		_last_drop_seq = drop
 		if state == State.NORMAL:
 			server_drop_item(true)
+	var use := (flags >> USE_SEQ_SHIFT) & 0xFF
+	if use != _last_use_seq:
+		_use_taps += (use - _last_use_seq) & 0xFF
+		_last_use_seq = use
+	var slot := (flags >> SLOT_SEQ_SHIFT) & 0xFF
+	if slot != _last_slot_seq:
+		_last_slot_seq = slot
+		var req := (flags >> SLOT_REQ_SHIFT) & 0x7
+		match req:
+			1, 2, 3:
+				select_slot(req - 1)
+			4:
+				select_slot((selected_slot + 1) % SLOTS)
+			5:
+				select_slot((selected_slot + SLOTS - 1) % SLOTS)
+	var reload := (flags >> RELOAD_SEQ_SHIFT) & 0xFF
+	if reload != _last_reload_seq:
+		_reload_taps += (reload - _last_reload_seq) & 0xFF
+		_last_reload_seq = reload
 
 
 # --- Simulation ------------------------------------------------------------------------
@@ -481,8 +558,7 @@ func _server_tick(delta: float) -> void:
 	_mantle_cooldown = maxf(0.0, _mantle_cooldown - delta)
 	_jump_buffer = maxf(0.0, _jump_buffer - delta)
 	_tick_buff(delta)
-	if held_item != null:
-		held_item.server_tick(delta, (input_flags & FLAG_USE) != 0 and state != State.GRABBED)
+	_tick_items(delta)
 	match state:
 		State.MANTLE:
 			_tick_mantle(delta)
@@ -504,11 +580,35 @@ func _server_tick(delta: float) -> void:
 		f |= SFLAG_MANTLING
 	if state == State.GRABBED:
 		f |= SFLAG_GRABBED
-	if held_item != null and held_item.is_active:
+	var item := held_item
+	if item != null and item.is_active:
 		f |= SFLAG_USING_ITEM
 	if (input_flags & FLAG_RUN) != 0:
 		f |= SFLAG_RUNNING
+	if Voice.is_peer_talking(peer_id):
+		f |= SFLAG_TALKING
 	synced_flags = f
+
+
+## The selected item gets the use input (held, plus any taps that arrived); the others idle
+## so their cooldowns and fuel still tick.
+func _tick_items(delta: float) -> void:
+	var use_held := (input_flags & FLAG_USE) != 0 and state != State.GRABBED
+	var taps := _use_taps if state != State.GRABBED else 0
+	_use_taps = 0
+	var reloads := _reload_taps
+	_reload_taps = 0
+	for i in slots.size():
+		var item := slots[i]
+		if item == null:
+			continue
+		if i == selected_slot:
+			item.server_tick(delta, use_held, taps > 0, reloads > 0)
+		else:
+			item.server_tick(delta, false, false, false)
+	var sel := held_item
+	item_charge = sel.charge() if sel != null else 0.0
+	ammo_text = sel.ammo_text() if sel != null else ""
 
 
 func _speed_multiplier() -> float:
@@ -534,7 +634,8 @@ func _tick_buff(delta: float) -> void:
 
 func _tick_normal(delta: float) -> void:
 	var on_floor := is_on_floor()
-	var bracing := (input_flags & FLAG_BRACE) != 0 and on_floor
+	_tick_crouch(on_floor)
+	var bracing := _crouched and on_floor
 	var target_speed := WALK_SPEED
 	if bracing:
 		target_speed = SNEAK_SPEED
@@ -558,7 +659,7 @@ func _tick_normal(delta: float) -> void:
 	if wants_mantle and _mantle_cooldown <= 0.0 and _try_mantle(wish, on_floor):
 		_jump_buffer = 0.0
 		return
-	if _jump_buffer > 0.0 and on_floor:
+	if _jump_buffer > 0.0 and on_floor and not _crouched:
 		velocity.y = JUMP_VELOCITY * (1.15 if buff_state == 1 else 1.0)
 		_jump_buffer = 0.0
 		add_noise(NOISE_JUMP)
@@ -574,6 +675,23 @@ func _tick_normal(delta: float) -> void:
 	if is_on_floor():
 		_fall_speed = 0.0
 	_was_on_floor = is_on_floor()
+
+
+## Crouch down whenever you brace; stand back up only when there's headroom.
+func _tick_crouch(on_floor: bool) -> void:
+	var want := (input_flags & FLAG_BRACE) != 0 and on_floor
+	if want:
+		_crouched = true
+	elif _crouched and _headroom():
+		_crouched = false
+
+
+func _headroom() -> bool:
+	var space := get_world_3d().direct_space_state
+	var from := global_position + Vector3(0.0, CROUCH_HEIGHT - 0.1, 0.0)
+	var q := PhysicsRayQueryParameters3D.create(from, global_position + Vector3(0.0, STAND_HEIGHT + 0.05, 0.0), ChainBody.LAYER_WORLD)
+	q.exclude = [get_rid()]
+	return space.intersect_ray(q).is_empty()
 
 
 func _tick_noise(delta: float, dragged: float) -> void:
@@ -671,7 +789,13 @@ func chain_weight() -> float:
 
 
 func is_bracing() -> bool:
-	return (input_flags & FLAG_BRACE) != 0 and is_on_floor() and state == State.NORMAL
+	return _crouched and is_on_floor() and state == State.NORMAL
+
+
+## Holding Ctrl with intent (levers, ropes, shutter chains): counts even on the tick the body is
+## being pushed clear of the fixture it's leaning on, when is_on_floor() flickers.
+func wants_brace() -> bool:
+	return (input_flags & FLAG_BRACE) != 0 and state == State.NORMAL
 
 
 func resist_value() -> float:
@@ -684,6 +808,8 @@ func teleport_to(pos: Vector3, yaw: float) -> void:
 	super.teleport_to(pos, yaw)
 	body_yaw = yaw
 	synced_yaw = yaw
+	input_yaw = yaw  # the aim follows the body: a respawned player faces the room, not where they last looked
+	input_pitch = 0.0
 	if state == State.GRABBED and grabbed_by != null and grabbed_by.has_method("release"):
 		grabbed_by.call("release", false)
 	state = State.NORMAL
@@ -724,7 +850,7 @@ func apply_energy_drink() -> void:
 
 
 func eye_position() -> Vector3:
-	return global_position + Vector3(0.0, 1.6, 0.0)
+	return global_position + Vector3(0.0, 1.15 if _crouched else 1.6, 0.0)
 
 
 func aim_direction() -> Vector3:
@@ -733,29 +859,96 @@ func aim_direction() -> Vector3:
 
 # --- Items (server) ---------------------------------------------------------------------
 
+func has_item(id: String) -> bool:
+	for item in slots:
+		if item != null and item.data.id == id:
+			return true
+	return false
+
+
+func find_item(id: String) -> ItemBase:
+	for item in slots:
+		if item != null and item.data.id == id:
+			return item
+	return null
+
+
+func free_slot() -> int:
+	for i in slots.size():
+		if slots[i] == null:
+			return i
+	return -1
+
+
+## Puts an item in the first free slot and selects it. False when every slot is full.
 func server_give_item(item: ItemBase) -> bool:
-	if held_item != null or state == State.GRABBED:
+	if state == State.GRABBED:
 		return false
-	held_item = item
-	item.name = "Item_" + item.data.id
+	# Ammo goes straight into a carried gun instead of taking a slot.
+	if item.has_method("merge_into") and bool(item.call("merge_into", self)):
+		return true
+	var i := free_slot()
+	if i < 0:
+		return false
+	slots[i] = item
+	item.name = "Item_%d_%s" % [i, item.data.id]
 	add_child(item)
 	item.on_equip(self)
-	held_item_id = item.data.id
-	item_charge = item.charge()
+	select_slot(i)
+	_refresh_slot_ids()
 	return true
 
 
-## Drops the held item. With spawn_pickup it lands in front of you for anyone to grab;
+func select_slot(i: int) -> void:
+	i = clampi(i, 0, SLOTS - 1)
+	if i == selected_slot:
+		return
+	var old := held_item
+	if old != null:
+		old.on_deselect()
+	selected_slot = i
+	var now := held_item
+	if now != null:
+		now.on_select()
+	_refresh_slot_ids()
+
+
+## Drops the selected item. With spawn_pickup it lands in front of you for anyone to grab;
 ## without it the item is used up.
 func server_drop_item(spawn_pickup: bool = true) -> void:
-	if held_item == null:
+	var item := held_item
+	if item == null:
 		return
-	var id := held_item.data.id
-	held_item.on_unequip()
-	held_item.queue_free()
-	held_item = null
-	held_item_id = ""
-	item_charge = 0.0
+	var id := item.data.id
+	item.on_unequip()
+	item.queue_free()
+	slots[selected_slot] = null
+	_refresh_slot_ids()
 	if spawn_pickup:
 		var fwd := Vector3(-sin(body_yaw), 0.0, -cos(body_yaw))
-		Net.spawn_pickup(id, global_position + fwd * 0.9 + Vector3(0.0, 0.2, 0.0), peer_id)
+		Net.spawn_pickup(id, global_position + fwd * 0.9 + Vector3(0.0, 0.2, 0.0), peer_id, item.carry_state())
+	# Fall back to another carried item so the hands aren't empty.
+	if free_slot() == selected_slot:
+		for k in slots.size():
+			if slots[k] != null:
+				select_slot(k)
+				break
+
+
+## Drops everything (a layoff does not: items survive respawns, only grabs make you drop).
+func server_drop_all(spawn_pickups: bool = true) -> void:
+	for k in slots.size():
+		if slots[k] != null:
+			select_slot(k)
+			server_drop_item(spawn_pickups)
+
+
+func _refresh_slot_ids() -> void:
+	var ids := PackedStringArray()
+	for item in slots:
+		ids.append(item.data.id if item != null else "")
+	slot_ids = ids
+	var sel := held_item
+	held_item_id = sel.data.id if sel != null else ""
+	item_charge = sel.charge() if sel != null else 0.0
+	ammo_text = sel.ammo_text() if sel != null else ""

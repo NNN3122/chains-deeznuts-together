@@ -8,6 +8,7 @@ extends Node
 
 var expected_players: int = 1
 var is_client: bool = false
+var only: String = ""  # --smoke-only=NAME: run just _test_NAME after the setup checks
 var _passed: int = 0
 var _failed: int = 0
 var _seq: int = 0
@@ -51,6 +52,14 @@ func _run_host() -> void:
 	_check("chain links every body (Ballast in solo)", segs == bodies.size() - 1 and segs >= 1, "%d segments, %d bodies" % [segs, bodies.size()])
 	_check("pickups spawned", get_tree().get_nodes_in_group("pickups").size() >= 10, "%d pickups" % get_tree().get_nodes_in_group("pickups").size())
 
+	if only != "":
+		if only.begins_with("p_"):
+			var car := _level.get_node_or_null("Floor3/FreightCar") as FreightCar
+			if car != null:
+				car.server_park_top()
+		await call("_test_" + only)
+		_finish()
+		return
 	await _test_keyboard()
 	await _test_climb()
 	await _test_lift()
@@ -58,10 +67,12 @@ func _run_host() -> void:
 	await _test_items()
 	await _test_custodian()
 	await _test_scares()
+	await _test_crouch()
 	await _test_extras()
 	_test_invites()
 	await _test_exit()
 	await _test_p_desk()
+	await _test_p_static()
 	await _test_p_pappy()
 	await _test_p_shutter()
 	await _test_p_dumbwaiter()
@@ -128,17 +139,41 @@ func _test_keyboard() -> void:
 		_key(KEY_W, false, logical_only)
 		await _wait(0.15)
 		_check("W walks forward (%s)" % ("key label only" if logical_only else "physical key"), _host.global_position.z - z0 > 1.0, "walked %.2f m" % (_host.global_position.z - z0))
-	# TeamViewer-style: a held key arrives as a quick tap. Remote Controls keep you walking.
+	# A tap must be a tap: let go and you stop within about a step.
+	_place(spawn, PI)
+	await _wait(0.5)
+	var zt := _host.global_position.z
+	_key(KEY_W, true, false)
+	await _wait(0.12)
+	_key(KEY_W, false, false)
+	await _wait(0.8)
+	var tap_walk := _host.global_position.z - zt
+	_check("a quick W tap moves well under a meter (no overshoot)", tap_walk > 0.05 and tap_walk < 0.8, "walked %.2f m" % tap_walk)
+	# Remote Controls: before any key flicker has been seen, a tap is still just a tap...
 	var was_remote := Settings.remote_mode
 	Settings.remote_mode = true
+	_host.input.flicker_seen = false
 	_place(spawn, PI)
 	await _wait(0.5)
 	var z1 := _host.global_position.z
 	_key(KEY_W, true, false)
 	await _wait(0.03)
 	_key(KEY_W, false, false)
-	await _wait(0.6)
-	_check("Remote Controls turn a 30 ms tap into a held key", _host.global_position.z - z1 > 1.2, "walked %.2f m" % (_host.global_position.z - z1))
+	await _wait(0.8)
+	var remote_tap := _host.global_position.z - z1
+	_check("Remote Controls: a 30 ms tap before any flicker is seen stays short", remote_tap < 0.9, "walked %.2f m" % remote_tap)
+	# ...and once TeamViewer's tap stream is seen, the taps read as one hold.
+	_place(spawn, PI)
+	await _wait(0.5)
+	z1 = _host.global_position.z
+	for k in 6:
+		_key(KEY_W, true, false)
+		await _wait(0.02)
+		_key(KEY_W, false, false)
+		await _wait(0.03)
+	await _wait(0.5)
+	var stream_walk := _host.global_position.z - z1
+	_check("Remote Controls turn a stream of 30 ms taps into a held key", _host.input.flicker_seen and stream_walk > 1.2, "flicker %s, walked %.2f m" % [_host.input.flicker_seen, stream_walk])
 	# Remote Controls look: plain mouse movement turns the view, no button held.
 	var yaw0 := _host._yaw
 	_mouse_move(Vector2(120.0, 0.0))
@@ -166,6 +201,7 @@ func _test_climb() -> void:
 	var cell := _level.cell_center(0, _level.floors[0]["ascent"])
 	var trace := " start %s" % _rel(cell)
 	_check("mantle onto the 1.2 m crate", _host.global_position.y - y0 > 1.0, "rose %.2f m" % (_host.global_position.y - y0))
+	_check("the B4 task list is up and 'find MAINTENANCE ACCESS' is ticked on arrival", GameState.tasks.size() == 2 and GameState.task_done(0) and not GameState.task_done(1), "%s" % GameState.tasks)
 	for step in 3:
 		_bot(Vector2(1.0, 0.0), -PI * 0.5, 0)  # face +x up the steps
 		await _wait(0.2)
@@ -213,7 +249,7 @@ func _test_hang() -> void:
 	var f2: Dictionary = _level.floors[2]
 	var hole := _level.cell_center(3, f2["ascent"])
 	var edge := hole + Vector3(0.0, 0.1, YellowRooms.HOLE * 0.5 + 0.5)
-	var dangle_y := hole.y + 0.92 - 4.85 - _mate.anchor_height()
+	var dangle_y := hole.y + 0.92 - (ChainSystem.MAX_SEGMENT_LENGTH - 0.15) - _mate.anchor_height()
 	_bot(Vector2.ZERO, 0.0, Player.FLAG_BRACE)
 	_host.teleport_to(edge, 0.0)
 	_mate.teleport_to(Vector3(hole.x, dangle_y, hole.z + 0.6), 0.0)
@@ -239,15 +275,44 @@ func _test_items() -> void:
 	await _press_use()
 	_check("flashlight turns on", _host.held_item != null and _host.held_item.is_active and (_host.synced_flags & Player.SFLAG_USING_ITEM) != 0, "flags %d" % _host.synced_flags)
 	_host.server_drop_item(false)
-	# Pistol.
+	# Pistol: finite ammo, a reload, and the pocket topped up by an ammo box.
 	_give("pistol")
 	_host.noise = 0.0
 	await _press_use()
 	var ammo: int = _host.held_item.get("ammo") if _host.held_item != null else -1
-	_check("pistol fires (ammo down, very loud)", ammo == 7 and _host.noise >= 80.0, "ammo %d, noise %.0f" % [ammo, _host.noise])
+	_check("pistol fires (ammo down, very loud, HUD shows 5 / 12)", ammo == 5 and _host.noise >= 80.0 and _host.ammo_text == "5 / 12", "ammo %d, noise %.0f, text '%s'" % [ammo, _host.noise, _host.ammo_text])
+	_host.held_item.set("ammo", 0)
+	await _wait(0.4)  # past the shot cooldown
+	await _press_use()  # empty: fire starts a reload instead of a shot
+	var reloading := _host.ammo_text == "RELOADING"
+	await _wait(1.8)
+	var after_reload: int = _host.held_item.get("ammo")
+	var reserve: int = _host.held_item.get("reserve")
+	_check("empty magazine reloads from the pocket (6 in, pocket down)", reloading and after_reload == 6 and reserve == 6, "reloading %s, ammo %d, reserve %d" % [reloading, after_reload, reserve])
+	var box := ItemRegistry.get_data("ammo").create_logic()
+	var merged := _host.server_give_item(box)
+	reserve = _host.held_item.get("reserve")
+	_check("an ammo box pours into a carried Snubby instead of taking a slot", merged and reserve == 18 and _host.free_slot() == 1, "merged %s, reserve %d, free slot %d" % [merged, reserve, _host.free_slot()])
+	var state_before: Dictionary = _host.held_item.carry_state()
 	_host.server_drop_item(true)
 	await _wait(0.3)
-	_check("G-drop leaves a pickup behind", _count_pickups("pistol") >= 1, "%d pistol pickups" % _count_pickups("pistol"))
+	_check("G-drop leaves a pickup behind, remembering its ammo", _count_pickups("pistol") >= 1 and state_before.get("reserve", 0) == 18, "%d pistol pickups, state %s" % [_count_pickups("pistol"), state_before])
+	# Three slots: pick up three, the fourth is refused, 1/2/3 select, the selected one answers F.
+	_give("flashlight")
+	_host.server_give_item(ItemRegistry.get_data("decoy").create_logic())
+	_host.server_give_item(ItemRegistry.get_data("airhorn").create_logic())
+	var fourth := _host.server_give_item(ItemRegistry.get_data("popper").create_logic())
+	_check("three slots fill; a fourth item is refused", not fourth and _host.free_slot() < 0 and _host.slot_ids.size() == 3 and "" not in _host.slot_ids, "fourth %s, slots %s" % [fourth, _host.slot_ids])
+	_host.select_slot(0)
+	await _press_use()
+	var light_on := _host.held_item_id == "flashlight" and _host.held_item.is_active
+	_host.select_slot(2)
+	await _wait(0.1)
+	var light_off_when_switched := not _host.find_item("flashlight").is_active and _host.held_item_id == "airhorn"
+	_check("selecting a slot switches hands; the flashlight goes off when you switch away", light_on and light_off_when_switched, "on %s, off after switch %s, held '%s'" % [light_on, light_off_when_switched, _host.held_item_id])
+	_host.server_drop_all()
+	await _wait(0.3)
+	_check("dropping everything empties the slots", _host.free_slot() == 0 and _host.held_item == null, "%s" % _host.slot_ids)
 	# Energy drink.
 	_give("drink")
 	await _press_use()
@@ -304,7 +369,7 @@ func _test_custodian() -> void:
 	c.debug_frozen = false
 	_host.add_noise(80.0)
 	await _wait(0.3)
-	_check("Custodian hears a loud noise and hunts", c.cstate == Custodian.CState.HUNT and c.hunt_peer == 1, "state %d" % c.cstate)
+	_check("Custodian hears a loud noise and hunts", c.cstate == Custodian.CState.HUNT and c.hunt_peer == 1, "state %d, hunting peer %d, host noise %.0f, mate noise %.0f" % [c.cstate, c.hunt_peer, _host.noise, _mate.noise_level() if _mate != null else -1.0])
 	# A grab with nobody holding on ends in a layoff.
 	var wipes0 := GameState.wipes
 	await _wait(2.0)
@@ -333,6 +398,53 @@ func _test_custodian() -> void:
 			break
 	_check("a flashlight on it makes it let go", released and GameState.wipes == wipes1 and c.cstate == Custodian.CState.RETREAT, "released %s, state %d" % [released, c.cstate])
 	_host.server_drop_item(false)
+	_bot(Vector2.ZERO, PI, 0)
+	# The rescue from a teammate's angle: aiming at the lifted victim (not the ceiling) counts,
+	# a teammate standing in the beam doesn't block it, and the HUD gets a burn fraction.
+	if _mate is Player:
+		await _wait(0.5)
+		_place(spawn, PI)
+		await _wait(0.4)
+		c.debug_reset(_host.global_position)
+		_mate.teleport_to(_host.global_position + Vector3(0.0, 0.0, 3.0), 0.0)  # 3 m away, facing -z: toward the host
+		await _wait(0.3)
+		_mate.server_drop_all(false)  # whatever pickups it wandered into earlier
+		_mate.server_give_item(ItemRegistry.get_data("flashlight").create_logic())
+		_mate.held_item.is_active = true
+		var wipes2 := GameState.wipes
+		c.call("_start_grab", _host)
+		var seen_burn := 0.0
+		var freed := false
+		for i in 30:
+			await _wait(0.1)
+			# Aim at the victim's head, from the side, like a person would.
+			var to: Vector3 = (_host.global_position + Vector3(0.0, 1.8, 0.0)) - (_mate as Player).eye_position()
+			var yaw := atan2(-to.x, -to.z)
+			var pitch := atan2(to.y, Vector2(to.x, to.z).length())
+			_mate._apply_input(Vector2.ZERO, yaw, pitch, 0)
+			seen_burn = maxf(seen_burn, c.burn_fraction)
+			if not _host.is_grabbed():
+				freed = true
+				break
+		_check("a teammate's beam on the lifted victim frees them; the burn shows on the HUD", freed and GameState.wipes == wipes2 and seen_burn > 0.3, "freed %s, burn %.2f, wipes %d -> %d" % [freed, seen_burn, wipes2, GameState.wipes])
+		_mate.server_drop_item(false)
+		await _wait(1.0)
+	# Camping: standing still on its floor for a while draws it over, crouched or not (the
+	# Break Room is exempt, so this happens out in the office).
+	_place(_level.test_points["crates_start"], PI)
+	_park_mate(far)
+	await _wait(0.3)
+	c.debug_reset(spawn + Vector3(12.0, 0.0, 0.0))
+	_bot(Vector2.ZERO, PI, Player.FLAG_BRACE)
+	var came := false
+	var dwell_t := 0.0
+	while dwell_t < Custodian.DWELL_SECONDS + 3.0:
+		await _wait(0.25)
+		dwell_t += 0.25
+		if c.cstate != Custodian.CState.WANDER:
+			came = true
+			break
+	_check("crouching still in one spot for too long brings the Custodian to investigate", came and dwell_t > 3.0, "state %d after %.1f s" % [c.cstate, dwell_t])
 	_bot(Vector2.ZERO, PI, 0)
 	# A partner standing beside you slows the lift.
 	if _mate != null:
@@ -375,11 +487,47 @@ func _thrown_names() -> String:
 
 func _test_scares() -> void:
 	var before := ScareDirector.scares_played
-	for kind in ["lunge", "lights_out", "tile", "figure", "whisper", "phone", "slam", "dennis", "stain_pass"]:
+	var kinds := ["lunge", "lights_out", "tile", "figure", "whisper", "phone", "slam", "dennis", "stain_pass", "breath", "footsteps", "stalker"]
+	for kind in kinds:
 		ScareDirector.trigger_for(kind, _host)
 		await _wait(0.15)
 	await _wait(0.5)
-	_check("every scare type plays", ScareDirector.scares_played - before >= 9, "%d played" % (ScareDirector.scares_played - before))
+	_check("every scare type plays", ScareDirector.scares_played - before >= kinds.size(), "%d played" % (ScareDirector.scares_played - before))
+	# Variety: the director leans away from what it just played.
+	var picks: Dictionary = {}
+	for i in 40:
+		var k: String = ScareDirector.call("_pick_kind", _host.global_position)
+		picks[k] = int(picks.get(k, 0)) + 1
+	_check("the procedural director spreads its picks across kinds", picks.size() >= 6, "%s" % picks)
+	_check("a task checklist is up for the current floor", GameState.tasks.size() >= 2, "%s" % GameState.tasks)
+
+
+func _test_crouch() -> void:
+	# Crouch: the capsule shrinks, the eye drops, and letting go stands you back up.
+	_place(_level.test_points["spawn"], PI)
+	await _wait(0.4)
+	_bot(Vector2.ZERO, PI, Player.FLAG_BRACE)
+	await _wait(0.4)
+	var crouched_h := (_host._shape.shape as CapsuleShape3D).height
+	var eye_low := _host.eye_position().y - _host.global_position.y
+	_bot(Vector2.ZERO, PI, 0)
+	await _wait(0.5)
+	var after := (_host._shape.shape as CapsuleShape3D).height
+	_check("Ctrl crouches: the capsule shrinks and the eyes drop; letting go stands back up", crouched_h < 1.4 and eye_low < 1.3 and after > 1.7,
+		"crouched %.2f m, eye %.2f, after %.2f, crouched flag %s, headroom %s" % [crouched_h, eye_low, after, _host._crouched, _host._headroom()])
+	# Under something low you stay down until there's room (the Break Room table is 0.74 m: too
+	# low to crawl under, so use the cable tray: 1.9 m of headroom, less than a standing body).
+	var under: Vector3 = _level.test_points["tray_start"] + Vector3(0.0, -1.8, 0.0)
+	_host.teleport_to(under, PI)
+	await _wait(0.3)
+	_bot(Vector2.ZERO, PI, Player.FLAG_BRACE)
+	await _wait(0.4)
+	_bot(Vector2.ZERO, PI, 0)
+	await _wait(0.4)
+	var stuck_low := (_host._shape.shape as CapsuleShape3D).height
+	_check("no headroom under the cable tray: you stay crouched until you move out", stuck_low < 1.4 and _host._crouched, "height %.2f, crouched %s" % [stuck_low, _host._crouched])
+	_place(_level.test_points["spawn"], PI)
+	await _wait(0.5)
 
 
 func _test_exit() -> void:
@@ -402,6 +550,44 @@ func _test_exit() -> void:
 	await _wait(0.5)
 	_check("Receiving checkpoint (2.1) recorded on arrival", GameState.checkpoint_index >= 4, "index %d" % GameState.checkpoint_index)
 	_check("night clock runs from 12:00 AM", _pizzeria.clock_text().ends_with("AM") and _pizzeria.night_seconds > 0.0, _pizzeria.clock_text())
+	await _wait(0.4)
+	_check("the Dining Hall task list replaces the office one on arrival", GameState.tasks.size() == 3 and String(GameState.tasks[0][0]).begins_with("Clip into"), "%s" % GameState.tasks)
+
+
+func _test_p_static() -> void:
+	# The camera scare: static that must end. Count looping one-shot players under the root
+	# before and after; a leftover player with a looping stream is the bug.
+	var hud := get_tree().get_first_node_in_group("hud")
+	var desk := _pizzeria.desks[0]
+	_place(_p("p_desk0"), 0.0)
+	await _wait(0.5)
+	var leak_before := _looping_players()
+	for i in 3:
+		ScareDirector.trigger_for("static_face", _host)
+		await _wait(0.2)
+	ScareDirector.trigger_for("counter_bell", _host)
+	await _wait(0.3)
+	_place(_p("p_arrive"), PI)  # walk off mid-scare
+	await _wait(2.6)
+	var leak_after := _looping_players()
+	var panel = hud.get("_night") if hud != null else null
+	var static_left: float = float(panel.get("_static")) if panel != null else 0.0
+	_check("camera static scares leave no looping sound behind, even when interrupted", leak_after <= leak_before and static_left < 0.2 and desk.occupant_peer == 0, "loopers %d -> %d, static %.2f" % [leak_before, leak_after, static_left])
+	var one := Sfx.one_shot("static")
+	_check("one-shot sounds never loop (the root cause: a looping 'static' bank played as a one-shot)", one.loop_mode == AudioStreamWAV.LOOP_DISABLED and Sfx.stream("static").loop_mode != AudioStreamWAV.LOOP_DISABLED, "")
+
+
+func _looping_players() -> int:
+	var n := 0
+	for c in get_tree().root.get_children():
+		var s: AudioStream = null
+		if c is AudioStreamPlayer:
+			s = (c as AudioStreamPlayer).stream
+		elif c is AudioStreamPlayer3D:
+			s = (c as AudioStreamPlayer3D).stream
+		if s is AudioStreamWAV and (s as AudioStreamWAV).loop_mode != AudioStreamWAV.LOOP_DISABLED:
+			n += 1
+	return n
 
 
 # --- Level 2 ------------------------------------------------------------------------------------------
@@ -492,7 +678,7 @@ func _test_p_pappy() -> void:
 	if _mate is Player:
 		pappy.debug_reset(0, 1)
 		_mate.teleport_to(node + Vector3(0.0, 0.1, 3.0), PI)
-		_host.teleport_to(node + Vector3(0.0, 0.1, 7.0), 0.0)
+		_host.teleport_to(node + Vector3(0.0, 0.1, 7.0), PI)  # back turned too, so nobody pins him
 		_give("flashlight")
 		await _press_use()
 		pappy.debug_force_step()
@@ -531,7 +717,34 @@ func _test_p_shutter() -> void:
 	await _wait(3.5)
 	_check("a closed shutter stops him: three bangs, dented, then he goes home", banging and sh.dented and pappy.node_index == 0 and pappy.pstate == PappyPepperoni.PState.ROAM,
 		"banging %s, dented %s, node %d, state %d" % [banging, sh.dented, pappy.node_index, pappy.pstate])
-	sh.debug_hold = false
+	# Let go while he's banging and he comes through at a run: visible, eyes or no eyes.
+	var wipes_rush := GameState.wipes
+	sh.debug_hold = true
+	_place(_pizzeria.cell_center(0, 0, 1) + Vector3(0.0, 0.1, 1.0), PI)  # the storage room past the dumbwaiter, backs turned: nobody pins him
+	pappy.debug_reset(0, 5)
+	await _wait(0.3)
+	pappy.debug_force_step()
+	await _wait(0.5)
+	var at_shutter := pappy.pstate == PappyPepperoni.PState.BANGING
+	var p0 := pappy.global_position
+	sh.debug_hold = false  # the holder let go
+	var rushing := false
+	var states := []
+	for i in 22:
+		await _wait(0.1)
+		states.append(pappy.pstate)
+		if pappy.pstate == PappyPepperoni.PState.RUSH:
+			rushing = true
+	var moved := p0.distance_to(pappy.global_position)
+	# He rushes, and the rush ends in a lunge once he's close: either way he came through, walking.
+	var aims := ""
+	for p in Net.get_players():
+		aims += " %s yaw %.2f d %.1f" % [p.display_name, p.input_yaw, p.global_position.distance_to(pappy.global_position)]
+	_check("letting go of the shutter mid-bang makes him RUSH: he walks visibly toward you while watched", at_shutter and rushing and moved > 1.0 and pappy.is_hunting(), "banging %s, rush %s, moved %.2f m, states %s, watched %s, node %d,%s" % [at_shutter, rushing, moved, states, pappy.watched, pappy.node_index, aims])
+	_place(_p("p_arrive"), PI)  # into Receiving, a Break Room: he won't come in
+	await _wait(PappyPepperoni.RUSH_SECONDS + 1.5)
+	_check("the rush ends on its own (he won't enter a Break Room) and he goes back to his timer", pappy.pstate == PappyPepperoni.PState.ROAM and GameState.wipes == wipes_rush, "state %d, wipes %d -> %d" % [pappy.pstate, wipes_rush, GameState.wipes])
+	pappy.debug_reset(0, 0)
 	pappy.debug_frozen = true
 
 
@@ -593,16 +806,25 @@ func _test_p_lift() -> void:
 
 
 func _test_p_power() -> void:
+	var pappy := _pizzeria.pappy
+	_place(_pizzeria.node_position(2, 2) + Vector3(0.0, 0.1, 0.0), 0.0)  # the Stage floor, out in the open
+	pappy.debug_reset(2, 0)
+	pappy.debug_frozen = false
 	_pizzeria.power = 0.0
-	await _wait(0.3)
-	_check("at 0% the power is out: blackout, Pappy's Step drops to 3 s", _pizzeria.blackout() and _pizzeria.pappy.step_length() < 4.0, "blackout %s, step %.1f" % [_pizzeria.blackout(), _pizzeria.pappy.step_length()])
+	await _wait(0.6)
+	var p0 := pappy.global_position
+	await _wait(1.0)
+	var walked := p0.distance_to(pappy.global_position)
+	_check("at 0% the power is out: blackout, and he walks the floor in the dark, eyes or no eyes", _pizzeria.blackout() and pappy.pstate == PappyPepperoni.PState.RUSH and walked > 1.0, "blackout %s, state %d, walked %.2f m" % [_pizzeria.blackout(), pappy.pstate, walked])
+	pappy.debug_frozen = true
+	pappy.debug_reset(2, 0)
 	_place(_p("p_checkpoint6"), 0.0)
 	await _wait(Pizzeria.GENERATOR_SECONDS + 0.8)
 	_check("standing in a Break Room restarts the generator", _pizzeria.power >= 99.0, "power %.0f" % _pizzeria.power)
 
 
 func _test_p_items() -> void:
-	_check("Level 2 items are registered", ItemRegistry.get_data("popper") != null and ItemRegistry.get_data("airhorn") != null, str(ItemRegistry.all_ids()))
+	_check("Level 2 items are registered", ItemRegistry.get_data("popper") != null and ItemRegistry.get_data("airhorn") != null and ItemRegistry.get_data("ammo") != null, str(ItemRegistry.all_ids()))
 	var n := 0
 	for p in get_tree().get_nodes_in_group("pickups"):
 		if (p as ItemPickup).global_position.y > _pizzeria.base_y() - 1.0:
@@ -637,15 +859,19 @@ func _test_p_exit() -> void:
 	_bot(Vector2.ZERO, -PI * 0.5, 0)
 	await _wait(0.4)
 	_check("...and from the case onto the prop loft", _host.global_position.y - y0 > 1.8, "rose %.2f m" % (_host.global_position.y - y0))
+	_check("the Stage task list is up with the case and loft tasks ticked", GameState.tasks.size() == 3 and GameState.task_done(0) and GameState.task_done(1) and not GameState.task_done(2), "%s" % GameState.tasks)
 	var loft: Vector3 = _p("p_loft")
-	var bodies := Net.get_chain_bodies()
-	for i in bodies.size():
-		bodies[i].teleport_to(loft + Vector3(-1.0 + 1.0 * float(i), 0.1, 0.0), 0.0)
+	# Only the players need to be up: the Ballast (solo) is hauled through the hatch after you.
+	var players := Net.get_players()
+	for i in players.size():
+		players[i].teleport_to(loft + Vector3(-1.0 + 1.0 * float(i), 0.1, 0.0), 0.0)
+	if _mate != null and not (_mate is Player):
+		_mate.teleport_to(_p("p_stage"), 0.0)
 	for i in 70:
 		await _wait(0.1)
 		if GameState.escaped:
 			break
-	_check("everyone on the prop loft: ROOF ACCESS, ESCAPED", GameState.escaped, "escaped=%s" % GameState.escaped)
+	_check("every player on the prop loft: ROOF ACCESS, ESCAPED (the Ballast needn't climb)", GameState.escaped and GameState.all_tasks_done(), "escaped=%s tasks=%s" % [GameState.escaped, GameState.tasks])
 	await _wait(2.0)
 
 
@@ -659,6 +885,8 @@ func _run_client() -> void:
 		t += 0.25
 		me = Net.get_local_player()
 	_check("client: own player spawned and is local", me != null, "peer %d" % multiplayer.get_unique_id())
+	if me != null:
+		me.bot_controlled = true  # the host's script drives this body; our own input packets would fight it
 	await _wait(1.5)
 	var chain := get_tree().get_first_node_in_group("chain") as ChainSystem
 	var segs := chain.segments.size() if chain != null else -1
@@ -756,8 +984,7 @@ func _mouse_move(relative: Vector2) -> void:
 
 
 func _give(id: String) -> void:
-	if _host.held_item != null:
-		_host.server_drop_item(false)
+	_host.server_drop_all(false)  # no pickups left underfoot to be re-grabbed mid-test
 	var data := ItemRegistry.get_data(id)
 	_host.server_give_item(data.create_logic())
 

@@ -62,6 +62,8 @@ var _walk: float = 0.0
 
 var _was_grabbed: bool = false
 var _hat_back_t: float = 0.0
+var _talking: bool = false
+var _talk_glyph: Label3D
 const HAT_OFF_SECONDS: float = 6.0
 
 
@@ -254,6 +256,25 @@ func set_first_person(fp: bool) -> void:
 	neck.visible = not fp  # neck carries the head, hair and hat
 
 
+## Voice chat: a little speech glyph over the head while this player talks.
+func set_talking(on: bool) -> void:
+	if on == _talking:
+		return
+	_talking = on
+	if _talk_glyph == null:
+		_talk_glyph = Label3D.new()
+		_talk_glyph.text = "((  ))"
+		_talk_glyph.font_size = 28
+		_talk_glyph.pixel_size = 0.005
+		_talk_glyph.modulate = Color(0.6, 1.0, 0.7)
+		_talk_glyph.outline_size = 6
+		_talk_glyph.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		_talk_glyph.no_depth_test = true
+		_talk_glyph.position = Vector3(0.0, 2.55, 0.0)
+		add_child(_talk_glyph)
+	_talk_glyph.visible = on and not _first_person
+
+
 func set_held_item(id: String) -> void:
 	if id == _held_id:
 		return
@@ -398,16 +419,20 @@ func animate(delta: float, vel: Vector3, facing: float, grounded: bool, bracing:
 			knee_r_t = -0.7
 			head_pitch = -0.3
 	elif bracing:
-		pelvis_pos.y -= 0.17
-		hip_l = 0.45 + hip_l * 0.4
-		hip_r = -0.25 + hip_r * 0.4
-		knee_l_t = -0.75
-		knee_r_t = -0.45
-		spine_rot.x = 0.3
-		sh_l = Vector3(1.0, 0.0, 0.15)
-		sh_r = Vector3(1.0, 0.0, -0.15)
-		el_l = 0.55
-		el_r = 0.55
+		# A real crouch: hips low, knees deep, chest forward, head still level. The legs keep a
+		# short creeping gait so a crouch-walk reads as one.
+		pelvis_pos.y -= 0.42
+		pelvis_pos.z += 0.1  # hips back (+z is behind), chest over the knees: a crouch, not a chair
+		hip_l = 0.85 + 0.3 * s * walk
+		hip_r = 0.75 - 0.3 * s * walk
+		knee_l_t = -1.3 - 0.25 * walk * maxf(0.0, c)
+		knee_r_t = -1.2 - 0.25 * walk * maxf(0.0, -c)
+		spine_rot.x = -0.45  # negative x leans forward
+		sh_l = Vector3(0.6 - 0.25 * s * walk, 0.0, 0.25)
+		sh_r = Vector3(0.6 + 0.25 * s * walk, 0.0, -0.25)
+		el_l = 0.9
+		el_r = 0.9
+		head_pitch = clampf(aim_pitch, -0.7, 0.7) * 0.6 - 0.15
 	# Landing compression rides on top of whatever pose we're in.
 	pelvis_pos.y -= 0.16 * land
 	knee_l_t -= 0.9 * land

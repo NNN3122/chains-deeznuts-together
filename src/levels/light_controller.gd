@@ -7,6 +7,7 @@ const UPDATE_INTERVAL: float = 0.05
 const SHADOW_LIGHTS: int = 4
 const SHADOW_REFRESH: float = 0.3
 const CUSTODIAN_DIM_RADIUS: float = 7.0
+const PAPPY_DIM_RADIUS: float = 6.0
 const FLOOR_HEIGHT: float = 5.0
 
 class Tube:
@@ -50,6 +51,7 @@ func _process(delta: float) -> void:
 	var cam_pos := cam.global_position if cam != null else Vector3.ZERO
 	var cam_floor := int(floor(cam_pos.y / FLOOR_HEIGHT + 0.1))
 	var custodians := get_tree().get_nodes_in_group("custodian")
+	var pappies := get_tree().get_nodes_in_group("pappy")
 	for tube in tubes:
 		var near_floor := absi(tube.floor_index - cam_floor) <= 1
 		tube.light.visible = near_floor and tube.kind != 3
@@ -71,6 +73,17 @@ func _process(delta: float) -> void:
 				e *= lerpf(0.15 if hunting else 0.45, 1.0, k)
 				if hunting and _rng.randf() < 0.25:
 					e *= 0.2
+		# The chef draws current: lights near him gutter, and strobe while he's unwatched.
+		for pp in pappies:
+			var pn := pp as Node3D
+			if not pn.visible or not bool(pp.call("is_active")):
+				continue
+			var d := Vector2(pn.global_position.x - tube.light.global_position.x, pn.global_position.z - tube.light.global_position.z).length()
+			if d < PAPPY_DIM_RADIUS and absf(pn.global_position.y - tube.light.global_position.y) < 5.0:
+				var k := d / PAPPY_DIM_RADIUS
+				e *= lerpf(0.35, 1.0, k)
+				if not bool(pp.get("watched")) and _rng.randf() < 0.2:
+					e *= 0.25
 		if ScareDirector.blackout_active() and tube.light.global_position.distance_to(ScareDirector.blackout_center) < ScareDirector.blackout_radius:
 			e = 0.0
 		if blackout:

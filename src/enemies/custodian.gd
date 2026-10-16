@@ -32,8 +32,10 @@ const BURN_TO_RELEASE: float = 0.9
 const BURN_TO_RETREAT: float = 1.6
 const HITS_TO_RETREAT: int = 2
 const RETREAT_TIME: float = 9.0
-const BEAM_ANGLE: float = 0.36  # radians (~20 degrees)
+const BEAM_ANGLE: float = 0.42  # radians (~24 degrees): the beam's whole cone, not just its center
 const BEAM_RANGE: float = 16.0
+const BURN_DECAY: float = 0.25  # per second the burn fades while the beam is off it
+const DWELL_SECONDS: float = 7.0  # standing in one spot this long on its floor: it comes to look
 
 var floor_index: int = 0
 var floor_y: float = 0.0
@@ -47,8 +49,11 @@ var cstate: int = CState.WANDER
 var hunt_peer: int = 0
 var grab_peer: int = 0
 var grab_lift: float = 0.0
+var burn_fraction: float = 0.0  # replicated: 0..1 of the light it has taken (HUD feedback)
 
 # Server.
+var _dwell: Dictionary = {}  # peer -> [position, seconds]
+var _hiss_t: float = 0.0
 var _target: Vector3 = Vector3.ZERO
 var _hunt_node: Node3D = null
 var _hunt_pos: Vector3 = Vector3.ZERO
@@ -86,7 +91,7 @@ func _enter_tree() -> void:
 	var sync := MultiplayerSynchronizer.new()
 	sync.name = "Sync"
 	var cfg := SceneReplicationConfig.new()
-	for prop in ["synced_position", "cstate", "hunt_peer", "grab_peer", "grab_lift"]:
+	for prop in ["synced_position", "cstate", "hunt_peer", "grab_peer", "grab_lift", "burn_fraction"]:
 		var path := NodePath(".:" + prop)
 		cfg.add_property(path)
 		cfg.property_set_replication_mode(path, SceneReplicationConfig.REPLICATION_MODE_ALWAYS)
@@ -250,6 +255,7 @@ func _server_tick(delta: float) -> void:
 		if eff < INVESTIGATE_THRESHOLD:
 			return
 		dormant_until_heard = false
+	_tick_dwell(delta)
 	match cstate:
 		CState.WANDER:
 			_move_toward(_target, WANDER_SPEED, delta)
@@ -472,13 +478,32 @@ func investigate(pos: Vector3) -> void:
 
 
 ## Returns true if the burn reached the threshold this tick (and acted on it).
+## The beam counts on the stain, on the arm and on the hole: whichever part of it you light.
 func _tick_burn(delta: float, target: Vector3, threshold: float) -> bool:
-	if _beam_on(target):
+	var targets: Array[Vector3] = [target]
+	if cstate == CState.GRAB and _grabbed != null and is_instance_valid(_grabbed):
+		var hand := _grabbed.global_position + Vector3(0.0, 2.05, 0.0)
+		targets.append(hand)
+		targets.append(target.lerp(hand, 0.5))
+	var lit := false
+	for t in targets:
+		if _beam_on(t):
+			lit = true
+			break
+	if lit:
 		_burn += delta
+		_hiss_t -= delta
+		if _hiss_t <= 0.0:
+			_hiss_t = 0.35
+			var fx := Effects.find(self)
+			if fx != null:
+				fx.fx_sound.rpc("scrape", stain_point(), -6.0, randf_range(1.6, 2.0))
 	else:
-		_burn = maxf(0.0, _burn - delta * 0.5)
+		_burn = maxf(0.0, _burn - delta * BURN_DECAY)
+	burn_fraction = clampf(_burn / threshold, 0.0, 1.0)
 	if _burn < threshold:
 		return false
+	burn_fraction = 0.0
 	if cstate == CState.GRAB:
 		release(false)
 	else:
@@ -498,11 +523,37 @@ func _beam_on(target: Vector3) -> bool:
 			continue
 		if p.aim_direction().angle_to(to / d) > BEAM_ANGLE:
 			continue
+		# Only walls block the beam: a teammate (or the victim) standing in it does not.
 		var q := PhysicsRayQueryParameters3D.create(eye, target - (to / d) * 0.2, ChainBody.LAYER_WORLD)
 		q.exclude = [p.get_rid()]
 		if space.intersect_ray(q).is_empty():
 			return true
 	return false
+
+
+## Standing still in one place for too long on its floor (crouched or not) draws it over: the
+## chain creaks, the floor settles, and it comes to look. Sneaking is for moving, not camping.
+func _tick_dwell(delta: float) -> void:
+	for p in Net.get_players():
+		if not _on_floor(p.global_position) or p.state != Player.State.NORMAL:
+			_dwell.erase(p.peer_id)
+			continue
+		var level := get_tree().get_first_node_in_group("level")
+		if level != null and level.has_method("is_safe_spot") and bool(level.call("is_safe_spot", p.global_position)):
+			_dwell.erase(p.peer_id)
+			continue
+		var entry: Array = _dwell.get(p.peer_id, [p.global_position, 0.0])
+		if (entry[0] as Vector3).distance_to(p.global_position) > 1.5:
+			entry = [p.global_position, 0.0]
+		entry[1] = float(entry[1]) + delta
+		_dwell[p.peer_id] = entry
+		if float(entry[1]) >= DWELL_SECONDS and (cstate == CState.WANDER or cstate == CState.INVESTIGATE):
+			_dwell[p.peer_id] = [p.global_position, 0.0]
+			_to_investigate(p.global_position)
+			var fx := Effects.find(self)
+			if fx != null:
+				fx.fx_sound.rpc("creak", stain_point(), 2.0, 0.7)
+			GameState.post_message("...something in the ceiling is coming to look at whoever stopped moving.", 3.0)
 
 
 func _loudest() -> Array:

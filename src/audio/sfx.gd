@@ -56,7 +56,7 @@ static func play(owner: Node, id: String, volume_db: float = 0.0, pitch: float =
 	if is_silent() or owner == null or not owner.is_inside_tree():
 		return
 	var p := AudioStreamPlayer.new()
-	p.stream = stream(id)
+	p.stream = one_shot(id)
 	p.volume_db = volume_db
 	p.pitch_scale = pitch
 	owner.get_tree().root.add_child(p)
@@ -69,7 +69,7 @@ static func play_at(owner: Node, id: String, pos: Vector3, volume_db: float = 0.
 	if is_silent() or owner == null or not owner.is_inside_tree():
 		return
 	var p := AudioStreamPlayer3D.new()
-	p.stream = stream(id)
+	p.stream = one_shot(id)
 	p.volume_db = volume_db
 	p.pitch_scale = pitch
 	p.max_distance = max_distance
@@ -80,6 +80,21 @@ static func play_at(owner: Node, id: String, pos: Vector3, volume_db: float = 0.
 	p.play()
 	if CAPTIONS.has(id):
 		caption(owner, CAPTIONS[id], pos)
+
+
+## A one-shot must end, or its player (freed on "finished") lives under the root forever and
+## the sound never stops. Looping banks (jukebox, static) get a non-looping copy here.
+static var _one_shots: Dictionary = {}
+
+static func one_shot(id: String) -> AudioStreamWAV:
+	var s := stream(id)
+	if s.loop_mode == AudioStreamWAV.LOOP_DISABLED:
+		return s
+	if not _one_shots.has(id):
+		var copy := s.duplicate() as AudioStreamWAV
+		copy.loop_mode = AudioStreamWAV.LOOP_DISABLED
+		_one_shots[id] = copy
+	return _one_shots[id]
 
 
 ## A looping positional player for the caller to parent and start with start_loop().

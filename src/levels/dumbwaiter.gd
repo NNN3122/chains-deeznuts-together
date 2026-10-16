@@ -137,7 +137,7 @@ func _server_tick(delta: float) -> void:
 	var solo := Net.get_players().size() <= 1
 	var n := 0
 	for p in Net.get_players():
-		if not p.is_bracing():
+		if not p.wants_brace():
 			continue
 		for rp in rope_points:
 			if p.global_position.distance_to(rp) < HAUL_RADIUS:

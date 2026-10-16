@@ -106,6 +106,7 @@ func leave() -> void:
 	multiplayer.multiplayer_peer = OfflineMultiplayerPeer.new()
 	_registered.clear()
 	is_solo = false
+	Voice.reset()
 	port_opener.close()
 	if not invite.is_empty():
 		invite = {}
@@ -242,6 +243,7 @@ func _on_peer_disconnected(id: int) -> void:
 	if node != null:
 		if node.is_grabbed() and node.grabbed_by != null:
 			node.grabbed_by.call("release", false)
+		node.server_drop_all()  # what they carried stays on the floor for the rest of the Line
 		node.queue_free()
 	players_changed.emit()
 
@@ -334,11 +336,12 @@ func spawn_player_node(data: Variant) -> Node:
 
 # --- Pickups and thrown objects (server spawns, every peer builds) ---------------------------------
 
-func spawn_pickup(item_id: String, pos: Vector3, ignore_peer: int) -> void:
+## state: what a dropped item remembers (ammo counts), handed back to whoever picks it up.
+func spawn_pickup(item_id: String, pos: Vector3, ignore_peer: int, state: Dictionary = {}) -> void:
 	if pickup_spawner == null or not multiplayer.is_server():
 		return
 	_spawn_counter += 1
-	pickup_spawner.spawn({"id": item_id, "pos": pos, "n": _spawn_counter, "ignore": ignore_peer, "until": Time.get_ticks_msec() + ItemPickup.REPICK_DELAY_MS})
+	pickup_spawner.spawn({"id": item_id, "pos": pos, "n": _spawn_counter, "ignore": ignore_peer, "until": Time.get_ticks_msec() + ItemPickup.REPICK_DELAY_MS, "state": state})
 
 
 func spawn_pickup_node(data: Variant) -> Node:
@@ -349,6 +352,7 @@ func spawn_pickup_node(data: Variant) -> Node:
 	p.position = d["pos"]
 	p.ignore_peer = int(d["ignore"])
 	p.ignore_until_msec = int(d["until"])
+	p.carry_state = d.get("state", {})
 	return p
 
 

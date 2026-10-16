@@ -73,6 +73,11 @@ func has_ceiling_at(p: Vector3) -> bool:
 	return bool(level_at(p).call("has_ceiling_at", p))
 
 
+## Break Rooms (and the pizzeria's freezer): monsters leave you alone there.
+func is_safe_spot(p: Vector3) -> bool:
+	return bool(level_at(p).call("is_safe_spot", p))
+
+
 ## Underside of the ceiling over a position (for falling tiles).
 func ceiling_y(p: Vector3) -> float:
 	if level_index_at(p) == 1:

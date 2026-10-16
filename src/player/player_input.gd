@@ -1,19 +1,28 @@
 class_name PlayerInput
 extends Node
 ## Local input for the player you control. Built to survive remote-desktop tools:
-## TeamViewer sends a held key as a stream of separate taps, so in Remote Controls mode a key
-## counts as held for HOLD_GRACE after its last press. Arrow keys walk and turn, R toggles
-## auto-walk. Remote Controls switch on by themselves when key "flicker" is detected.
-## Mouse look over TeamViewer: a captured mouse spins wildly (TeamViewer sends absolute cursor
-## positions), so the cursor is hidden and kept inside the window instead, and plain mouse
-## movement turns the view. The remote cursor stops at the edge of the user's own screen, so
-## holding it against the left or right side of the window keeps the turn going.
+## TeamViewer can send a held key as a stream of separate taps. In Remote Controls mode a key
+## stays "held" for a grace period after each release so the stream reads as one hold.
+## That grace used to be a flat 650 ms on every release, which made a single tap walk you four
+## or five steps. Now it is earned: it starts short, only grows to the learned repeat gap once
+## flicker has actually been seen in this session, and while a hold is still unconfirmed the
+## movement runs at reduced strength, so a real tap stays a short step.
+## Arrow keys walk and turn, R toggles auto-walk. Mouse look over TeamViewer: a captured mouse
+## spins wildly (TeamViewer sends absolute cursor positions), so the cursor is hidden and kept
+## inside the window instead, and plain mouse movement turns the view. The remote cursor stops
+## at the edge of the user's own screen, so holding it against the left or right side of the
+## window keeps the turn going.
 
 signal remote_mode_detected
 
-const HOLD_GRACE_MS: int = 650  # bridges the ~500 ms gap before key repeat starts
+const SHORT_GRACE_MS: int = 140  # before flicker is proven: just enough to bridge packet jitter
+const DEFAULT_GRACE_MS: int = 650  # bridges the ~500 ms gap before key repeat starts
+const MIN_GRACE_MS: int = 260
+const MAX_GRACE_MS: int = 1100
+const GRACE_MARGIN_MS: int = 120  # added to the measured repeat delay
 const FLICKER_GAP_MS: int = 70  # release -> press of the same key this fast is a repeat tap
 const FLICKER_COUNT: int = 4
+const UNCONFIRMED_STRENGTH: float = 0.45  # movement while a tap might still be a tap
 const KEY_TURN_SPEED: float = 2.4  # rad/s with arrow keys
 const PITCH_KEY_SPEED: float = 1.4  # rad/s with PageUp/PageDown
 const TRACKED: Array[String] = [
@@ -29,15 +38,22 @@ const EDGE_TURN_SPEED: float = 2.6  # rad/s with the cursor right against the si
 
 var auto_run: bool = false
 var look_delta: Vector2 = Vector2.ZERO  # mouse motion since the last consume_look()
+var flicker_seen: bool = false  # this session delivered a held key as taps at least once
 var _look_pending: Vector2 = Vector2.ZERO
 var _turn_v: Vector2 = Vector2.ZERO
 var _down: Dictionary = {}
 var _last_press: Dictionary = {}
 var _last_release: Dictionary = {}
+var _confirmed: Dictionary = {}  # action -> this hold has shown a repeat press, so it is a real hold
+var _first_gap: Dictionary = {}  # action -> release->press gap of the hold's first repeat (ms)
 var _flickers: int = 0
 var _flicker_window: int = 0
 var _jump_count: int = 0
 var _drop_count: int = 0
+var _use_count: int = 0
+var _slot_count: int = 0
+var _slot_request: int = 0  # 1..3 the slot last asked for, 0 none; wheel: 4 next, 5 previous
+var _reload_count: int = 0
 
 
 func _input(event: InputEvent) -> void:
@@ -49,8 +65,14 @@ func _input(event: InputEvent) -> void:
 			if not event.is_action(a):
 				continue
 			if event.is_pressed():
-				if not bool(_down.get(a, false)) and now - int(_last_release.get(a, -100000)) < FLICKER_GAP_MS:
-					_note_flicker(now)
+				if not bool(_down.get(a, false)):
+					var gap := now - int(_last_release.get(a, -100000))
+					if gap < FLICKER_GAP_MS:
+						_note_flicker(now)
+						_confirm_hold(a)
+					elif gap < grace_ms():
+						# The first repeat after the initial delay: remember the delay, confirm on the next.
+						_first_gap[a] = gap
 				_down[a] = true
 				_last_press[a] = now
 			else:
@@ -61,6 +83,16 @@ func _input(event: InputEvent) -> void:
 				_jump_count += 1
 			elif event.is_action("drop_item"):
 				_drop_count += 1
+			elif event.is_action("use_item"):
+				_use_count += 1
+			elif event.is_action("reload"):
+				_reload_count += 1
+			elif event.is_action("slot_1"):
+				_request_slot(1)
+			elif event.is_action("slot_2"):
+				_request_slot(2)
+			elif event.is_action("slot_3"):
+				_request_slot(3)
 			elif event.is_action("auto_run"):
 				auto_run = not auto_run
 				GameState.post_message_local("Auto-walk %s (R)" % ("ON" if auto_run else "OFF"), 1.5)
@@ -72,9 +104,35 @@ func _input(event: InputEvent) -> void:
 			look_delta += m.relative * REMOTE_LOOK_SCALE
 	elif event is InputEventMouseButton:
 		var b := event as InputEventMouseButton
+		var in_game := Settings.remote_mode or Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
 		if b.pressed and b.button_index == MOUSE_BUTTON_LEFT and not Settings.remote_mode \
 				and Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
 			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED  # click into the game to look around again
+		elif b.pressed and b.button_index == MOUSE_BUTTON_LEFT and in_game:
+			_use_count += 1
+		elif b.pressed and b.button_index == MOUSE_BUTTON_WHEEL_DOWN and in_game:
+			_request_slot(4)
+		elif b.pressed and b.button_index == MOUSE_BUTTON_WHEEL_UP and in_game:
+			_request_slot(5)
+
+
+func _request_slot(which: int) -> void:
+	_slot_count += 1
+	_slot_request = which
+
+
+func _confirm_hold(a: String) -> void:
+	if bool(_confirmed.get(a, false)):
+		return
+	_confirmed[a] = true
+	# The gap before the first repeat is the remote side's key-repeat delay: that is the grace
+	# we actually need, no more.
+	if _first_gap.has(a):
+		var learned := clampi(int(_first_gap[a]) + GRACE_MARGIN_MS, MIN_GRACE_MS, MAX_GRACE_MS)
+		if learned != Settings.remote_key_gap_ms:
+			Settings.remote_key_gap_ms = learned
+			Settings.save_settings()
+		_first_gap.erase(a)
 
 
 func _note_flicker(now: int) -> void:
@@ -82,6 +140,8 @@ func _note_flicker(now: int) -> void:
 		_flicker_window = now
 		_flickers = 0
 	_flickers += 1
+	if _flickers >= 2:
+		flicker_seen = true
 	if _flickers >= FLICKER_COUNT and not Settings.remote_mode:
 		Settings.remote_mode = true
 		Settings.save_settings()
@@ -91,18 +151,35 @@ func _note_flicker(now: int) -> void:
 		GameState.post_message_local("Remote-desktop input detected: Remote Controls ON (change in Settings)", 5.0)
 
 
-func held(action: String) -> bool:
+## How long a released key still counts as held in Remote Controls mode.
+func grace_ms() -> int:
+	if not flicker_seen:
+		return SHORT_GRACE_MS
+	return clampi(Settings.remote_key_gap_ms, MIN_GRACE_MS, MAX_GRACE_MS)
+
+
+## 0 = released, 1 = held. In Remote Controls mode a key just released is still held at reduced
+## strength until a repeat press proves it was a real hold.
+func strength(action: String) -> float:
 	if GameState.ui_blocking:
-		return false
+		return 0.0
 	if bool(_down.get(action, false)):
-		return true
-	if Settings.remote_mode:
-		return Time.get_ticks_msec() - int(_last_press.get(action, -100000)) < HOLD_GRACE_MS
-	return false
+		return 1.0
+	if not Settings.remote_mode:
+		return 0.0
+	var since := Time.get_ticks_msec() - int(_last_press.get(action, -100000))
+	if since >= grace_ms():
+		_confirmed.erase(action)
+		return 0.0
+	return 1.0 if bool(_confirmed.get(action, false)) else UNCONFIRMED_STRENGTH
+
+
+func held(action: String) -> bool:
+	return strength(action) > 0.0
 
 
 func _axis(neg: String, pos: String) -> float:
-	return (1.0 if held(pos) else 0.0) - (1.0 if held(neg) else 0.0)
+	return strength(pos) - strength(neg)
 
 
 ## Desired movement in camera space: x = right, y = back (forward is -1), length <= 1.
@@ -166,6 +243,23 @@ func jump_count() -> int:
 
 func drop_count() -> int:
 	return _drop_count
+
+
+## Taps of F / left click. Sent as a counter so a tap survives a lost packet.
+func use_count() -> int:
+	return _use_count
+
+
+func reload_count() -> int:
+	return _reload_count
+
+
+func slot_count() -> int:
+	return _slot_count
+
+
+func slot_request() -> int:
+	return _slot_request
 
 
 func use_held() -> bool:

@@ -8,6 +8,7 @@ extends Node
 ##   --port=N                      host or join on another port
 ##   --fake-build=X                pretend to be another build (tests the version check)
 ##   --smoke [--smoke-players=N] / --smoke-client             run tests/smoke_test.gd
+##   --smoke-only=NAME             run just _test_NAME (e.g. crouch, p_lift) after the setup checks
 ##   --shots=DIR                                              save screenshots (tests/screenshots.gd)
 
 var title: TitleMenu
@@ -78,6 +79,7 @@ func _ready() -> void:
 func _exit_tree() -> void:
 	# Static caches hold resources for the whole session; drop them so exit is leak-free.
 	Sfx._cache.clear()
+	Sfx._one_shots.clear()
 	LevelKit._mats.clear()
 	ItemRegistry._by_id.clear()
 	UiTheme._theme = null
@@ -91,6 +93,7 @@ func _handle_cmdline(args: PackedStringArray) -> void:
 	var ip := ""
 	var smoke := ""
 	var smoke_players := 1
+	var smoke_only := ""
 	var shots := ""
 	var port := Net.DEFAULT_PORT
 	for a in args:
@@ -116,6 +119,8 @@ func _handle_cmdline(args: PackedStringArray) -> void:
 			smoke = "client"
 		elif a.begins_with("--smoke-players="):
 			smoke_players = maxi(1, a.trim_prefix("--smoke-players=").to_int())
+		elif a.begins_with("--smoke-only="):
+			smoke_only = a.trim_prefix("--smoke-only=")
 		elif a.begins_with("--shots="):
 			shots = a.trim_prefix("--shots=")
 			mode = "solo"
@@ -137,6 +142,7 @@ func _handle_cmdline(args: PackedStringArray) -> void:
 		test.name = "SmokeTest"
 		test.set("is_client", smoke == "client")
 		test.set("expected_players", smoke_players)
+		test.set("only", smoke_only)
 		add_child(test)
 	if shots != "":
 		var cam_test: Node = load("res://tests/screenshots.gd").new()

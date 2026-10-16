@@ -8,8 +8,9 @@ Move: WASD, or Up/Down arrows to walk and Left/Right or Q/E to turn
 Run: Shift     Jump: Space (jump into a ledge to climb it)
 Brace / sneak: hold Ctrl or C (anchor the chain, move quietly)
 Look: move the mouse (push it against the side of the window to keep turning)
-Use item: F or left click     Drop: G     Camera: V
-Auto-walk: R     Pause and settings: Esc
+Use item: F or left click     Drop: G     Camera: V     Reload: T
+Items: 1 / 2 / 3 or the mouse wheel picks which of your three you hold
+Auto-walk: R     Pause and settings: Esc     Voice: just talk (proximity: close friends hear you)
 
 The thing in the ceiling hunts by sound. Running, shooting, falling and a rattling chain are loud. If it grabs someone, stand next to them and BRACE.
 Upstairs in the pizzeria: Pappy only moves while nobody looks at him and no camera shows him. Stand at a security desk for cameras (F flips them), hold Ctrl at a shutter to keep it down."""
@@ -44,9 +45,18 @@ var _fps_t: float = 0.0
 var _invite_label: Label  # host waiting alone: the invite code, until a friend joins
 var _hints_shown: Dictionary = {}
 var _night: NightShiftPanel
+var _tasks_box: VBoxContainer
+var _slot_panels: Array[PanelContainer] = []
+var _slot_styles: Array[StyleBoxFlat] = []
+var _slot_names: Array[Label] = []
+var _slot_subs: Array[Label] = []
+var _burn_label: Label
+var _voice_label: Label
 
 ## One-time tips the first time you reach each climb: [test point, co-op text, solo text].
 const HINTS: Array = [
+	["spawn", "YOU'RE CHAINED TOGETHER (%.0f m of slack). Follow the green THIS WAY signs up through the building. Ctrl crouches and braces the chain; Shift runs, loudly." % 4.3,
+		"YOU'RE CHAINED TO THE BALLAST (%.0f m of slack). Follow the green THIS WAY signs up through the building. Ctrl crouches and braces; Shift runs, loudly." % 4.3],
 	["crates_start", "CLIMB: walk into the crate and tap Space. Do the same at each ledge.",
 		"CLIMB: walk into the crate and tap Space. Your Ballast follows on the chain."],
 	["plate", "THE LIFT: one of you stands on the yellow plate; the lift rises a moment later. Then hoist that person up with the chain.",
@@ -67,6 +77,10 @@ const HINTS: Array = [
 		"STAGE LIFT: hold Ctrl at the lever (it locks), hop on. Your Ballast gets dragged up after you."],
 	["p_cases", "ROOF ACCESS: climb the case, then the loft. Everyone up there. Someone keep watching him.",
 		"ROOF ACCESS: climb the case, then the loft, with your Ballast. Look at him between jumps."],
+	["tray_start", "CABLE TRAY: a narrow ledge with a stash at the end. Cross one at a time; whoever's below braces in case you slip.",
+		"CABLE TRAY: a narrow ledge with a stash at the end. Your Ballast drags on you if you dawdle."],
+	["p_rail_start", "FLY RAIL: planks over the band, a stash at the end. Jump one plank at a time; a slip yanks your partner off theirs.",
+		"FLY RAIL: planks over the band, a stash at the end. One plank at a time."],
 ]
 
 
@@ -88,6 +102,9 @@ func _ready() -> void:
 	_objective.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_objective.custom_minimum_size = Vector2(430.0, 0.0)
 	top_left.add_child(_objective)
+	_tasks_box = VBoxContainer.new()
+	_tasks_box.add_theme_constant_override("separation", 1)
+	top_left.add_child(_tasks_box)
 	_invite_label = UiTheme.text("", 15, UiTheme.YELLOW)
 	_invite_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_invite_label.custom_minimum_size = Vector2(430.0, 0.0)
@@ -116,21 +133,49 @@ func _ready() -> void:
 	_item_panel.grow_vertical = Control.GROW_DIRECTION_BEGIN
 	root.add_child(_item_panel)
 	var item_box := VBoxContainer.new()
-	item_box.custom_minimum_size = Vector2(300.0, 0.0)
+	item_box.custom_minimum_size = Vector2(320.0, 0.0)
 	_item_panel.add_child(item_box)
-	item_box.add_child(UiTheme.text("LANYARD", 13, UiTheme.YELLOW_DIM))
-	_item_name = UiTheme.heading("EMPTY", 26, UiTheme.PAPER)
+	item_box.add_child(UiTheme.text("LANYARD   (1 2 3 or wheel picks, G drops)", 13, UiTheme.YELLOW_DIM))
+	var slots_row := HBoxContainer.new()
+	slots_row.add_theme_constant_override("separation", 6)
+	item_box.add_child(slots_row)
+	for i in Player.SLOTS:
+		var slot := PanelContainer.new()
+		slot.custom_minimum_size = Vector2(100.0, 46.0)
+		var sb := StyleBoxFlat.new()
+		sb.bg_color = Color(0.1, 0.09, 0.07, 0.9)
+		sb.border_color = UiTheme.YELLOW_DIM
+		sb.set_border_width_all(1)
+		sb.set_corner_radius_all(4)
+		sb.set_content_margin_all(5)
+		slot.add_theme_stylebox_override("panel", sb)
+		var col := VBoxContainer.new()
+		col.add_theme_constant_override("separation", 0)
+		slot.add_child(col)
+		var name_l := UiTheme.text("%d  -" % (i + 1), 14, UiTheme.PAPER)
+		name_l.clip_text = true
+		col.add_child(name_l)
+		var sub_l := UiTheme.text("", 12, UiTheme.YELLOW_DIM)
+		col.add_child(sub_l)
+		slots_row.add_child(slot)
+		_slot_panels.append(slot)
+		_slot_styles.append(sb)
+		_slot_names.append(name_l)
+		_slot_subs.append(sub_l)
+	_item_name = UiTheme.heading("EMPTY", 24, UiTheme.PAPER)
 	item_box.add_child(_item_name)
 	_item_bar = ProgressBar.new()
 	_item_bar.min_value = 0.0
 	_item_bar.max_value = 1.0
 	_item_bar.show_percentage = false
-	_item_bar.custom_minimum_size = Vector2(280.0, 10.0)
+	_item_bar.custom_minimum_size = Vector2(300.0, 10.0)
 	var fill := StyleBoxFlat.new()
 	fill.bg_color = UiTheme.YELLOW
 	_item_bar.add_theme_stylebox_override("fill", fill)
 	item_box.add_child(_item_bar)
 	_item_hint = UiTheme.text("walk into a glowing item to grab it", 14)
+	_item_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_item_hint.custom_minimum_size = Vector2(300.0, 0.0)
 	item_box.add_child(_item_hint)
 
 	var right := VBoxContainer.new()
@@ -170,6 +215,20 @@ func _ready() -> void:
 	_grab_label.grow_vertical = Control.GROW_DIRECTION_BEGIN
 	_grab_label.visible = false
 	root.add_child(_grab_label)
+	_burn_label = UiTheme.heading("", 26, Color(1.0, 0.95, 0.6))
+	_burn_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_burn_label.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM, Control.PRESET_MODE_MINSIZE, 110)
+	_burn_label.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_burn_label.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	_burn_label.visible = false
+	root.add_child(_burn_label)
+	_voice_label = UiTheme.text("", 14, Color(0.6, 1.0, 0.7))
+	_voice_label.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_RIGHT, Control.PRESET_MODE_MINSIZE, 20)
+	_voice_label.offset_top -= 70.0
+	_voice_label.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	_voice_label.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	_voice_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	root.add_child(_voice_label)
 
 	_help = PanelContainer.new()
 	_help.add_theme_stylebox_override("panel", UiTheme.panel_style(0.72))
@@ -213,8 +272,22 @@ func _ready() -> void:
 	add_to_group("hud")
 	GameState.message_posted.connect(_on_message)
 	GameState.objective_changed.connect(func(t: String) -> void: _objective.text = t)
+	GameState.tasks_changed.connect(_refresh_tasks)
 	GameState.layoff_started.connect(_on_layoff)
 	_objective.text = GameState.objective
+	_refresh_tasks()
+
+
+## The task checklist under the objective: what to do next, ticked as the group does it.
+func _refresh_tasks() -> void:
+	for c in _tasks_box.get_children():
+		c.queue_free()
+	for t in GameState.tasks:
+		var done := bool(t[1])
+		var l := UiTheme.text("%s %s" % ["[x]" if done else "[ ]", String(t[0])], 14, Color(0.55, 0.8, 0.5) if done else UiTheme.PAPER)
+		l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		l.custom_minimum_size = Vector2(430.0, 0.0)
+		_tasks_box.add_child(l)
 
 
 func set_help_visible(on: bool) -> void:
@@ -301,6 +374,7 @@ func night_static_face() -> void:
 func reset() -> void:
 	_hints_shown.clear()
 	_night.visible = false
+	_night.clear_scare()
 	for entry in _caption_lines:
 		(entry[0] as Label).queue_free()
 	_caption_lines.clear()
@@ -349,10 +423,22 @@ func _process(delta: float) -> void:
 		_night.visible = in_pizzeria
 		if in_pizzeria:
 			_night.refresh(delta, me, pizzeria)
-	# Item card.
+	# Item card: three slots, the selected one lit, plus the selected item's name, bar and hint.
+	for i in _slot_panels.size():
+		var id := me.slot_ids[i] if i < me.slot_ids.size() else ""
+		var sel := i == me.selected_slot
+		var d := ItemRegistry.get_data(id) if id != "" else null
+		_slot_names[i].text = "%d  %s" % [i + 1, (d.display_name if d != null else (id if id != "" else "-"))]
+		_slot_names[i].add_theme_color_override("font_color", UiTheme.YELLOW if sel else UiTheme.PAPER)
+		_slot_subs[i].text = (me.ammo_text if sel and me.ammo_text != "" else "")
+		_slot_styles[i].border_color = UiTheme.YELLOW if sel else UiTheme.YELLOW_DIM
+		_slot_styles[i].set_border_width_all(2 if sel else 1)
 	if me.held_item_id != "":
 		var data := ItemRegistry.get_data(me.held_item_id)
-		_item_name.text = data.display_name.to_upper() if data != null else me.held_item_id.to_upper()
+		var title := data.display_name.to_upper() if data != null else me.held_item_id.to_upper()
+		if me.ammo_text != "":
+			title += "   %s" % me.ammo_text
+		_item_name.text = title
 		_item_hint.text = (data.hud_hint if data != null else "F to use") + "   G drops it"
 		_item_bar.value = me.item_charge
 		_item_bar.visible = true
@@ -360,6 +446,19 @@ func _process(delta: float) -> void:
 		_item_name.text = "EMPTY"
 		_item_hint.text = "walk into a glowing item to grab it"
 		_item_bar.visible = false
+	# Someone is burning a grabber with a light: show how close it is to letting go.
+	var burn := 0.0
+	var burn_who := ""
+	for c in get_tree().get_nodes_in_group("monster"):
+		var b: float = float(c.get("burn_fraction")) if c.get("burn_fraction") != null else 0.0
+		if b > burn and int(c.get("grab_peer")) != 0:
+			burn = b
+			var victim := Net.find_player(int(c.get("grab_peer")))
+			burn_who = victim.display_name if victim != null else "them"
+	_burn_label.visible = burn > 0.02
+	if _burn_label.visible:
+		_burn_label.text = "LIGHT ON IT: %d%%   (keep the beam on it to free %s)" % [int(burn * 100.0), burn_who]
+	_voice_label.text = Voice.status_text()
 	# Noise meter.
 	_noise_bar.value = me.noise
 	var n := clampf(me.noise / 60.0, 0.0, 1.0)
@@ -392,6 +491,7 @@ func _process(delta: float) -> void:
 	else:
 		_chain_label.text = ""
 	_crosshair.visible = me.camera_mode == Player.CameraMode.FIRST_PERSON or me.held_item_id in ["pistol", "flashlight", "bomb", "decoy", "popper", "airhorn"]
+	_crosshair.color = Color(1.0, 0.4, 0.3, 0.9) if me.held_item_id == "pistol" and me.ammo_text.begins_with("0 ") else Color(1.0, 1.0, 1.0, 0.7)
 	_grab_label.visible = (me.synced_flags & Player.SFLAG_GRABBED) != 0
 
 
