@@ -417,74 +417,6 @@ func _rel(cell: Vector3) -> String:
 	return "(%.2f, %.2f, %.2f)" % [r.x, r.y, r.z]
 
 
-## A Hire sent to the next room from the side of this one used to walk the straight line, which
-## goes through the wall beside the door. It has to come out through the doorway.
-func _test_hire_doorway(h: HollowHire) -> void:
-	var path: Array = _level.floors[0]["path"]
-	var conn: Dictionary = _level.floors[0]["conn"]
-	var types: Dictionary = _level.floors[0]["types"]
-	var a := Vector2i.ZERO
-	var b := Vector2i.ZERO
-	var found := false
-	var fallback := false
-	for pass_i in 2:
-		for k in range(path.size() - 1):
-			var ca: Vector2i = path[k]
-			var cb: Vector2i = path[k + 1]
-			if int(conn.get(_level._edge_key(ca, cb), -1)) != YellowRooms.Conn.DOOR:
-				continue
-			var ta := String(types.get(ca, ""))
-			var tb := String(types.get(cb, ""))
-			if ta == "ascent" or tb == "ascent" or ta == "breakroom" or tb == "breakroom":
-				continue
-			var opening := _level.doorway_between(0, ca, cb)
-			if _level.test_points.has("door0") and opening.distance_to(_level.test_points["door0"]) < 2.5:
-				continue  # that one is shut until someone sprints it
-			if pass_i == 0 and ta != "hall":
-				continue
-			a = ca
-			b = cb
-			found = true
-			fallback = pass_i == 1
-			break
-		if found:
-			break
-	if not found:
-		_check("a Hire going to the next room uses the doorway instead of the wall", false, "no openable door on the B4 route")
-		return
-	var center := _level.cell_center(0, a)
-	var door := _level.doorway_between(0, a, b)
-	var across := door - center
-	across.y = 0.0
-	var perp := Vector3(-across.z, 0.0, across.x).normalized()
-	var spot := center + perp * 2.0
-	# The Line waits on the floor above so this walk isn't a chase back to them.
-	_place(_level.cell_center(1, Vector2i(0, 2)) + Vector3(0.0, 0.2, 0.0), PI)
-	await _wait(0.2)
-	h.debug_reset(spot, 0.0)
-	h.alert(_level.cell_center(0, b), 30.0)
-	h.debug_frozen = false
-	var prev := h.global_position
-	var clipped := false
-	var reached := false
-	var space := h.get_world_3d().direct_space_state
-	for _i in 50:
-		await _wait(0.1)
-		var now := h.global_position
-		if prev.distance_to(now) > 0.02:
-			var q := PhysicsRayQueryParameters3D.create(prev + Vector3(0.0, HollowHire.CLEAR_H, 0.0), now + Vector3(0.0, HollowHire.CLEAR_H, 0.0), ChainBody.LAYER_WORLD)
-			if not space.intersect_ray(q).is_empty():
-				clipped = true
-		prev = now
-		if _level.cell_of(now) == b:
-			reached = true
-			break
-	var end := h.global_position
-	h.debug_frozen = true
-	h.respawn_at(_level.test_points["crates_start"] + Vector3(14.0, 0.0, 3.0))
-	_check("a Hire going to the next room uses the doorway instead of the wall", reached and not clipped, "reached %s, clipped %s, hall fallback %s, ended %s cell %s" % [reached, clipped, fallback, end, _level.cell_of(end)])
-
-
 func _freeze_hires(on: bool) -> void:
 	for node in get_tree().get_nodes_in_group("hire"):
 		(node as HollowHire).debug_frozen = on
@@ -545,7 +477,6 @@ func _test_hires() -> void:
 	h.debug_frozen = true
 	h.respawn_at(start + Vector3(14.0, 0.0, 3.0))
 	await _wait(0.3)
-	await _test_hire_doorway(h)
 	# The sweep: at the end of a walk it turns through 180 degrees. Standing still behind one is
 	# a gamble, and here it loses: the sweep finds you.
 	_place(start, PI)

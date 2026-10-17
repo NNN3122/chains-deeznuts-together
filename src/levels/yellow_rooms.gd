@@ -1190,19 +1190,6 @@ func _tick_ambush() -> void:
 	GameState.post_message("BEHIND YOU. Everyone in the elevator. NOW.", 3.0)
 
 
-## The opening between two neighbouring cells (the middle of the shared wall), or y < 0 when
-## those cells don't share a door. Hires aim at this on the way through, so a body standing
-## off to one side of a room doesn't cut the corner and walk through the wall.
-func doorway_between(i: int, a: Vector2i, b: Vector2i) -> Vector3:
-	if i < 0 or i >= floors.size() or absi(a.x - b.x) + absi(a.y - b.y) != 1:
-		return Vector3(0.0, -1.0, 0.0)
-	if not (floors[i]["conn"] as Dictionary).has(_edge_key(a, b)):
-		return Vector3(0.0, -1.0, 0.0)
-	var mid := (cell_center(i, a) + cell_center(i, b)) * 0.5
-	mid.y = float(i) * FLOOR_H
-	return mid
-
-
 ## The route between two cells through the doorways (the maze), for the Hires.
 func route(i: int, from: Vector2i, to: Vector2i) -> Array[Vector2i]:
 	if i < 0 or i >= floors.size():

@@ -9,8 +9,7 @@ extends Node3D
 ## stuns it for a moment (then it's wise to the trick for a few seconds); two Snubby rounds or a
 ## bomb drop it for good, and the floor sends a replacement in from somewhere you aren't looking.
 ## Loud noises draw them over to look. Break Rooms are safe: they stop at the door.
-## They walk the route through the doorways (a straight line from the side of a room to the next
-## room's centre would cut the wall). Every floor's first Hire keeps to the rooms round the way up, the rest
+## They walk the route: every floor's first Hire keeps to the rooms round the way up, the rest
 ## lean toward the green-sign path, so you meet one. At the end of a walk they stop and sweep
 ## the room through 180 degrees, so standing still in front of one is a gamble. One that sees
 ## you screams, and every other Hire on the floor answers and comes running: a sighting is a
@@ -50,9 +49,6 @@ const INVESTIGATE_NOISE: float = 20.0  # effective loudness that turns its head
 const TURN_SPEED: float = 7.0  # rad/s
 const SAFE_WAIT: float = 3.0  # s it stands at a Break Room door before wandering off
 const HEAD_H: float = 1.62
-const BODY_RADIUS: float = 0.32  # m kept clear of a wall: a 1.4 m doorway still lets it through
-const CLEAR_H: float = 1.15  # m: over desks and chair backs, through a doorway, into a real wall
-const STUCK_TIME: float = 1.2  # s of not moving before a wander picks somewhere else
 
 var level: YellowRooms
 var floor_index: int = 0
@@ -87,7 +83,6 @@ var _alert_t: float = 0.0  # s left of "the floor is awake": it hunts the neares
 var _sweep_base: float = 0.0
 var _sweep_dir: float = 1.0
 var _hold: Node3D = null  # the decoy it is standing over
-var _stuck_t: float = 0.0  # s the last step didn't move it (a wall, a shelf)
 var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
 
 # Visuals.
@@ -501,10 +496,7 @@ func _tick_chase(delta: float) -> void:
 			_give_up()
 		return
 	var goal := _last_seen
-	# A thin line of sight can still cut the corner of a doorway. Only run straight when the
-	# whole body fits; otherwise go room to room through the openings.
-	if seen and _body_fits(goal):
-		_route.clear()
+	if seen and _has_clear_floor_line(goal):
 		_move_toward(goal, CHASE_SPEED, delta)
 	else:
 		_route_toward(goal)
@@ -641,7 +633,6 @@ func respawn_at(pos: Vector3) -> void:
 	_dead_t = 0.0
 	_alert_t = 0.0
 	_hold = null
-	_stuck_t = 0.0
 	burn_fraction = 0.0
 	_pick_wander()
 
@@ -704,45 +695,17 @@ func _route_toward(p: Vector3) -> void:
 	_goal = p
 
 
-## Walks the route one room at a time, through the doorway between them. A straight line from
-## wherever it is standing to the next room's centre cuts the wall beside the door, so the
-## doorway is the waypoint until it has passed through. Returns true when there is nothing left.
+## Walks the route one cell centre at a time. Returns true when there is nothing left to walk.
 func _follow_route(speed: float, delta: float) -> bool:
 	if _route.is_empty():
-		if (hstate == HState.INVESTIGATE or hstate == HState.CHASE) and _flat_dist(_goal) > 0.4:
-			_move_toward(_goal, speed, delta)
-			return false
+		if hstate == HState.INVESTIGATE or hstate == HState.CHASE:
+			if _flat_dist(_goal) > 0.4:
+				_move_toward(_goal, speed, delta)
+				return false
 		return true
-	var next: Vector2i = _route[0]
-	var here := level.cell_of(global_position)
-	var dest := level.cell_center(floor_index, next)
-	if here != next:
-		var door := level.doorway_between(floor_index, here, next)
-		if door.y < 0.0:
-			# The route's next room isn't a neighbour of where it's actually standing.
-			if hstate == HState.WANDER:
-				_pick_wander()
-			else:
-				_route_toward(_goal if _goal != Vector3.ZERO else dest)
-			return false
-		if _flat_dist(door) > 0.45:
-			var center := level.cell_center(floor_index, here)
-			if _body_fits(door):
-				dest = door
-			elif _flat_dist(center) > 0.5 and _body_fits(center):
-				dest = center  # back into the room, then out through the opening
-			else:
-				dest = door
-	var before := global_position
-	_move_toward(dest, speed, delta)
-	if global_position.distance_to(before) < 0.002:
-		_stuck_t += delta
-		if _stuck_t > STUCK_TIME and hstate == HState.WANDER:
-			_stuck_t = 0.0
-			_pick_wander()
-	else:
-		_stuck_t = 0.0
-	if level.cell_of(global_position) == next and _flat_dist(level.cell_center(floor_index, next)) < 0.45:
+	var next := level.cell_center(floor_index, _route[0]) + Vector3(0.0, 0.0, 0.0)
+	_move_toward(next, speed, delta)
+	if _flat_dist(next) < 0.35:
 		_route.pop_front()
 	return false
 
@@ -754,48 +717,16 @@ func _move_toward(target: Vector3, speed: float, delta: float) -> void:
 		return
 	_face(target, delta)
 	var step := to.normalized() * minf(speed * delta, to.length())
-	if _step_fits(step):
-		global_position += step
-	else:
-		# A wall takes the component that would enter it; the other slides along it.
-		var along_x := Vector3(step.x, 0.0, 0.0)
-		var along_z := Vector3(0.0, 0.0, step.z)
-		if absf(step.x) >= absf(step.z) and _step_fits(along_x):
-			global_position += along_x
-		elif _step_fits(along_z):
-			global_position += along_z
-		elif _step_fits(along_x):
-			global_position += along_x
+	global_position += step
 	global_position.y = floor_y
 
 
-## The centre of this one step. A long path uses _body_fits (the shoulders too); the step itself
-## is a centre ray so it can still slide along a wall it isn't allowed to enter. At chase speed
-## a tick is shorter than a wall is thick, and the ray catches a step that would come out the other side.
-func _step_fits(step: Vector3) -> bool:
-	if step.length() < 0.0001:
-		return true
-	var from := global_position + Vector3(0.0, CLEAR_H, 0.0)
-	var q := PhysicsRayQueryParameters3D.create(from, from + step, ChainBody.LAYER_WORLD)
+## Straight to the target without a wall in the way, at knee height (desks don't count).
+func _has_clear_floor_line(target: Vector3) -> bool:
+	var from := global_position + Vector3(0.0, 1.2, 0.0)
+	var to := Vector3(target.x, global_position.y + 1.2, target.z)
+	var q := PhysicsRayQueryParameters3D.create(from, to, ChainBody.LAYER_WORLD)
 	return get_world_3d().direct_space_state.intersect_ray(q).is_empty()
-
-
-## True when the capsule can walk the straight line to target without entering a wall.
-func _body_fits(target: Vector3) -> bool:
-	var flat := Vector3(target.x - global_position.x, 0.0, target.z - global_position.z)
-	var len := flat.length()
-	if len < 0.02:
-		return true
-	var dir := flat / len
-	var side := Vector3(-dir.z, 0.0, dir.x) * BODY_RADIUS
-	var space := get_world_3d().direct_space_state
-	for offset in [Vector3.ZERO, side, -side]:
-		var from := global_position + offset + Vector3(0.0, CLEAR_H, 0.0)
-		var to := Vector3(target.x, global_position.y + CLEAR_H, target.z) + offset
-		var q := PhysicsRayQueryParameters3D.create(from, to, ChainBody.LAYER_WORLD)
-		if not space.intersect_ray(q).is_empty():
-			return false
-	return true
 
 
 func _face(target: Vector3, delta: float) -> void:
