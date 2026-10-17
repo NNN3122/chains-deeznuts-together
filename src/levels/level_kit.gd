@@ -474,6 +474,14 @@ static func _emissive(color: Color, energy: float) -> StandardMaterial3D:
 	return m
 
 
+## The tower's red light: bright enough to bloom, and out of the fog, so it reads from the far
+## end of the route.
+static func _beacon() -> StandardMaterial3D:
+	var m := _emissive(Color(1.0, 0.04, 0.03), 9.0)
+	m.disable_fog = true
+	return m
+
+
 static func _make(key: String) -> Material:
 	match key:
 		"wall": return _shader_mat(WALL_SHADER)
@@ -565,6 +573,7 @@ static func _make(key: String) -> Material:
 		"party_cloth": return _std(Color(0.95, 0.35, 0.5), 0.8)
 		"camera": return _std(Color(0.85, 0.85, 0.82), 0.4, 0.3)
 		"led_red": return _emissive(Color(1.0, 0.05, 0.05), 5.0)
+		"beacon": return _beacon()
 		# Level 3 tech: the Loading Lot and the infected.
 		"asphalt": return _std(Color(0.09, 0.09, 0.1), 0.97)
 		"paint": return _std(Color(0.85, 0.8, 0.5), 0.8)
@@ -613,18 +622,29 @@ static func make_environment(quality: int, level: int = 0) -> Environment:
 	env.ambient_light_color = Color(0.55, 0.42, 0.42) if pizzeria else Color(0.62, 0.55, 0.4)
 	env.ambient_light_energy = 0.11 if pizzeria else 0.045  # rooms are lit by their own tubes, or not at all; the office is pools of light
 	if outdoors:
-		env.ambient_light_color = Color(0.5, 0.42, 0.5)
-		env.ambient_light_energy = 0.18
+		# The horror pass: a cold, starved ambient and a fog that eats the city past a roof or two,
+		# so the landing lamps are pools you run between and the tower's red light (which ignores
+		# fog) is the only bright thing out there.
+		env.ambient_light_color = Color(0.34, 0.38, 0.5)
+		env.ambient_light_energy = 0.075
 		env.tonemap_mode = Environment.TONE_MAPPER_AGX
-		env.tonemap_exposure = 1.0
+		env.tonemap_exposure = 0.95
 		env.glow_enabled = true
-		env.glow_intensity = 0.6
-		env.glow_hdr_threshold = 1.2
+		env.glow_intensity = 0.75
+		env.glow_bloom = 0.04
+		env.glow_hdr_threshold = 1.1
 		env.ssao_enabled = quality >= 1
 		env.fog_enabled = true
-		env.fog_light_color = Color(0.08, 0.11, 0.14)
-		env.fog_density = 0.018
-		env.fog_sky_affect = 0.25
+		env.fog_light_color = Color(0.022, 0.028, 0.04)
+		env.fog_density = 0.032
+		env.fog_sky_affect = 0.55
+		# Lamps hang halos in the murk on high; the moon barely lights it (Moon's volumetric energy).
+		env.volumetric_fog_enabled = quality >= 2
+		env.volumetric_fog_density = 0.014
+		env.volumetric_fog_albedo = Color(0.55, 0.58, 0.64)
+		env.volumetric_fog_length = 56.0
+		env.volumetric_fog_anisotropy = 0.45
+		env.volumetric_fog_ambient_inject = 0.0
 		env.adjustment_enabled = true
 		env.adjustment_contrast = 1.06
 		env.adjustment_saturation = 0.85

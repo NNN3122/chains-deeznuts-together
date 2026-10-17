@@ -123,59 +123,16 @@ func _ready() -> void:
 # --- Visuals: a spider the size of a sofa ------------------------------------------------------------
 
 func _build_visuals() -> void:
-	_model = Node3D.new()
-	_model.name = "Model"
-	add_child(_model)
-	var shell := LevelKit.mat("jumper_shell")
-	var fur := LevelKit.mat("jumper_fur")
-	var joint := LevelKit.mat("rubber")
-	_body = Node3D.new()
-	_body.position = Vector3(0.0, BODY_H, 0.0)
-	_model.add_child(_body)
-	# Cephalothorax forward, the big furred abdomen behind, a stripe down its back.
-	_box(_body, Vector3(1.0, 0.7, 1.1), Vector3(0.0, 0.0, -0.3), shell)
-	_sphere(_body, 0.75, Vector3(0.0, 0.15, 0.9), fur, Vector3(1.1, 0.9, 1.3))
-	_box(_body, Vector3(0.12, 0.05, 1.4), Vector3(0.0, 0.5, 0.8), LevelKit.mat("courier_sash"))
-	# The head: a cluster of eyes over a pair of fangs, chelicerae that work while it winds up.
-	_head = Node3D.new()
-	_head.position = Vector3(0.0, 0.1, -0.85)
-	_body.add_child(_head)
-	_box(_head, Vector3(0.6, 0.45, 0.4), Vector3(0.0, 0.0, 0.0), shell)
-	for k in 8:
-		var a := float(k) / 8.0 * TAU
-		var r := 0.17 if k % 2 == 0 else 0.26
-		var e := MeshInstance3D.new()
-		var em := SphereMesh.new()
-		em.radius = 0.055 if k % 2 == 0 else 0.035
-		em.height = em.radius * 2.0
-		e.mesh = em
-		e.position = Vector3(cos(a) * r, 0.08 + sin(a) * 0.12, -0.21)
-		e.material_override = LevelKit.mat("infected_eye")
-		_head.add_child(e)
-		_eyes.append(e)
-	for s: float in [-1.0, 1.0]:
-		_box(_head, Vector3(0.08, 0.3, 0.08), Vector3(s * 0.12, -0.3, -0.15), joint)
-	# Eight legs: a root pivot at the body's side, a knee pivot halfway, two thick segments and a
-	# claw. Rows front to back; the back pair is the spring.
-	for row in 4:
-		for s: float in [-1.0, 1.0]:
-			var z := -0.55 + float(row) * 0.4
-			var root := Node3D.new()
-			root.position = Vector3(s * 0.5, -0.1, z)
-			_body.add_child(root)
-			var upper := 1.0 + 0.2 * float(row == 0 or row == 3)
-			_cyl(root, 0.075, upper, Vector3(s * upper * 0.5, 0.0, 0.0), shell, true)
-			var knee := Node3D.new()
-			knee.position = Vector3(s * upper, 0.0, 0.0)
-			root.add_child(knee)
-			var lower := 1.1
-			_cyl(knee, 0.055, lower, Vector3(s * lower * 0.35, -lower * 0.45, 0.0), joint, true)
-			_box(knee, Vector3(0.06, 0.18, 0.06), Vector3(s * lower * 0.7, -lower * 0.95, 0.0), joint)
-			root.rotation.z = s * 0.55  # up from the body...
-			knee.rotation.z = -s * 1.45  # ...and down to the ground
-			root.rotation.y = -s * (0.5 - float(row) * 0.33)  # fanned front to back
-			_legs.append(root)
-			_knees.append(knee)
+	var jb := JumperBody.new()
+	jb.name = "Model"
+	add_child(jb)
+	jb.build(BODY_H)
+	_model = jb
+	_body = jb.body
+	_head = jb.head
+	_legs = jb.legs
+	_knees = jb.knees
+	_eyes = jb.eyes
 	_hitbox = Area3D.new()
 	_hitbox.collision_layer = ChainBody.LAYER_MONSTER
 	_hitbox.collision_mask = 0
@@ -201,43 +158,6 @@ func _build_visuals() -> void:
 	tm.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	_thread.material_override = tm
 	add_child(_thread)
-
-
-func _box(parent: Node3D, size: Vector3, at: Vector3, m: Material) -> void:
-	var mi := MeshInstance3D.new()
-	var b := BoxMesh.new()
-	b.size = size
-	mi.mesh = b
-	mi.position = at
-	mi.material_override = m
-	parent.add_child(mi)
-
-
-func _sphere(parent: Node3D, r: float, at: Vector3, m: Material, scl: Vector3 = Vector3.ONE) -> void:
-	var mi := MeshInstance3D.new()
-	var s := SphereMesh.new()
-	s.radius = r
-	s.height = r * 2.0
-	mi.mesh = s
-	mi.position = at
-	mi.scale = scl
-	mi.material_override = m
-	parent.add_child(mi)
-
-
-## A leg segment: a tapered cylinder lying along x (sideways) when `along_x`, else upright.
-func _cyl(parent: Node3D, r: float, h: float, at: Vector3, m: Material, along_x: bool = false) -> void:
-	var mi := MeshInstance3D.new()
-	var c := CylinderMesh.new()
-	c.top_radius = r * 0.7
-	c.bottom_radius = r
-	c.height = h
-	mi.mesh = c
-	mi.position = at
-	if along_x:
-		mi.rotation.z = PI * 0.5
-	mi.material_override = m
-	parent.add_child(mi)
 
 
 func chest_point() -> Vector3:
@@ -768,6 +688,8 @@ func _update_visuals(delta: float) -> void:
 			_model.position.y = 0.0
 	if grab_peer != _shown_grab:
 		_shown_grab = grab_peer
+		if grab_peer != 0:
+			Sfx.play_at(self, "scream", head_point(), 8.0, 1.4, 40.0)  # a shriek no throat should make
 		var victim := Net.find_player(grab_peer)
 		if victim != null and victim.is_local:
 			Sfx.play(self, "stinger", 0.0)

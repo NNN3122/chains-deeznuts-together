@@ -121,51 +121,15 @@ func _ready() -> void:
 # --- Visuals ----------------------------------------------------------------------------------------
 
 func _build_visuals() -> void:
-	_model = Node3D.new()
-	_model.name = "Model"
-	add_child(_model)
-	var white := LevelKit.mat("chef_white")
-	var skin := LevelKit.mat("chef_skin")
-	var dark := LevelKit.mat("rubber")
-	# Boots, trousers, a barrel of a torso in a double-breasted jacket, kerchief.
-	for s: float in [-0.3, 0.3]:
-		_box(_model, Vector3(0.36, 0.22, 0.55), Vector3(s, 0.11, -0.05), dark)
-		_cyl(_model, 0.17, 0.5, Vector3(s, 0.47, 0.0), LevelKit.mat("hazard_dark"))
-	_cyl(_model, 0.62, 1.1, Vector3(0.0, 1.25, 0.0), white, 0.7)
-	_cyl(_model, 0.55, 0.3, Vector3(0.0, 0.75, 0.0), white, 0.62)
-	for s: float in [-0.14, 0.14]:
-		for h: float in [1.1, 1.35, 1.6]:
-			_sphere(_model, 0.035, Vector3(s, h, -0.6), dark)
-	_box(_model, Vector3(0.5, 0.16, 0.5), Vector3(0.0, 1.85, -0.1), LevelKit.mat("kerchief"))
-	# Arms with gloved hands the size of hams.
-	_arm_l = _arm(-1.0)
-	_arm_r = _arm(1.0)
-	# Head: a big rubber face, a mustache, teeth, pepperoni eyes, the hat.
-	_head = Node3D.new()
-	_head.position = Vector3(0.0, HEAD_HEIGHT - 0.3, 0.0)
-	_model.add_child(_head)
-	_sphere(_head, 0.36, Vector3(0.0, 0.3, 0.0), skin, Vector3(1.0, 1.1, 1.0))
-	_sphere(_head, 0.12, Vector3(0.0, 0.26, -0.36), skin)  # nose
-	_box(_head, Vector3(0.5, 0.09, 0.08), Vector3(0.0, 0.14, -0.37), LevelKit.mat("mustache"))
-	for s: float in [-1.0, 1.0]:
-		_box(_head, Vector3(0.16, 0.07, 0.07), Vector3(s * 0.3, 0.17, -0.3), LevelKit.mat("mustache"), Vector3(0.0, 0.0, s * 0.5))
-	_box(_head, Vector3(0.34, 0.1, 0.06), Vector3(0.0, 0.03, -0.33), dark)  # the grin
-	for k in 6:
-		_box(_head, Vector3(0.04, 0.07, 0.03), Vector3(-0.125 + 0.05 * float(k), 0.03, -0.355), LevelKit.mat("teeth"))
-	for s: float in [-1.0, 1.0]:
-		var e := MeshInstance3D.new()
-		var em := CylinderMesh.new()
-		em.top_radius = 0.075
-		em.bottom_radius = 0.075
-		em.height = 0.03
-		e.mesh = em
-		e.position = Vector3(s * 0.14, 0.4, -0.365)
-		e.rotation = Vector3(PI * 0.5, 0.0, 0.0)
-		e.material_override = LevelKit.mat("pepperoni")
-		_head.add_child(e)
-		_eyes.append(e)
-	_cyl(_head, 0.3, 0.14, Vector3(0.0, 0.7, 0.0), white)
-	_sphere(_head, 0.34, Vector3(0.0, 0.95, 0.0), white, Vector3(1.15, 0.8, 1.15))
+	var body := PappyBody.new()
+	body.name = "Model"
+	add_child(body)
+	body.build()
+	_model = body
+	_head = body.head
+	_arm_l = body.arm_l
+	_arm_r = body.arm_r
+	_eyes = body.eyes
 	var eye_glow := OmniLight3D.new()
 	eye_glow.light_color = Color(1.0, 0.15, 0.05)
 	eye_glow.light_energy = 0.8
@@ -195,6 +159,8 @@ func _build_visuals() -> void:
 	pm.color = Color(1.0, 0.8, 0.3)
 	_sparks.process_material = pm
 	var q := SphereMesh.new()
+	q.radial_segments = 6  # a spark
+	q.rings = 3
 	q.radius = 0.02
 	q.height = 0.04
 	var qm := StandardMaterial3D.new()
@@ -218,53 +184,6 @@ func _build_visuals() -> void:
 	hs.position = Vector3(0.0, 1.3, 0.0)
 	hb.add_child(hs)
 	add_child(hb)
-
-
-func _arm(side: float) -> Node3D:
-	var pivot := Node3D.new()
-	pivot.position = Vector3(side * 0.7, 1.72, 0.0)
-	_model.add_child(pivot)
-	_cyl(pivot, 0.13, 0.75, Vector3(0.0, -0.38, 0.0), LevelKit.mat("chef_white"))
-	_sphere(pivot, 0.2, Vector3(0.0, -0.85, 0.0), LevelKit.mat("chef_white"), Vector3(1.0, 0.8, 1.2))
-	for k in 4:
-		_cyl(pivot, 0.045, 0.22, Vector3(-0.12 + 0.08 * float(k), -1.05, -0.08), LevelKit.mat("chef_white"))
-	pivot.rotation.z = side * 0.18
-	return pivot
-
-
-func _box(parent: Node3D, size: Vector3, at: Vector3, m: Material, rot: Vector3 = Vector3.ZERO) -> void:
-	var mi := MeshInstance3D.new()
-	var b := BoxMesh.new()
-	b.size = size
-	mi.mesh = b
-	mi.position = at
-	mi.rotation = rot
-	mi.material_override = m
-	parent.add_child(mi)
-
-
-func _sphere(parent: Node3D, r: float, at: Vector3, m: Material, scl: Vector3 = Vector3.ONE) -> void:
-	var mi := MeshInstance3D.new()
-	var s := SphereMesh.new()
-	s.radius = r
-	s.height = r * 2.0
-	mi.mesh = s
-	mi.position = at
-	mi.scale = scl
-	mi.material_override = m
-	parent.add_child(mi)
-
-
-func _cyl(parent: Node3D, r: float, h: float, at: Vector3, m: Material, top_r: float = -1.0) -> void:
-	var mi := MeshInstance3D.new()
-	var c := CylinderMesh.new()
-	c.top_radius = top_r if top_r >= 0.0 else r
-	c.bottom_radius = r
-	c.height = h
-	mi.mesh = c
-	mi.position = at
-	mi.material_override = m
-	parent.add_child(mi)
 
 
 func chest_point() -> Vector3:
@@ -867,14 +786,21 @@ func _update_visuals(delta: float) -> void:
 		_model.rotation.y = lerp_angle(_model.rotation.y, synced_yaw, clampf(delta * 10.0, 0.0, 1.0))
 	if pstate != _shown_state:
 		_shown_state = pstate
+		if pstate == PState.GRAB:
+			# A scream through a broken speaker: deep, torn, too loud.
+			Sfx.play_at(self, "scream", head_point(), 9.0, 0.72, 40.0)
+			var caught := Net.find_player(grab_peer)
+			if caught != null and caught.is_local:
+				Sfx.play(self, "roar", 0.0, 0.8)
 		if pstate == PState.LUNGE:
+			Sfx.play_at(self, "scream", head_point(), 8.0, 0.68, 40.0)
 			var tw := create_tween()
-			tw.tween_property(_arm_l, "rotation:x", -2.4, 0.2)
-			tw.parallel().tween_property(_arm_r, "rotation:x", -2.4, 0.2)
+			tw.tween_property(_arm_l, "rotation:x", 2.4, 0.2)  # positive x swings an arm forward
+			tw.parallel().tween_property(_arm_r, "rotation:x", 2.4, 0.2)
 		elif pstate == PState.RUSH:
 			var tw := create_tween()
-			tw.tween_property(_arm_l, "rotation:x", -1.4, 0.3)
-			tw.parallel().tween_property(_arm_r, "rotation:x", -1.4, 0.3)
+			tw.tween_property(_arm_l, "rotation:x", 1.4, 0.3)
+			tw.parallel().tween_property(_arm_r, "rotation:x", 1.4, 0.3)
 			Sfx.caption(self, "heavy footsteps, fast", chest_point())
 		elif pstate != PState.GRAB:
 			var tw := create_tween()

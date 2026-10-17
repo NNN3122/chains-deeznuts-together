@@ -35,6 +35,16 @@ const VIEW_HALF_ANGLE: float = 1.05  # rad: about 60 degrees to each side
 const LOSE_SIGHT_TIME: float = 3.5  # s out of sight before it gives up on where you were
 const GRAB_RANGE: float = 1.3
 const GRAB_TIME: float = 3.5  # s pinned before the layoff
+const GRAB_REACH: float = 0.85  # m in front of it a caught player is held
+const GRAB_LIFT: float = 0.12  # m off the floor: just onto its toes, its face a little above yours
+# The catch, seconds into the hold (every peer plays it from when it sees the grab start):
+const SLASHES: Array[float] = [0.55, 1.1, 1.65]  # each: the claw goes up, then rakes across
+const SLASH_WINDUP: float = 0.26
+const SLASH_SWIPE: float = 0.12
+const BITE_OPEN: float = 2.15  # the jaw drops, the head draws back
+const BITE_LUNGE: float = 2.85  # the head comes for your face
+const BITE_SNAP: float = 3.3  # and closes
+const SCREAM_NEAR: float = 5.5  # m: chasing you, it screams once as it closes this near
 const RESCUE_NEEDED: float = 2.0  # resist-seconds from teammates beside the victim (bracing counts double)
 const RESCUE_RADIUS: float = 2.5
 const BURN_TO_STUN: float = 0.45  # s of a flashlight on its face
@@ -93,6 +103,10 @@ var _arm_l: Node3D
 var _arm_r: Node3D
 var _thigh_l: Node3D
 var _thigh_r: Node3D
+var _jaw: Node3D
+var _catch_t: float = 0.0  # every peer: seconds into the catch it is playing
+var _catch_prev: float = 0.0
+var _screamed_near: bool = false  # every peer: this chase has had its close-in scream
 var _hitbox: Area3D
 var _phase: float = 0.0
 var _shown_state: int = -1
@@ -123,6 +137,7 @@ func _ready() -> void:
 	synced_position = global_position
 	_last_pos = global_position
 	_build_visuals()
+	_model.rotation.y = synced_yaw
 	if multiplayer.is_server():
 		_pick_wander()
 
@@ -130,41 +145,18 @@ func _ready() -> void:
 # --- Visuals -----------------------------------------------------------------------------------
 
 func _build_visuals() -> void:
-	_model = Node3D.new()
-	_model.name = "Model"
-	add_child(_model)
-	var skin := LevelKit.mat("hire_skin")
-	var shirt := LevelKit.mat("hire_shirt")
-	var vest := LevelKit.mat("hire_vest")
-	var pants := LevelKit.mat("fabric")
-	var dark := LevelKit.mat("rubber")
-	_hips = Node3D.new()
-	_hips.position = Vector3(0.0, 0.95, 0.0)
-	_model.add_child(_hips)
-	_box(_hips, Vector3(0.34, 0.2, 0.22), Vector3(0.0, 0.08, 0.0), pants)
-	_box(_hips, Vector3(0.38, 0.5, 0.24), Vector3(0.0, 0.43, 0.0), shirt)
-	_box(_hips, Vector3(0.42, 0.44, 0.27), Vector3(0.0, 0.45, 0.0), vest)
-	_box(_hips, Vector3(0.44, 0.04, 0.28), Vector3(0.0, 0.36, 0.0), LevelKit.mat("fixture"))  # a reflective band
-	_box(_hips, Vector3(0.06, 0.3, 0.03), Vector3(0.0, 0.5, -0.145), LevelKit.mat("hazard"))  # the lanyard
-	# The head: a smooth egg, no face, a hard hat a size too small, tilted.
-	_head = Node3D.new()
-	_head.position = Vector3(0.0, 0.7, 0.0)
-	_hips.add_child(_head)
-	_cyl(_head, 0.05, 0.12, Vector3(0.0, 0.05, 0.0), skin)
-	_sphere(_head, 0.13, Vector3(0.0, 0.24, 0.0), skin, Vector3(0.9, 1.2, 1.0))
-	var hat := MeshInstance3D.new()
-	var dm := SphereMesh.new()
-	dm.radius = 0.12
-	dm.height = 0.12
-	dm.is_hemisphere = true
-	hat.mesh = dm
-	hat.position = Vector3(0.0, 0.34, 0.0)
-	hat.material_override = LevelKit.mat("sign")
-	_head.add_child(hat)
-	_arm_l = _arm(-1.0, shirt, skin)
-	_arm_r = _arm(1.0, shirt, skin)
-	_thigh_l = _leg(-1.0, pants, dark)
-	_thigh_r = _leg(1.0, pants, dark)
+	var body := HireBody.new()
+	body.name = "Model"
+	add_child(body)
+	body.build()
+	_model = body
+	_hips = body.hips
+	_head = body.head
+	_arm_l = body.arm_l
+	_arm_r = body.arm_r
+	_thigh_l = body.thigh_l
+	_thigh_r = body.thigh_r
+	_jaw = body.jaw
 	_hitbox = Area3D.new()
 	_hitbox.collision_layer = ChainBody.LAYER_MONSTER
 	_hitbox.collision_mask = 0
@@ -179,59 +171,119 @@ func _build_visuals() -> void:
 	add_child(_hitbox)
 
 
-func _arm(side: float, shirt: Material, skin: Material) -> Node3D:
-	var pivot := Node3D.new()
-	pivot.position = Vector3(side * 0.24, 0.62, 0.0)
-	_hips.add_child(pivot)
-	_cyl(pivot, 0.05, 0.34, Vector3(0.0, -0.17, 0.0), shirt)
-	_cyl(pivot, 0.042, 0.34, Vector3(0.0, -0.5, 0.0), skin)
-	_box(pivot, Vector3(0.08, 0.1, 0.05), Vector3(0.0, -0.72, 0.0), skin)
-	pivot.rotation.z = side * 0.1
-	return pivot
+## Where its face is right now (the caught player's view locks on it).
+func face_point() -> Vector3:
+	# During the bite, the mouth: that's what is coming for you.
+	if hstate == HState.GRAB and _catch_t >= BITE_OPEN:
+		return _head.to_global(Vector3(0.0, 0.15, -0.12))
+	return _head.to_global(Vector3(0.0, 0.25, -0.1))
 
 
-func _leg(side: float, pants: Material, dark: Material) -> Node3D:
-	var thigh := Node3D.new()
-	thigh.position = Vector3(side * 0.11, 0.0, 0.0)
-	_hips.add_child(thigh)
-	_cyl(thigh, 0.075, 0.46, Vector3(0.0, -0.23, 0.0), pants)
-	_cyl(thigh, 0.065, 0.42, Vector3(0.0, -0.68, 0.0), pants)
-	_box(thigh, Vector3(0.12, 0.08, 0.28), Vector3(0.0, -0.91, -0.05), dark)
-	return thigh
+## The catch, as a pose at _catch_t seconds into it: [left arm, right arm, head, lean, jaw, head z].
+## The left hand has you by the throat the whole time; the right claw goes up and rakes across you
+## three times; then the jaw drops open far too wide, the head draws back, and comes for your face.
+func _catch_pose(t: float) -> Array:
+	var g := _catch_t
+	var arm_l := Vector3(2.15 + 0.05 * sin(t * 17.0), 0.0, -0.12)  # by the throat, squeezing
+	var arm_r := Vector3(1.3, 0.0, 0.45)
+	var head := Vector3(0.3 + 0.06 * sin(t * 11.0), 0.0, 0.25 * sin(t * 3.0))  # tipped up, studying your face
+	var lean := 0.15
+	var jaw := -0.2 - 0.1 * sin(t * 9.0)
+	var head_z := 0.0
+	if g < 0.35:
+		arm_l = Vector3(2.15 * g / 0.35, 0.0, -0.12)
+	for at in SLASHES:
+		var u := g - at
+		if u >= 0.0 and u < SLASH_WINDUP:
+			arm_r = Vector3(3.0, 0.0, 0.55)  # up and out, the claws over its head
+			jaw = -0.5
+		elif u >= SLASH_WINDUP and u < SLASH_WINDUP + SLASH_SWIPE + 0.1:
+			arm_r = Vector3(1.1, 0.0, -0.65)  # raked down and across you
+			lean = 0.4
+	if g >= BITE_OPEN and g < BITE_LUNGE:
+		arm_r = Vector3(2.3, 0.0, 0.2)  # both hands on you now
+		head = Vector3(0.75, 0.0, 0.0)  # head back
+		jaw = -1.15  # the jaw hanging wide
+		lean = 0.15
+	elif g >= BITE_LUNGE:
+		arm_r = Vector3(2.3, 0.0, 0.2)
+		head = Vector3(0.35, 0.0, 0.0)  # level: the open mouth comes at you, not the top of its head
+		head_z = -0.2  # the face comes into yours
+		lean = 0.35
+		jaw = -1.15 if g < BITE_SNAP else 0.05  # ...and snaps shut
+	return [arm_l, arm_r, head, lean, jaw, head_z]
 
 
-func _box(parent: Node3D, size: Vector3, at: Vector3, m: Material) -> void:
-	var mi := MeshInstance3D.new()
-	var b := BoxMesh.new()
-	b.size = size
-	mi.mesh = b
-	mi.position = at
-	mi.material_override = m
-	parent.add_child(mi)
+## The catch's hits, on every peer: each rake, the jaw dropping, the bite. Whoever is caught gets
+## them in the face: the sound, the screen flash and shake.
+func _tick_catch_events() -> void:
+	var a := _catch_prev
+	var b := _catch_t
+	_catch_prev = b
+	var victim := Net.find_player(grab_peer)
+	var mine := victim != null and victim.is_local
+	var at := victim.global_position + Vector3(0.0, 1.3, 0.0) if victim != null else chest_point()
+	for s in SLASHES:
+		var hit := s + SLASH_WINDUP + SLASH_SWIPE * 0.5
+		if a < s and b >= s:
+			_fx_local("growl", at, -2.0, 1.3)
+		if a < hit and b >= hit:
+			Sfx.play_at(self, "scrape", at, 2.0, 0.55, 22.0)
+			_blood(at)
+			if mine:
+				Sfx.play(self, "stinger", -4.0, 1.4)
+				ScareDirector.call("_flash", 0.4)
+				ScreenFx.jolt(0.22)
+				victim.add_shake(0.7)
+	if a < BITE_OPEN and b >= BITE_OPEN:
+		(_model as HireBody).hat.visible = false  # knocked off as the head goes back
+		Sfx.play_at(self, "roar", head_point(), 6.0, 1.0, 26.0)
+		if mine:
+			victim.add_shake(0.4)
+	if a < BITE_SNAP and b >= BITE_SNAP:
+		Sfx.play_at(self, "thump", at, 4.0, 0.5, 22.0)
+		_blood(at + Vector3(0.0, 0.3, 0.0))
+		if mine:
+			Sfx.play(self, "stinger", 4.0, 0.7)
+			ScareDirector.call("_flash", 0.9)
+			ScreenFx.jolt(0.6)
+			victim.add_shake(1.2)
 
 
-func _sphere(parent: Node3D, r: float, at: Vector3, m: Material, scl: Vector3 = Vector3.ONE) -> void:
-	var mi := MeshInstance3D.new()
-	var s := SphereMesh.new()
-	s.radius = r
-	s.height = r * 2.0
-	mi.mesh = s
-	mi.position = at
-	mi.scale = scl
-	mi.material_override = m
-	parent.add_child(mi)
+func _fx_local(bank: String, at: Vector3, db: float, pitch: float) -> void:
+	Sfx.play_at(self, bank, at, db, pitch, 22.0)
 
 
-func _cyl(parent: Node3D, r: float, h: float, at: Vector3, m: Material) -> void:
-	var mi := MeshInstance3D.new()
-	var c := CylinderMesh.new()
-	c.top_radius = r
-	c.bottom_radius = r * 0.9
-	c.height = h
-	mi.mesh = c
-	mi.position = at
-	mi.material_override = m
-	parent.add_child(mi)
+## A burst of dark red, local to every peer (it's only spray: nothing stays on the floor).
+func _blood(at: Vector3) -> void:
+	if not is_inside_tree():
+		return
+	var p := CPUParticles3D.new()
+	p.one_shot = true
+	p.amount = 26
+	p.lifetime = 0.7
+	p.explosiveness = 0.95
+	p.direction = Vector3(0.0, 0.4, 1.0)
+	p.spread = 70.0
+	p.initial_velocity_min = 1.5
+	p.initial_velocity_max = 4.0
+	p.gravity = Vector3(0.0, -9.0, 0.0)
+	p.scale_amount_min = 0.5
+	p.scale_amount_max = 1.2
+	var m := SphereMesh.new()
+	m.radius = 0.018
+	m.height = 0.036
+	m.radial_segments = 6
+	m.rings = 3
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(0.32, 0.01, 0.02)
+	mat.roughness = 0.2
+	m.material = mat
+	p.mesh = m
+	get_tree().current_scene.add_child(p)
+	p.global_position = at
+	p.emitting = true
+	get_tree().create_timer(1.2).timeout.connect(p.queue_free)
 
 
 func head_point() -> Vector3:
@@ -375,6 +427,7 @@ func _start_chase(p: Player) -> void:
 
 @rpc("authority", "call_local", "reliable")
 func _rpc_seen() -> void:
+	Sfx.play_at(self, "scream", head_point(), 4.0, randf_range(0.95, 1.08), 50.0)
 	Sfx.caption(self, "a scream: it's seen you", head_point())
 	var me := Net.get_local_player()
 	if me != null and me.global_position.distance_to(global_position) < 20.0:
@@ -401,6 +454,7 @@ func join_chase(p: Player) -> void:
 
 @rpc("authority", "call_local", "reliable")
 func _rpc_answered() -> void:
+	Sfx.play_at(self, "scream", head_point(), -2.0, randf_range(0.85, 0.95), 45.0)
 	Sfx.caption(self, "another scream answers", head_point())
 
 
@@ -535,7 +589,9 @@ func _tick_grab(delta: float) -> void:
 		release(false)
 		return
 	_t += delta
-	_grabbed.global_position = global_position + facing() * 0.55 + Vector3(0.0, 0.05, 0.0)
+	# Held out at arm's length by the throat, lifted off its feet.
+	var lift := GRAB_LIFT * smoothstep(0.0, 0.35, _t)
+	_grabbed.global_position = global_position + facing() * GRAB_REACH + Vector3(0.0, 0.05 + lift, 0.0)
 	_grabbed.synced_position = _grabbed.global_position
 	for b in Net.get_chain_bodies():
 		if b != _grabbed and b.global_position.distance_to(_grabbed.global_position) < RESCUE_RADIUS:
@@ -828,6 +884,22 @@ func _update_visuals(delta: float) -> void:
 	_vis_speed = lerpf(_vis_speed, moved, clampf(delta * 8.0, 0.0, 1.0))
 	if not multiplayer.is_server():
 		_model.rotation.y = lerp_angle(_model.rotation.y, synced_yaw, clampf(delta * 12.0, 0.0, 1.0))
+	# Screams, on every peer from the replicated state: once as it closes on whoever it's after,
+	# and in your face when it has you.
+	if hstate == HState.CHASE and not _screamed_near:
+		var prey := Net.find_player(hunt_peer)
+		if prey != null and prey.global_position.distance_to(global_position) < SCREAM_NEAR:
+			_screamed_near = true
+			Sfx.play_at(self, "scream", head_point(), 7.0, randf_range(1.0, 1.12), 45.0)
+			if prey.is_local:
+				prey.add_shake(0.5)
+	elif hstate != HState.CHASE:
+		_screamed_near = false
+	if hstate != _shown_state and hstate == HState.GRAB:
+		Sfx.play_at(self, "scream", head_point(), 8.0, 1.15, 40.0)
+		var caught := Net.find_player(grab_peer)
+		if caught != null and caught.is_local:
+			Sfx.play(self, "scream", 0.0, 1.15)  # inside your head as well
 	if hstate != _shown_state:
 		_shown_state = hstate
 		if hstate == HState.DEAD:
@@ -857,6 +929,15 @@ func _update_visuals(delta: float) -> void:
 	var arm_r := Vector3(0.3 * s, 0.0, 0.1) if walking else Vector3(0.05 * sin(t * 1.3), 0.0, 0.1)
 	# The head: always tilted a little too far, and it keeps turning to whoever is looking at it.
 	var head_t := Vector3(0.1 * sin(t * 0.7), 0.0, 0.35 + 0.1 * sin(t * 0.5))
+	var jaw_t := -0.04 - 0.03 * maxf(0.0, sin(t * 0.9))  # never quite closed
+	var head_z := 0.0
+	if hstate == HState.GRAB:
+		_catch_t += delta
+		_tick_catch_events()
+	else:
+		_catch_t = 0.0
+		(_model as HireBody).hat.visible = true
+		_catch_prev = 0.0
 	var cam := get_viewport().get_camera_3d()
 	if cam != null and _model.visible and hstate != HState.DEAD:
 		var local := _model.to_local(cam.global_position) - _hips.position - _head.position
@@ -864,17 +945,22 @@ func _update_visuals(delta: float) -> void:
 			head_t.y = clampf(atan2(-local.x, -local.z), -1.2, 1.2)
 	match hstate:
 		HState.CHASE:
-			arm_l = Vector3(-1.9 + 0.2 * s, 0.0, -0.3)
-			arm_r = Vector3(-1.9 - 0.2 * s, 0.0, 0.3)
+			# Arms out ahead (positive x swings an arm forward), jaw hanging open.
+			arm_l = Vector3(1.9 + 0.2 * s, 0.0, -0.3)
+			arm_r = Vector3(1.9 - 0.2 * s, 0.0, 0.3)
 			head_t = Vector3(-0.3, head_t.y, 0.5 * sin(t * 9.0))
+			jaw_t = -0.45 - 0.15 * sin(t * 13.0)
 		HState.GRAB:
-			arm_l = Vector3(-1.5, 0.0, -0.5 + 0.1 * sin(t * 12.0))
-			arm_r = Vector3(-1.5, 0.0, 0.5 - 0.1 * sin(t * 12.0))
-			lean = 0.3
-			head_t = Vector3(-0.4, 0.3 * sin(t * 7.0), 0.0)
+			var pose := _catch_pose(t)
+			arm_l = pose[0]
+			arm_r = pose[1]
+			head_t = pose[2]
+			lean = pose[3]
+			jaw_t = pose[4]
+			head_z = pose[5]
 		HState.STUNNED:
-			arm_l = Vector3(-2.6, 0.0, -0.4)  # hands over the face
-			arm_r = Vector3(-2.6, 0.0, 0.4)
+			arm_l = Vector3(2.6, 0.0, -0.4)  # hands over the face
+			arm_r = Vector3(2.6, 0.0, 0.4)
 			lean = -0.2
 			head_t = Vector3(0.5, 0.0, 0.6 * sin(t * 11.0))
 		HState.INVESTIGATE:
@@ -892,6 +978,9 @@ func _update_visuals(delta: float) -> void:
 	_arm_l.rotation = _arm_l.rotation.lerp(arm_l + Vector3(0.0, 0.0, -0.1), k)
 	_arm_r.rotation = _arm_r.rotation.lerp(arm_r + Vector3(0.0, 0.0, 0.1), k)
 	_head.rotation = _head.rotation.lerp(head_t, k)
+	var kf := 1.0 - exp(-24.0 * delta)  # the jaw and the bite are quick
+	_jaw.rotation.x = lerpf(_jaw.rotation.x, jaw_t, kf)
+	_head.position.z = lerpf(_head.position.z, head_z, kf)
 	# Footsteps (quick and wrong while chasing), and a caption now and then while it wanders.
 	if walking and _model.visible:
 		_caption_t -= delta

@@ -10,7 +10,7 @@ const IDS: Array[String] = [
 	"whisper", "phone", "slam", "heartbeat", "jet", "gulp", "pickup", "lift", "ding", "tile",
 	"growl", "scrape", "click", "flashlight",
 	"jukebox", "servo", "shutter", "bell", "klaxon", "static", "popper", "airhorn", "birthday", "bang",
-	"screech",
+	"screech", "wind", "skitter", "scream", "roar",
 ]
 
 ## Sounds that get an on-screen caption (Settings.captions), with direction worked out by the HUD.
@@ -21,6 +21,7 @@ const CAPTIONS: Dictionary = {
 	"servo": "servo whine, rising", "shutter": "a shutter rolls", "bell": "the counter bell rings",
 	"klaxon": "overload klaxon", "popper": "party popper", "airhorn": "AIR HORN", "bang": "BANG on the shutter",
 	"birthday": "the band sings, slowly", "screech": "a SCREECH: it's about to jump",
+	"scream": "a SCREAM", "roar": "a roar, right on you",
 }
 
 static var _cache: Dictionary = {}
@@ -156,6 +157,10 @@ static func _build(id: String) -> AudioStreamWAV:
 		"birthday": return _pack(_birthday())
 		"bang": return _pack(_bang())
 		"screech": return _pack(_screech())
+		"wind": return _pack(_wind(), true)
+		"skitter": return _pack(_skitter())
+		"scream": return _pack(_scream())
+		"roar": return _pack(_roar())
 	push_warning("Sfx: unknown sound '%s'" % id)
 	return _pack(PackedFloat32Array([0.0]))
 
@@ -287,19 +292,35 @@ static func _thump(seconds: float, freq: float) -> PackedFloat32Array:
 	return b
 
 
+## The jump-scare hit: a slam of low strings a semitone apart, a shriek of high ones on top that
+## won't settle, a burst of noise and a sub thump under it all. Instant attack, a long ugly tail.
 static func _stinger() -> PackedFloat32Array:
-	var b := _buf(0.9)
+	var dur := 1.4
+	var b := _buf(dur)
 	var r := _rng(1337)
-	var phase := 0.0
+	var lows: Array[float] = [55.0, 58.3, 82.4, 87.3, 110.0]
+	var highs: Array[float] = [1760.0, 1864.7, 2349.3, 2489.0]
+	var ph := PackedFloat32Array()
+	ph.resize(lows.size())
+	var lp := 0.0
+	var a := _lp_coef(1800.0)
 	for i in b.size():
 		var t := float(i) / RATE
-		var env := 1.0 if t < 0.08 else exp(-(t - 0.08) * 5.0)
-		var freq := 190.0 - 120.0 * (t / 0.9)
-		phase += freq / RATE
-		var saw := 2.0 * (phase - floorf(phase)) - 1.0
-		var screech := sin(TAU * (1800.0 + 600.0 * sin(TAU * 13.0 * t)) * t) * 0.25
-		b[i] = (saw * 0.55 + r.randf_range(-0.7, 0.7) + screech) * env
-	return b
+		var low := 0.0
+		for k in lows.size():
+			ph[k] += lows[k] * (1.0 + 0.004 * sin(TAU * (3.0 + float(k)) * t)) / RATE
+			low += 2.0 * (ph[k] - floorf(ph[k])) - 1.0
+		lp += a * (low * 0.35 - lp)
+		var high := 0.0
+		for k in highs.size():
+			var vib := 1.0 + 0.012 * sin(TAU * (9.0 + 2.3 * float(k)) * t)
+			high += sin(TAU * highs[k] * vib * t)
+		var env_low := exp(-t * 1.8)
+		var env_high := minf(1.0, t * 60.0) * exp(-t * 2.4)
+		var burst := r.randf_range(-1.0, 1.0) * exp(-t * 14.0)
+		var sub := sin(TAU * (48.0 - 20.0 * t) * t) * exp(-t * 6.0)
+		b[i] = tanh((lp * env_low + high * 0.16 * env_high + burst * 0.9 + sub * 0.9) * 1.6)
+	return _normalize(b, 0.95)
 
 
 static func _shot() -> PackedFloat32Array:
@@ -653,4 +674,141 @@ static func _bang() -> PackedFloat32Array:
 		var t := float(i) / RATE
 		var ring := 0.3 * sin(TAU * 310.0 * t) * exp(-t * 6.0) + 0.15 * sin(TAU * 470.0 * t) * exp(-t * 9.0)
 		b[i] = b[i] * 1.2 + ring + r.randf_range(-0.6, 0.6) * exp(-t * 40.0)
+	return b
+
+
+# --- Screams ---------------------------------------------------------------------------------------
+
+## One resonant band-pass (RBJ, constant peak gain) for vowel formants. state: x1, x2, y1, y2.
+static func _bandpass(x: float, f: float, q: float, state: PackedFloat32Array, k: int) -> float:
+	var w0 := TAU * clampf(f, 40.0, float(RATE) * 0.45) / float(RATE)
+	var alpha := sin(w0) / (2.0 * q)
+	var a0 := 1.0 + alpha
+	var y := (alpha * x - alpha * state[k + 1] + 2.0 * cos(w0) * state[k + 2] - (1.0 - alpha) * state[k + 3]) / a0
+	state[k + 1] = state[k]
+	state[k] = x
+	state[k + 3] = state[k + 2]
+	state[k + 2] = y
+	return y
+
+
+static func _normalize(b: PackedFloat32Array, peak: float) -> PackedFloat32Array:
+	var m := 0.0001
+	for v in b:
+		m = maxf(m, absf(v))
+	for i in b.size():
+		b[i] = b[i] / m * peak
+	return b
+
+
+## A scream with a throat in it: three ragged voices (one an octave down, rasping) through vowel
+## formants that slide from an open "aah" to a thin "eee", driven into distortion. It jumps up at
+## the start, shakes, cracks higher near the end and falls away. Played near you as it closes in,
+## and in your face when it has you.
+static func _scream() -> PackedFloat32Array:
+	var dur := 1.7
+	var b := _buf(dur)
+	var r := _rng(613)
+	var ratios: Array[float] = [1.0, 1.012, 0.497]
+	var amps: Array[float] = [0.55, 0.45, 0.6]
+	var ph := PackedFloat32Array([0.0, 0.31, 0.62])
+	var st := PackedFloat32Array()
+	st.resize(16)
+	var breath := 0.0
+	for i in b.size():
+		var t := float(i) / RATE
+		var u := t / dur
+		var f0 := 520.0 + 400.0 * smoothstep(0.0, 0.1, u) + 160.0 * sin(TAU * 6.5 * t) * u
+		if u > 0.6 and u < 0.68:
+			f0 += 340.0  # the crack
+		f0 -= 300.0 * maxf(0.0, u - 0.74) / 0.26
+		f0 *= 1.0 + r.randf_range(-0.025, 0.025)
+		var src := 0.0
+		for v in 3:
+			ph[v] += f0 * ratios[v] / RATE
+			var saw := 2.0 * (ph[v] - floorf(ph[v])) - 1.0
+			src += saw * amps[v]
+		breath += 0.3 * (r.randf_range(-1.0, 1.0) - breath)
+		src += breath * (0.5 + 0.4 * u)
+		var vowel := smoothstep(0.15, 0.7, u)
+		var out := _bandpass(src, lerpf(850.0, 420.0, vowel), 5.0, st, 0) * 1.0
+		out += _bandpass(src, lerpf(1300.0, 2250.0, vowel), 7.0, st, 4) * 0.8
+		out += _bandpass(src, lerpf(2600.0, 3000.0, vowel), 9.0, st, 8) * 0.55
+		out += _bandpass(src, 3800.0, 11.0, st, 12) * 0.35
+		var env := minf(1.0, t * 40.0) * (1.0 if u < 0.78 else maxf(0.0, 1.0 - (u - 0.78) / 0.22))
+		b[i] = tanh(out * 2.6) * env
+	return _normalize(b, 0.95)
+
+
+## A roar right on you: two deep rasping voices, a rattle in the throat, heavy distortion.
+static func _roar() -> PackedFloat32Array:
+	var dur := 1.3
+	var b := _buf(dur)
+	var r := _rng(617)
+	var ph := PackedFloat32Array([0.0, 0.5])
+	var st := PackedFloat32Array()
+	st.resize(8)
+	var n := 0.0
+	for i in b.size():
+		var t := float(i) / RATE
+		var u := t / dur
+		var f0 := 95.0 + 40.0 * smoothstep(0.0, 0.2, u) - 30.0 * u + r.randf_range(-6.0, 6.0)
+		ph[0] += f0 / RATE
+		ph[1] += f0 * 1.51 / RATE
+		var src := (2.0 * (ph[0] - floorf(ph[0])) - 1.0) * 0.7 + (2.0 * (ph[1] - floorf(ph[1])) - 1.0) * 0.4
+		n += 0.5 * (r.randf_range(-1.0, 1.0) - n)
+		src += n * 0.9 * (0.6 + 0.4 * sin(TAU * 27.0 * t))  # the rattle
+		var out := _bandpass(src, 420.0, 3.0, st, 0) + _bandpass(src, 1050.0, 4.0, st, 4) * 0.6
+		var env := minf(1.0, t * 25.0) * (1.0 if u < 0.7 else maxf(0.0, 1.0 - (u - 0.7) / 0.3))
+		b[i] = tanh(out * 3.5) * env
+	return _normalize(b, 0.95)
+
+
+# --- Level 3 --------------------------------------------------------------------------------------
+
+## Night wind over the roofs: low rushing noise that swells and drops in slow gusts, with a thin
+## whistle riding the strongest of them. Loops (seamless).
+static func _wind() -> PackedFloat32Array:
+	var b := _buf(9.0)
+	var r := _rng(211)
+	var lp := 0.0
+	var lp2 := 0.0
+	var bp := 0.0
+	var bp2 := 0.0
+	var a := _lp_coef(320.0)
+	var aw := _lp_coef(1100.0)
+	var aw2 := _lp_coef(700.0)
+	for i in b.size():
+		var t := float(i) / RATE
+		var n := r.randf_range(-1.0, 1.0)
+		lp += a * (n - lp)
+		lp2 += a * (lp - lp2)
+		bp += aw * (n - bp)
+		bp2 += aw2 * (bp - bp2)
+		var gust := 0.55 + 0.3 * sin(TAU * t / 9.0) + 0.15 * sin(TAU * t / 3.0 + 1.3)
+		var whistle := (bp - bp2) * maxf(0.0, gust - 0.7) * 2.2
+		b[i] = lp2 * 3.2 * gust + whistle
+	return _seamless(b, 0.8)
+
+
+## Something with a lot of legs moving fast inside sheet metal: a scatter of tiny hard ticks that
+## bunches up and thins out over a second and a half, over the duct ringing faintly.
+static func _skitter() -> PackedFloat32Array:
+	var b := _buf(1.5)
+	var r := _rng(223)
+	for k in 70:
+		var at := r.randf() * 1.35
+		at *= 0.6 + 0.4 * sin(at * 7.0) * sin(at * 7.0)  # bunched, not even
+		var start := int(at * RATE)
+		var f := r.randf_range(2600.0, 5200.0)
+		var amp := r.randf_range(0.15, 0.45) * sin(PI * minf(at / 1.35, 1.0))
+		for j in int(0.012 * RATE):
+			var idx := start + j
+			if idx >= b.size():
+				break
+			var t := float(j) / RATE
+			b[idx] += amp * (sin(TAU * f * t) * 0.6 + r.randf_range(-0.5, 0.5)) * exp(-t * 520.0)
+	for i in b.size():
+		var t := float(i) / RATE
+		b[i] += 0.04 * sin(TAU * 610.0 * t) * sin(PI * t / 1.5) * (0.5 + 0.5 * sin(TAU * 23.0 * t))
 	return b

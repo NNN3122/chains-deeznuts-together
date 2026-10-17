@@ -112,42 +112,26 @@ func pop_hat(impulse: Vector3) -> void:
 
 func build(index: int) -> void:
 	scale = Vector3.ONE * SCALE
-	var vest := _mat(VEST_COLORS[index % VEST_COLORS.size()], 0.75)
-	var skin := _mat(SKIN_TONES[(index * 7 + 3) % SKIN_TONES.size()], 0.7)
-	skin.subsurf_scatter_enabled = true
-	skin.subsurf_scatter_strength = 0.25
-	var pants := _mat(Color(0.17, 0.2, 0.27), 0.92)
-	var boots := _mat(Color(0.2, 0.13, 0.07), 0.6)
-	var sole := _mat(Color(0.06, 0.05, 0.05), 0.9)
-	var shirt := _mat(Color(0.78, 0.8, 0.84), 0.9)
-	var gloves := _mat(Color(0.62, 0.5, 0.32), 0.85)
-	var dark := _mat(Color(0.04, 0.035, 0.03), 0.4)
-	var white := _mat(Color(0.95, 0.94, 0.9), 0.3)
-	var hair := _mat(HAIR_COLORS[index % HAIR_COLORS.size()], 0.85)
-	var strip := StandardMaterial3D.new()
-	strip.albedo_color = Color(0.82, 0.85, 0.88)
-	strip.metallic = 0.7
-	strip.roughness = 0.15
-	strip.emission_enabled = true
-	strip.emission = Color(0.8, 0.85, 0.9)
-	strip.emission_energy_multiplier = 0.25
-	var hat_color := Color(1.0, 0.8, 0.06) if index % 2 == 0 else Color(0.95, 0.95, 0.93)
-	var hat_mat := _mat(hat_color, 0.5)  # scuffed plastic: glossy enough to catch light, not a mirror
-
+	var skin_c := SKIN_TONES[(index * 7 + 3) % SKIN_TONES.size()]
+	var vest_c := VEST_COLORS[index % VEST_COLORS.size()]
+	var hair_c := HAIR_COLORS[index % HAIR_COLORS.size()]
+	var hat_c := Color(1.0, 0.8, 0.06) if index % 2 == 0 else Color(0.95, 0.95, 0.93)
+	# Sculpted parts (PlayerParts), one smooth mesh per bone of the rig below.
+	var cloth := Sculpt.material(0.0, 0.0, 0.0, 0.0, 0.45)
+	var flesh := Sculpt.material(0.05, 0.0, 0.0, 0.35, 0.3)
+	var plastic := Sculpt.material(0.0, 0.0, 0.0, 0.0, 0.1)
 	pelvis = _pivot(self, _pelvis_base)
-	_capsule(pelvis, 0.15, 0.42, Vector3(0.0, 0.0, 0.0), pants, Vector3(0.0, 0.0, PI * 0.5), Vector3(1.0, 1.0, 0.75))
+	Sculpt.put(pelvis, PlayerParts.pelvis(), cloth)
 	# Legs: thigh -> knee -> shin -> ankle -> boot.
 	thigh_l = _pivot(pelvis, Vector3(-0.1, -0.03, 0.0))
 	thigh_r = _pivot(pelvis, Vector3(0.1, -0.03, 0.0))
 	for side in [[thigh_l, -1.0], [thigh_r, 1.0]]:
 		var thigh: Node3D = side[0]
-		_capsule(thigh, 0.088, 0.48, Vector3(0.0, -0.21, 0.0), pants)
+		Sculpt.put(thigh, PlayerParts.thigh(), cloth)
 		var knee := _pivot(thigh, Vector3(0.0, -0.43, 0.0))
-		_capsule(knee, 0.072, 0.46, Vector3(0.0, -0.2, 0.0), pants)
+		Sculpt.put(knee, PlayerParts.shin(), cloth)
 		var ankle := _pivot(knee, Vector3(0.0, -0.42, 0.0))
-		_box(ankle, Vector3(0.13, 0.11, 0.27), Vector3(0.0, -0.025, -0.05), boots)
-		_box(ankle, Vector3(0.135, 0.03, 0.29), Vector3(0.0, -0.085, -0.05), sole)
-		_sphere(ankle, 0.066, Vector3(0.0, -0.02, -0.17), boots, Vector3(1.0, 0.8, 1.0))
+		Sculpt.put(ankle, PlayerParts.boot(), cloth)
 		if side[1] < 0.0:
 			knee_l = knee
 			ankle_l = ankle
@@ -156,16 +140,7 @@ func build(index: int) -> void:
 			ankle_r = ankle
 	# Torso: spine -> chest -> neck -> head.
 	spine = _pivot(pelvis, Vector3(0.0, 0.07, 0.0))
-	_capsule(spine, 0.155, 0.32, Vector3(0.0, 0.13, 0.0), shirt, Vector3.ZERO, Vector3(1.0, 1.0, 0.8))
-	var belt := MeshInstance3D.new()
-	var bt := TorusMesh.new()
-	bt.inner_radius = 0.15
-	bt.outer_radius = 0.185
-	belt.mesh = bt
-	belt.scale = Vector3(1.0, 1.0, 0.82)
-	belt.position = Vector3(0.0, 0.0, 0.0)
-	belt.material_override = dark
-	spine.add_child(belt)
+	Sculpt.put(spine, PlayerParts.belly(), cloth)
 	var cuff := MeshInstance3D.new()
 	var ct := TorusMesh.new()
 	ct.inner_radius = 0.028
@@ -175,80 +150,34 @@ func build(index: int) -> void:
 	cuff.position = Vector3(0.0, -0.01, -0.17)
 	cuff.material_override = LevelKit.mat("chain")
 	spine.add_child(cuff)
-	_box(spine, Vector3(0.1, 0.12, 0.06), Vector3(0.16, 0.0, 0.08), boots)  # tool pouch
 	chest = _pivot(spine, Vector3(0.0, 0.28, 0.0))
-	_capsule(chest, 0.195, 0.44, Vector3(0.0, 0.1, 0.0), shirt, Vector3.ZERO, Vector3(1.12, 1.0, 0.78))
-	# Hi-vis vest wraps the chest; reflective bands wrap the vest.
-	var vest_mesh := MeshInstance3D.new()
-	var vc := CylinderMesh.new()
-	vc.top_radius = 0.205
-	vc.bottom_radius = 0.19
-	vc.height = 0.46
-	vest_mesh.mesh = vc
-	vest_mesh.scale = Vector3(1.12, 1.0, 0.82)
-	vest_mesh.position = Vector3(0.0, 0.07, 0.0)
-	vest_mesh.material_override = vest
-	chest.add_child(vest_mesh)
-	for y: float in [-0.04, 0.12]:
-		var band := MeshInstance3D.new()
-		var bc := CylinderMesh.new()
-		bc.top_radius = 0.208
-		bc.bottom_radius = 0.205
-		bc.height = 0.035
-		band.mesh = bc
-		band.scale = Vector3(1.12, 1.0, 0.82)
-		band.position = Vector3(0.0, y, 0.0)
-		band.material_override = strip
-		chest.add_child(band)
-	_box(chest, Vector3(0.09, 0.1, 0.03), Vector3(-0.1, 0.14, -0.165), vest)  # chest pocket
-	_box(chest, Vector3(0.02, 0.34, 0.025), Vector3(0.0, 0.08, -0.175), dark)  # zip
+	Sculpt.put(chest, PlayerParts.chest(vest_c), cloth)
 	neck = _pivot(chest, Vector3(0.0, 0.33, 0.0))
-	_capsule(neck, 0.058, 0.14, Vector3(0.0, 0.04, 0.0), skin)
+	Sculpt.put(neck, PlayerParts.neck(skin_c), flesh)
 	head = _pivot(neck, Vector3(0.0, 0.13, 0.0))
-	_sphere(head, 0.118, Vector3(0.0, 0.03, 0.0), skin, Vector3(1.0, 1.16, 1.06))
-	_sphere(head, 0.075, Vector3(0.0, -0.045, -0.04), skin, Vector3(1.05, 0.9, 1.0))  # jaw
-	_capsule(head, 0.022, 0.07, Vector3(0.0, 0.02, -0.122), skin, Vector3(0.25, 0.0, 0.0))  # nose
-	for s: float in [-1.0, 1.0]:
-		_sphere(head, 0.03, Vector3(s * 0.118, 0.025, 0.005), skin, Vector3(0.45, 1.0, 0.8))  # ear
-		_sphere(head, 0.02, Vector3(s * 0.042, 0.055, -0.1), white)
-		_sphere(head, 0.011, Vector3(s * 0.042, 0.055, -0.116), dark)
-		_box(head, Vector3(0.045, 0.012, 0.015), Vector3(s * 0.043, 0.085, -0.108), hair, Vector3(0.0, 0.0, -s * 0.12))
-	_box(head, Vector3(0.05, 0.01, 0.01), Vector3(0.0, -0.035, -0.112), dark)  # mouth
-	_sphere(head, 0.122, Vector3(0.0, 0.05, 0.022), hair, Vector3(1.02, 1.0, 1.05))  # hair under the hat
+	Sculpt.put(head, PlayerParts.head(skin_c, hair_c), flesh)
+	# Real eyes in the sockets: wet whites, a dark iris, a pinprick of light.
+	var white := StandardMaterial3D.new()
+	white.albedo_color = Color(0.9, 0.88, 0.84)
+	white.roughness = 0.08
+	var iris := StandardMaterial3D.new()
+	iris.albedo_color = Color(0.12, 0.08, 0.05)
+	iris.roughness = 0.05
+	for x: float in [-0.04, 0.04]:
+		_sphere(head, 0.0125, Vector3(x, 0.045, -0.0915), white)
+		_sphere(head, 0.0058, Vector3(x, 0.045, -0.1025), iris, Vector3(1.0, 1.0, 0.45))
 	hat = _pivot(head, Vector3(0.0, 0.1, 0.0))
-	var dome := MeshInstance3D.new()
-	var dm := SphereMesh.new()
-	dm.radius = 0.145
-	dm.height = 0.15
-	dm.is_hemisphere = true
-	dome.mesh = dm
-	dome.scale = Vector3(1.0, 1.05, 1.1)
-	dome.material_override = hat_mat
-	hat.add_child(dome)
-	var brim := MeshInstance3D.new()
-	var bm := CylinderMesh.new()
-	bm.top_radius = 0.17
-	bm.bottom_radius = 0.175
-	bm.height = 0.018
-	brim.mesh = bm
-	brim.scale = Vector3(1.0, 1.0, 1.22)
-	brim.position = Vector3(0.0, 0.004, -0.03)
-	brim.material_override = hat_mat
-	hat.add_child(brim)
-	_box(hat, Vector3(0.03, 0.03, 0.26), Vector3(0.0, 0.14, 0.0), hat_mat)  # ridge
+	Sculpt.put(hat, PlayerParts.hard_hat(hat_c), plastic)
 	# Arms: shoulder -> elbow -> wrist -> glove.
 	shoulder_l = _pivot(chest, Vector3(-0.235, 0.24, 0.0))
 	shoulder_r = _pivot(chest, Vector3(0.235, 0.24, 0.0))
 	for side in [[shoulder_l, -1.0], [shoulder_r, 1.0]]:
 		var sh: Node3D = side[0]
-		_sphere(sh, 0.07, Vector3.ZERO, shirt)
-		_capsule(sh, 0.062, 0.33, Vector3(0.0, -0.15, 0.0), shirt)
+		Sculpt.put(sh, PlayerParts.upper_arm(), cloth)
 		var elbow := _pivot(sh, Vector3(0.0, -0.3, 0.0))
-		_capsule(elbow, 0.052, 0.3, Vector3(0.0, -0.13, 0.0), skin)
-		_capsule(elbow, 0.056, 0.1, Vector3(0.0, -0.03, 0.0), shirt)  # rolled sleeve
+		Sculpt.put(elbow, PlayerParts.forearm(skin_c), flesh)
 		var wrist := _pivot(elbow, Vector3(0.0, -0.28, 0.0))
-		_box(wrist, Vector3(0.085, 0.1, 0.045), Vector3(0.0, -0.045, 0.0), gloves)
-		_capsule(wrist, 0.018, 0.06, Vector3(-side[1] * 0.045, -0.025, -0.01), gloves, Vector3(0.0, 0.0, side[1] * 0.5))
+		Sculpt.put(wrist, PlayerParts.hand(side[1]), cloth)
 		if side[1] < 0.0:
 			elbow_l = elbow
 		else:

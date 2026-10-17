@@ -253,81 +253,169 @@ static func _proportions(kind: int) -> Array[float]:
 		_: return [0.5, 0.25, 0.3]
 
 
+const MESH_VERSION: int = 4  # bump when a body below changes (the meshes are cached on disk)
+const W: Color = Color.WHITE  # the shader colours by part; vertex colour is unused here
+
+
 static func _build(kind: int) -> ArrayMesh:
+	return Sculpt.cached("horde_%d_v%d" % [kind, MESH_VERSION], func() -> ArrayMesh: return _make(kind))
+
+
+static func _make(kind: int) -> ArrayMesh:
 	var pr := _proportions(kind)
 	var length: float = pr[0]
 	var width: float = pr[1]
 	var h: float = pr[2]
-	var st := SurfaceTool.new()
-	st.begin(Mesh.PRIMITIVE_TRIANGLES)
-	st.set_custom_format(0, SurfaceTool.CUSTOM_RGBA_FLOAT)
-	st.set_custom_format(1, SurfaceTool.CUSTOM_RGBA_FLOAT)
-	var no := Vector3.ZERO
-	var center := Vector3(0.0, h, 0.0)
+	var b := Sculpt.Builder.new()
+	b.tagged = true
+	var c := Vector3(0.0, h, 0.0)
 	match kind:
 		0:
-			_roach(st, length, width, h, center, no)
+			_roach(b, length, width, h, c)
 		1:
-			_weaver(st, length, width, h, center, no)
+			_weaver(b, length, width, h, c)
 		_:
-			_flitter(st, length, width, h, center, no)
-	st.index()
-	var mesh := st.commit()
+			_flitter(b, length, width, h, c)
+	var mesh := b.commit([700, 1100, 700][kind])  # hundreds of these on screen: keep them light
 	mesh.custom_aabb = AABB(Vector3(-2.5, -0.6, -2.5), Vector3(5.0, 3.5, 5.0))
 	return mesh
 
 
-## Six legs, a flat shell, a small head with antennae. Faces -z.
-static func _roach(st: SurfaceTool, length: float, width: float, h: float, c: Vector3, no: Vector3) -> void:
-	_box(st, c + Vector3(0.0, 0.0, 0.1), Vector3(width, h * 0.9, length * 0.65), Part.THORAX, 0.0, c, no)  # the shell
-	_box(st, c + Vector3(0.0, -h * 0.25, 0.1), Vector3(width * 0.8, h * 0.4, length * 0.6), Part.ABDOMEN, 0.0, c, no)  # underside
-	var head := c + Vector3(0.0, 0.0, -length * 0.42)
-	_box(st, head, Vector3(width * 0.55, h * 0.7, length * 0.22), Part.HEAD, 0.0, head, no)
-	for s: float in [-1.0, 1.0]:
-		_box(st, head + Vector3(s * width * 0.18, h * 0.15, -length * 0.1), Vector3(0.06, 0.06, 0.04), Part.EYES, 0.0, head, no)
-		var ant := head + Vector3(s * width * 0.15, h * 0.3, -length * 0.1)
-		_box(st, ant + Vector3(s * 0.15, 0.15, -0.35), Vector3(0.025, 0.025, 0.8), Part.ANTENNA, 0.0, ant, no)
-	_legs(st, 3, c, width, h, length * 0.5, 0.55, 0.0)
+## One sculpted part, tagged for the shader.
+static func _part(b: Sculpt.Builder, s: Sculpt, cell: float, part: int, piv1: Vector3, piv2: Vector3 = Vector3.ZERO, lower: float = 0.0) -> void:
+	b.add(s.build(cell), Vector2(float(part), lower), piv1, piv2)
 
 
-## Eight long legs, a big abdomen behind, a cluster of eyes. Faces -z.
-static func _weaver(st: SurfaceTool, length: float, width: float, h: float, c: Vector3, no: Vector3) -> void:
-	_box(st, c + Vector3(0.0, 0.0, -0.15), Vector3(width, h * 0.8, length * 0.45), Part.THORAX, 0.0, c, no)
+## One tube, tagged.
+static func _tube(b: Sculpt.Builder, pts: PackedVector3Array, radii: PackedFloat32Array, part: int, piv1: Vector3, piv2: Vector3 = Vector3.ZERO, lower: float = 0.0, sides: int = 6) -> void:
+	b.add(Sculpt.tube(pts, radii, Color.WHITE, 0.5, sides, 3), Vector2(float(part), lower), piv1, piv2)
+
+
+## A knee-high cockroach: a glossy shield over the head, two long wing covers with a seam down the
+## back, a ridged belly, a small head tucked under with mandibles and two eyes, whip antennae
+## longer than the body, six spiny legs. Faces -z.
+static func _roach(b: Sculpt.Builder, length: float, width: float, h: float, c: Vector3) -> void:
+	var shell := Sculpt.new()
+	shell.ellipsoid(c + Vector3(0.0, 0.03, -length * 0.2), Vector3(width * 0.52, h * 0.26, length * 0.17), W, 0.04)
+	for x: float in [-1.0, 1.0]:
+		shell.ellipsoid(c + Vector3(x * width * 0.22, 0.05, length * 0.13), Vector3(width * 0.28, h * 0.26, length * 0.34), W, 0.03)
+	shell.carve_capsule(c + Vector3(0.0, h * 0.32, -length * 0.02), c + Vector3(0.0, h * 0.3, length * 0.45), 0.012, 0.012, W, 0.006)
+	_part(b, shell, 0.04, Part.THORAX, c)
+	var belly := Sculpt.new()
+	belly.ellipsoid(c + Vector3(0.0, -h * 0.18, length * 0.08), Vector3(width * 0.42, h * 0.24, length * 0.38), W, 0.04)
+	for k in 5:
+		var z := length * (-0.12 + 0.1 * float(k))
+		belly.capsule(c + Vector3(-width * 0.4, -h * 0.22, z), c + Vector3(width * 0.4, -h * 0.22, z), 0.02, 0.02, W, 0.02)
+	_part(b, belly, 0.04, Part.ABDOMEN, c)
+	var head := c + Vector3(0.0, -h * 0.08, -length * 0.42)
+	var hs := Sculpt.new()
+	hs.ellipsoid(head, Vector3(width * 0.24, h * 0.3, length * 0.08), W, 0.03)
+	_part(b, hs, 0.025, Part.HEAD, head)
+	for x: float in [-1.0, 1.0]:
+		var es := Sculpt.new()
+		es.ellipsoid(head + Vector3(x * width * 0.19, h * 0.06, -length * 0.03), Vector3(0.035, 0.03, 0.03), W)
+		_part(b, es, 0.012, Part.EYES, head)
+		_tube(b, PackedVector3Array([head + Vector3(x * 0.03, -h * 0.2, -length * 0.06), head + Vector3(x * 0.05, -h * 0.3, -length * 0.12), head + Vector3(x * 0.015, -h * 0.34, -length * 0.15)]), PackedFloat32Array([0.018, 0.012, 0.003]), Part.ANTENNA, head)  # mandibles
+		var ant := head + Vector3(x * width * 0.13, h * 0.15, -length * 0.06)
+		_tube(b, PackedVector3Array([ant, ant + Vector3(x * 0.12, 0.12, -0.25), ant + Vector3(x * 0.3, 0.16, -0.55), ant + Vector3(x * 0.45, 0.1, -0.85)]), PackedFloat32Array([0.014, 0.01, 0.006, 0.002]), Part.ANTENNA, ant, Vector3.ZERO, 0.0, 5)
+	_legs(b, 3, c, width, h, length * 0.5, 0.55, 0.045)
+
+
+## A spider the size of a dog: a hairy body, a swollen abdomen, a cluster of eyes, hooked fangs,
+## eight long legs. Faces -z.
+static func _weaver(b: Sculpt.Builder, length: float, width: float, h: float, c: Vector3) -> void:
+	var tho := Sculpt.new()
+	tho.ellipsoid(c + Vector3(0.0, 0.0, -0.15), Vector3(width * 0.5, h * 0.36, length * 0.24), W, 0.04, 0.6, 0.01)
+	_part(b, tho, 0.035, Part.THORAX, c)
 	var abd := c + Vector3(0.0, h * 0.25, length * 0.4)
-	_box(st, abd, Vector3(width * 1.5, h * 1.3, length * 0.7), Part.ABDOMEN, 0.0, abd, no)
+	var ab := Sculpt.new()
+	ab.ellipsoid(abd, Vector3(width * 0.72, h * 0.62, length * 0.36), W, 0.04, 0.6, 0.02)
+	ab.capsule(c + Vector3(0.0, 0.0, length * 0.05), abd, 0.1, 0.18, W, 0.05)
+	_part(b, ab.noise_scale(14.0), 0.035, Part.ABDOMEN, abd)
 	var head := c + Vector3(0.0, h * 0.1, -length * 0.4)
-	_box(st, head, Vector3(width * 0.6, h * 0.6, length * 0.2), Part.HEAD, 0.0, head, no)
-	for k in 6:
-		var a := float(k) / 6.0 * TAU
-		_box(st, head + Vector3(cos(a) * width * 0.2, h * 0.1 + sin(a) * h * 0.15, -length * 0.1), Vector3(0.05, 0.05, 0.04), Part.EYES, 0.0, head, no)
-	for s: float in [-1.0, 1.0]:  # fangs
-		_box(st, head + Vector3(s * 0.07, -h * 0.25, -length * 0.08), Vector3(0.04, 0.16, 0.04), Part.ANTENNA, 0.0, head, no)
-	_legs(st, 4, c, width, h, length * 0.5, 0.95, 0.0)
+	var hs := Sculpt.new()
+	hs.ellipsoid(head, Vector3(width * 0.3, h * 0.28, length * 0.11), W, 0.03, 0.6, 0.006)
+	_part(b, hs, 0.025, Part.HEAD, head)
+	var es := Sculpt.new()
+	for k in 8:
+		var a := float(k) / 8.0 * TAU
+		var r := 0.035 if k % 2 == 0 else 0.022
+		es.ellipsoid(head + Vector3(cos(a) * width * 0.15, h * 0.12 + sin(a) * h * 0.1, -length * 0.1), Vector3.ONE * r, W)
+	_part(b, es, 0.01, Part.EYES, head)
+	for x: float in [-1.0, 1.0]:
+		_tube(b, PackedVector3Array([head + Vector3(x * 0.07, -h * 0.15, -length * 0.08), head + Vector3(x * 0.07, -h * 0.4, -length * 0.12), head + Vector3(x * 0.02, -h * 0.55, -length * 0.08)]), PackedFloat32Array([0.035, 0.022, 0.003]), Part.ANTENNA, head)
+	_legs(b, 4, c, width, h, length * 0.5, 0.95, 0.04)
 
 
-## A furry body, two long wings, a snub face with ears. Faces -z, flies.
-static func _flitter(st: SurfaceTool, length: float, width: float, h: float, c: Vector3, no: Vector3) -> void:
-	_box(st, c, Vector3(width, width * 0.9, length), Part.THORAX, 0.0, c, no)
-	_box(st, c + Vector3(0.0, -width * 0.3, 0.1), Vector3(width * 0.7, width * 0.3, length * 0.7), Part.ABDOMEN, 0.0, c, no)
-	var head := c + Vector3(0.0, width * 0.2, -length * 0.55)
-	_box(st, head, Vector3(width * 0.8, width * 0.7, length * 0.35), Part.HEAD, 0.0, head, no)
-	for s: float in [-1.0, 1.0]:
-		_box(st, head + Vector3(s * width * 0.25, 0.0, -length * 0.15), Vector3(0.05, 0.05, 0.03), Part.EYES, 0.0, head, no)
-		_box(st, head + Vector3(s * width * 0.3, width * 0.5, 0.0), Vector3(0.08, 0.25, 0.04), Part.ANTENNA, 0.0, head, no)  # ears
-	for s: float in [1.0, -1.0]:
-		var root := c + Vector3(s * width * 0.5, width * 0.2, 0.0)
-		var part := Part.WING_L if s > 0.0 else Part.WING_R
-		_box(st, root + Vector3(s * 0.55, 0.0, 0.05), Vector3(1.1, 0.03, length * 1.3), part, 0.0, root, no)
-		_box(st, root + Vector3(s * 0.55, 0.02, -length * 0.6), Vector3(1.1, 0.04, 0.05), part, 0.0, root, no)  # the leading edge bone
-		_box(st, root + Vector3(s * 0.25, 0.0, -length * 0.3), Vector3(0.05, 0.05, 0.4), part, 0.0, root, no)  # finger
-	for s: float in [1.0, -1.0]:  # tiny hanging legs
-		var root := c + Vector3(s * width * 0.2, -width * 0.4, length * 0.3)
-		_box(st, root + Vector3(0.0, -0.1, 0.0), Vector3(0.04, 0.2, 0.04), Part.LEG0 + (0 if s > 0.0 else 1), 0.0, root, root)
+## A bat with a two-metre span: a furred body, a snub face with tall ears and fangs, wings of
+## membrane stretched over long finger bones, two little clawed feet. Faces -z, flies.
+static func _flitter(b: Sculpt.Builder, length: float, width: float, h: float, c: Vector3) -> void:
+	var body := Sculpt.new()
+	body.ellipsoid(c, Vector3(width * 0.55, width * 0.5, length * 0.5), W, 0.04, 0.8, 0.012)
+	_part(b, body.noise_scale(30.0), 0.025, Part.THORAX, c)
+	var belly := Sculpt.new()
+	belly.ellipsoid(c + Vector3(0.0, -width * 0.25, 0.08), Vector3(width * 0.4, width * 0.2, length * 0.35), W, 0.03)
+	_part(b, belly, 0.025, Part.ABDOMEN, c)
+	var head := c + Vector3(0.0, width * 0.2, -length * 0.52)
+	var hs := Sculpt.new()
+	hs.ellipsoid(head, Vector3(width * 0.4, width * 0.35, length * 0.2), W, 0.03, 0.8, 0.005)
+	hs.ellipsoid(head + Vector3(0.0, -0.02, -length * 0.15), Vector3(width * 0.2, width * 0.16, length * 0.1), W, 0.03)
+	hs.carve_ellipsoid(head + Vector3(0.0, -0.05, -length * 0.22), Vector3(width * 0.12, 0.025, 0.03), W, 0.01)
+	_part(b, hs, 0.016, Part.HEAD, head)
+	var es := Sculpt.new()
+	for x: float in [-1.0, 1.0]:
+		es.ellipsoid(head + Vector3(x * width * 0.2, 0.02, -length * 0.16), Vector3(0.022, 0.022, 0.018), W)
+	_part(b, es, 0.008, Part.EYES, head)
+	for x: float in [-1.0, 1.0]:
+		var ear := head + Vector3(x * width * 0.25, width * 0.25, 0.0)
+		_tube(b, PackedVector3Array([ear, ear + Vector3(x * 0.04, 0.12, 0.02), ear + Vector3(x * 0.06, 0.22, 0.05)]), PackedFloat32Array([0.04, 0.03, 0.004]), Part.ANTENNA, head, Vector3.ZERO, 0.0, 6)
+		_tube(b, PackedVector3Array([head + Vector3(x * 0.025, -0.05, -length * 0.25), head + Vector3(x * 0.02, -0.1, -length * 0.25)]), PackedFloat32Array([0.008, 0.001]), Part.ANTENNA, head, Vector3.ZERO, 0.0, 4)  # fangs
+	for x: float in [1.0, -1.0]:
+		var root := c + Vector3(x * width * 0.5, width * 0.2, 0.0)
+		var part := Part.WING_L if x > 0.0 else Part.WING_R
+		_wing(b, root, x, length, part)
+	for x: float in [1.0, -1.0]:
+		var root := c + Vector3(x * width * 0.2, -width * 0.4, length * 0.3)
+		_tube(b, PackedVector3Array([root, root + Vector3(0.0, -0.12, 0.02), root + Vector3(0.0, -0.2, -0.03)]), PackedFloat32Array([0.018, 0.012, 0.003]), Part.LEG0 + (0 if x > 0.0 else 1), root, root)
 
 
-## Legs in pairs down each side: an upper segment angled up and out from the root, a lower one
-## down to the ground. Left legs get even indices.
-static func _legs(st: SurfaceTool, pairs: int, c: Vector3, width: float, h: float, half_len: float, reach: float, _y: float) -> void:
+## A wing out along x (side) from its root: an arm bone to the wrist, three long finger bones
+## fanning back, and a membrane between them with a scalloped trailing edge. The shader draws
+## both faces.
+static func _wing(b: Sculpt.Builder, root: Vector3, side: float, length: float, part: int) -> void:
+	var wrist := root + Vector3(side * 0.45, 0.05, -length * 0.35)
+	_tube(b, PackedVector3Array([root, root + Vector3(side * 0.22, 0.06, -length * 0.25), wrist]), PackedFloat32Array([0.03, 0.022, 0.016]), part, root)
+	var tips: Array[Vector3] = [wrist + Vector3(side * 0.6, 0.0, -0.05), wrist + Vector3(side * 0.62, -0.02, length * 0.6), wrist + Vector3(side * 0.3, -0.02, length * 1.2)]
+	for t in tips:
+		_tube(b, PackedVector3Array([wrist, wrist.lerp(t, 0.5) + Vector3(0.0, 0.03, 0.0), t]), PackedFloat32Array([0.014, 0.01, 0.003]), part, root, Vector3.ZERO, 0.0, 5)
+	# The membrane: a fan from a point near the body out to the trailing edge, scalloped between
+	# the bones.
+	var prev := root + Vector3(side * 0.05, 0.0, length * 0.45)
+	var pts: Array[Vector3] = [prev]
+	for i in range(tips.size() - 1, -1, -1):
+		var t := tips[i]
+		pts.append(prev.lerp(t, 0.5) + (wrist - prev.lerp(t, 0.5)) * 0.18)
+		pts.append(t)
+		prev = t
+	pts.append(wrist)
+	var verts := PackedVector3Array()
+	var norms := PackedVector3Array()
+	var cols := PackedColorArray()
+	var idx := PackedInt32Array()
+	verts.append(root.lerp(wrist, 0.35))
+	for p in pts:
+		verts.append(p)
+	for _i in verts.size():
+		norms.append(Vector3.UP)
+		cols.append(Color(1.0, 1.0, 1.0, 0.9))
+	for i in range(1, verts.size() - 1):
+		idx.append_array(PackedInt32Array([0, i, i + 1]))
+	b.add([verts, norms, cols, idx], Vector2(float(part), 0.0), root)
+
+
+## Legs in pairs down each side: an upper segment arched up and out from the root, a lower one
+## bending down to the ground, spines along it. Left legs get even indices.
+static func _legs(b: Sculpt.Builder, pairs: int, c: Vector3, width: float, h: float, half_len: float, reach: float, r: float) -> void:
 	for row in pairs:
 		var z := -half_len * 0.8 + (float(row) + 0.5) * half_len * 1.6 / float(pairs)
 		for s: float in [1.0, -1.0]:
@@ -335,64 +423,9 @@ static func _legs(st: SurfaceTool, pairs: int, c: Vector3, width: float, h: floa
 			var root := c + Vector3(s * width * 0.5, h * 0.1, z)
 			var knee := root + Vector3(s * reach * 0.55, h * 0.6, 0.0)
 			var foot := knee + Vector3(s * reach * 0.45, -h * 0.6 - h - 0.02, 0.0)
-			_segment(st, root, knee, 0.045, Part.LEG0 + idx, 0.0, root, knee)
-			_segment(st, knee, foot, 0.035, Part.LEG0 + idx, 1.0, root, knee)
-
-
-## A thin box from a to b (the leg segments), tagged.
-static func _segment(st: SurfaceTool, a: Vector3, b: Vector3, r: float, part: int, lower: float, piv1: Vector3, piv2: Vector3) -> void:
-	var d := b - a
-	var l := d.length()
-	if l < 0.001:
-		return
-	var mid := (a + b) * 0.5
-	var basis := Basis.looking_at(d / l, Vector3.UP if absf(d.normalized().y) < 0.95 else Vector3.RIGHT)
-	var hx := r
-	var hy := r
-	var hz := l * 0.5
-	var corners := [
-		Vector3(-hx, -hy, -hz), Vector3(hx, -hy, -hz), Vector3(hx, hy, -hz), Vector3(-hx, hy, -hz),
-		Vector3(-hx, -hy, hz), Vector3(hx, -hy, hz), Vector3(hx, hy, hz), Vector3(-hx, hy, hz),
-	]
-	var faces := [[0, 1, 2, 3], [5, 4, 7, 6], [4, 0, 3, 7], [1, 5, 6, 2], [3, 2, 6, 7], [4, 5, 1, 0]]
-	var c0 := Color(piv1.x, piv1.y, piv1.z, 0.0)
-	var c1 := Color(piv2.x, piv2.y, piv2.z, 0.0)
-	var uv2 := Vector2(float(part), lower)
-	for f in faces:
-		var v0: Vector3 = basis * corners[f[0]]
-		var v1: Vector3 = basis * corners[f[1]]
-		var v2: Vector3 = basis * corners[f[2]]
-		var n := (v1 - v0).cross(v2 - v0).normalized()
-		for idx in [0, 1, 2, 0, 2, 3]:
-			st.set_normal(n)
-			st.set_uv2(uv2)
-			st.set_custom(0, c0)
-			st.set_custom(1, c1)
-			st.add_vertex(mid + basis * (corners[f[idx]] as Vector3))
-
-
-## One box: 6 quads, flat normals, tagged for the shader.
-static func _box(st: SurfaceTool, center: Vector3, size: Vector3, part: int, lower: float, piv1: Vector3, piv2: Vector3) -> void:
-	var hx := size.x * 0.5
-	var hy := size.y * 0.5
-	var hz := size.z * 0.5
-	var faces := [
-		[Vector3(0, 0, -1), [Vector3(-hx, -hy, -hz), Vector3(-hx, hy, -hz), Vector3(hx, hy, -hz), Vector3(hx, -hy, -hz)]],
-		[Vector3(0, 0, 1), [Vector3(hx, -hy, hz), Vector3(hx, hy, hz), Vector3(-hx, hy, hz), Vector3(-hx, -hy, hz)]],
-		[Vector3(-1, 0, 0), [Vector3(-hx, -hy, hz), Vector3(-hx, hy, hz), Vector3(-hx, hy, -hz), Vector3(-hx, -hy, -hz)]],
-		[Vector3(1, 0, 0), [Vector3(hx, -hy, -hz), Vector3(hx, hy, -hz), Vector3(hx, hy, hz), Vector3(hx, -hy, hz)]],
-		[Vector3(0, 1, 0), [Vector3(-hx, hy, -hz), Vector3(-hx, hy, hz), Vector3(hx, hy, hz), Vector3(hx, hy, -hz)]],
-		[Vector3(0, -1, 0), [Vector3(-hx, -hy, hz), Vector3(-hx, -hy, -hz), Vector3(hx, -hy, -hz), Vector3(hx, -hy, hz)]],
-	]
-	var c0 := Color(piv1.x, piv1.y, piv1.z, 0.0)
-	var c1 := Color(piv2.x, piv2.y, piv2.z, 0.0)
-	var uv2 := Vector2(float(part), lower)
-	for f in faces:
-		var n: Vector3 = f[0]
-		var v: Array = f[1]
-		for idx in [0, 1, 2, 0, 2, 3]:
-			st.set_normal(n)
-			st.set_uv2(uv2)
-			st.set_custom(0, c0)
-			st.set_custom(1, c1)
-			st.add_vertex(center + (v[idx] as Vector3))
+			_tube(b, PackedVector3Array([root, root.lerp(knee, 0.5) + Vector3(0.0, h * 0.08, 0.0), knee]), PackedFloat32Array([r, r * 0.9, r * 0.8]), Part.LEG0 + idx, root, knee, 0.0)
+			var ankle := knee.lerp(foot, 0.8) + Vector3(s * 0.04, 0.0, 0.0)
+			_tube(b, PackedVector3Array([knee, knee.lerp(foot, 0.45) + Vector3(s * 0.05, 0.02, 0.0), ankle, foot]), PackedFloat32Array([r * 0.8, r * 0.6, r * 0.35, r * 0.1]), Part.LEG0 + idx, root, knee, 1.0)
+			for k in 3:
+				var at := knee.lerp(foot, 0.2 + 0.25 * float(k))
+				_tube(b, PackedVector3Array([at, at + Vector3(s * 0.05, 0.04, 0.0)]), PackedFloat32Array([r * 0.25, r * 0.02]), Part.LEG0 + idx, root, knee, 1.0, 4)

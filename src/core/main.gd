@@ -10,6 +10,7 @@ extends Node
 ##   --smoke [--smoke-players=N] / --smoke-client             run tests/smoke_test.gd
 ##   --smoke-only=NAME             run just _test_NAME (e.g. crouch, p_lift) after the setup checks
 ##   --shots=DIR                                              save screenshots (tests/screenshots.gd)
+##   --gallery=DIR                                            close-ups of the player and every monster, lit (tests/screenshots.gd)
 ##   --arena [--horde=N]           the Loading Lot: the Level 3 horde test block instead of the building
 ##   --seed=N                      build the building from this seed (the title picks a random one;
 ##                                 command-line runs default to the fixed test seed)
@@ -116,6 +117,7 @@ func _handle_cmdline(args: PackedStringArray) -> void:
 	var smoke_players := 1
 	var smoke_only := ""
 	var shots := ""
+	var gallery := false
 	var port := Net.DEFAULT_PORT
 	var cfg := Net.default_world_config()
 	for a in args:
@@ -143,6 +145,11 @@ func _handle_cmdline(args: PackedStringArray) -> void:
 			smoke_players = maxi(1, a.trim_prefix("--smoke-players=").to_int())
 		elif a.begins_with("--smoke-only="):
 			smoke_only = a.trim_prefix("--smoke-only=")
+		elif a.begins_with("--gallery="):
+			shots = a.trim_prefix("--gallery=")
+			gallery = true
+			if mode == "":
+				mode = "solo"
 		elif a.begins_with("--shots="):
 			shots = a.trim_prefix("--shots=")
 			if mode == "":
@@ -188,6 +195,7 @@ func _handle_cmdline(args: PackedStringArray) -> void:
 		var cam_test: Node = load("res://tests/screenshots.gd").new()
 		cam_test.name = "Screenshots"
 		cam_test.set("out_dir", shots)
+		cam_test.set("gallery", gallery)
 		add_child(cam_test)
 
 

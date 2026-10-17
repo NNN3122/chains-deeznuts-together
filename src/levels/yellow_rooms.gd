@@ -929,7 +929,7 @@ func _build_hires(i: int) -> void:
 		h.sentry = k == 0  # the first on each floor keeps to the rooms round the way up
 		var c: Vector2i = spots[k % spots.size()]
 		h.position = cell_center(i, c) + Vector3(rng.randf_range(-1.0, 1.0), 0.0, rng.randf_range(-1.0, 1.0))
-		h.rotation.y = rng.randf() * TAU
+		h.synced_yaw = rng.randf() * TAU  # the model turns, never the root: facing() reads the model
 		add_child(h)
 	if i == ALARM_FLOOR:
 		var custodian := Custodian.new()

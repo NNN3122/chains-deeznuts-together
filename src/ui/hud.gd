@@ -3,7 +3,7 @@ extends CanvasLayer
 ## In-game overlay. Reads the local player and GameState every frame; owns the Layoff sequence
 ## (black fade + Foreman notice) through ScreenFx.
 
-const HELP_TEXT: String = """CONTROLS  (H hides this)
+const HELP_TEXT: String = """CONTROLS  (H hides this, and shows the goal and checklist top left)
 Move: WASD, or Up/Down arrows to walk and Left/Right or Q/E to turn
 Run: Shift     Jump: Space (jump into a ledge to climb it)
 Brace / sneak: hold Ctrl or C (anchor the chain, move quietly)
@@ -16,6 +16,10 @@ Auto-walk: R     Pause and settings: Esc     Voice: just talk (proximity: close 
 The Hollow Hires walk the route and stop to look round. If one SEES you it screams, the others answer and come running: run, or fight. A flashlight in its face stuns it, two Snubby rounds drop it. Crouching makes you harder to spot (pass behind them); loud noises bring them to look. Throw Squeaky Dennis and they go to him instead. If one grabs someone, stand next to them and BRACE. Break Rooms are safe.
 The route is loud: jammed doors open to a sprint, the fire alarm releases B3's lift, the hatch over B2's shaft stays open 25 s. When the power stutters out, that's what the flashlight is for.
 Upstairs in the pizzeria: Pappy only moves while nobody looks at him and no camera shows him. Stand at a security desk for cameras (F flips them), hold Ctrl at a shutter to keep it down."""
+
+const HUD_ALPHA: float = 0.78  # the whole HUD: see-through, so the game shows round it
+const ITEM_IDLE_SECONDS: float = 4.0  # after this long with nothing changing, the item card fades back
+const ITEM_IDLE_ALPHA: float = 0.4
 
 var screen_fx: ScreenFx
 var _objective: Label
@@ -48,6 +52,9 @@ var _invite_label: Label  # host waiting alone: the invite code, until a friend 
 var _hints_shown: Dictionary = {}
 var _night: NightShiftPanel
 var _tasks_box: VBoxContainer
+var _notes: Control  # top left: floor, goal, checklist; only while H shows the help
+var _item_sig: String = ""
+var _item_seen_t: float = 0.0
 var _slot_panels: Array[PanelContainer] = []
 var _slot_styles: Array[StyleBoxFlat] = []
 var _slot_names: Array[Label] = []
@@ -103,8 +110,12 @@ const HINTS: Array = [
 		"THE CLIMB: the unit against the wall, then the roof: walk into each and tap Space. Your Ballast gets hauled up after you."],
 	["l_drop", "THE DROP: the next roof is a storey down. Everyone goes together or the chain pulls the rest off the edge after the first.",
 		"THE DROP: the next roof is a storey down. Your Ballast comes down after you, hard."],
-	["l_escape_foot", "THE FIRE ESCAPE: landing by landing, walk into the side of the next one and tap Space. The spiders climb the wall beside you; the bats come too. Whoever's below braces if someone slips.",
-		"THE FIRE ESCAPE: landing by landing, walk into the side of the next one and tap Space. Your Ballast comes up on the chain. The spiders and the bats come too."],
+	["l_leap", "THE LEAP: the next roof is higher. Sprint (Shift) and jump right at the edge: you catch the lip and pull yourself up. One at a time.",
+		"THE LEAP: the next roof is higher. Sprint (Shift) and jump right at the edge to catch the lip. Your Ballast gets hauled up after you."],
+	["l_stones", "THE STACKS: chimneys standing in the gap. Sprint, jump, land, jump again: don't stop on a stack with someone still behind you.",
+		"THE STACKS: chimneys standing in the gap. Sprint, jump, land, jump again. Your Ballast swings along on the chain."],
+	["l_escape_foot", "THE FIRE ESCAPE: landing by landing, walk into the side of the next one and tap Space. Whoever's below braces if someone slips.",
+		"THE FIRE ESCAPE: landing by landing, walk into the side of the next one and tap Space. Your Ballast comes up on the chain."],
 ]
 
 
@@ -115,6 +126,7 @@ func _ready() -> void:
 	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	root.theme = UiTheme.get_theme()
 	add_child(root)
+	root.modulate = Color(1.0, 1.0, 1.0, HUD_ALPHA)  # everything over the game a little see-through
 
 	var top_left := VBoxContainer.new()
 	top_left.position = Vector2(20.0, 14.0)
@@ -129,11 +141,17 @@ func _ready() -> void:
 	_tasks_box = VBoxContainer.new()
 	_tasks_box.add_theme_constant_override("separation", 1)
 	top_left.add_child(_tasks_box)
+	# The floor name, the goal and the checklist stay off the screen (the user: this is a horror
+	# game, not a to-do list). H shows them with the controls; the centre messages still say
+	# what just happened.
+	_notes = top_left
+	_notes.visible = false
 	_invite_label = UiTheme.text("", 15, UiTheme.YELLOW)
 	_invite_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_invite_label.custom_minimum_size = Vector2(430.0, 0.0)
+	_invite_label.position = Vector2(20.0, 14.0)
 	_invite_label.visible = false
-	top_left.add_child(_invite_label)
+	root.add_child(_invite_label)  # not under the notes: a host waiting alone always sees the code
 
 	_remote_badge = UiTheme.text("REMOTE CONTROLS ON: move the mouse to look, hold it at the screen edge to keep turning", 15, UiTheme.YELLOW)
 	_remote_badge.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT, Control.PRESET_MODE_MINSIZE, 16)
@@ -142,85 +160,93 @@ func _ready() -> void:
 	root.add_child(_remote_badge)
 
 	_message_panel = PanelContainer.new()
-	_message_panel.add_theme_stylebox_override("panel", UiTheme.panel_style(0.75))
+	_message_panel.add_theme_stylebox_override("panel", UiTheme.hud_panel(0.32))
 	_message_panel.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP, Control.PRESET_MODE_MINSIZE, 140)
 	_message_panel.grow_horizontal = Control.GROW_DIRECTION_BOTH
 	_message_panel.visible = false
 	root.add_child(_message_panel)
-	_message = UiTheme.text("", 22)
+	_message = UiTheme.text("", 17)
 	_message.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_message_panel.add_child(_message)
 
+	# The item card: small, see-through, and it fades back further when nothing has changed for
+	# a few seconds (the user: the old one was too big and broke the mood). The keys are in H.
 	_item_panel = PanelContainer.new()
-	_item_panel.add_theme_stylebox_override("panel", UiTheme.panel_style(0.7))
-	_item_panel.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_LEFT, Control.PRESET_MODE_MINSIZE, 20)
+	_item_panel.add_theme_stylebox_override("panel", UiTheme.hud_panel())
+	_item_panel.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_LEFT, Control.PRESET_MODE_MINSIZE, 14)
 	_item_panel.grow_vertical = Control.GROW_DIRECTION_BEGIN
 	root.add_child(_item_panel)
 	var item_box := VBoxContainer.new()
-	item_box.custom_minimum_size = Vector2(320.0, 0.0)
+	item_box.add_theme_constant_override("separation", 2)
+	item_box.custom_minimum_size = Vector2(196.0, 0.0)
 	_item_panel.add_child(item_box)
-	item_box.add_child(UiTheme.text("LANYARD   (1 2 3 or wheel picks, G drops)", 13, UiTheme.YELLOW_DIM))
 	var slots_row := HBoxContainer.new()
-	slots_row.add_theme_constant_override("separation", 6)
+	slots_row.add_theme_constant_override("separation", 4)
 	item_box.add_child(slots_row)
 	for i in Player.SLOTS:
 		var slot := PanelContainer.new()
-		slot.custom_minimum_size = Vector2(100.0, 46.0)
+		slot.custom_minimum_size = Vector2(62.0, 26.0)
 		var sb := StyleBoxFlat.new()
-		sb.bg_color = Color(0.1, 0.09, 0.07, 0.9)
-		sb.border_color = UiTheme.YELLOW_DIM
+		sb.bg_color = Color(0.05, 0.045, 0.035, 0.35)
+		sb.border_color = Color(UiTheme.YELLOW_DIM, 0.5)
 		sb.set_border_width_all(1)
-		sb.set_corner_radius_all(4)
-		sb.set_content_margin_all(5)
+		sb.set_corner_radius_all(3)
+		sb.set_content_margin_all(3)
 		slot.add_theme_stylebox_override("panel", sb)
 		var col := VBoxContainer.new()
 		col.add_theme_constant_override("separation", 0)
 		slot.add_child(col)
-		var name_l := UiTheme.text("%d  -" % (i + 1), 14, UiTheme.PAPER)
+		var name_l := UiTheme.text("%d  -" % (i + 1), 11, UiTheme.PAPER)
 		name_l.clip_text = true
 		col.add_child(name_l)
-		var sub_l := UiTheme.text("", 12, UiTheme.YELLOW_DIM)
+		var sub_l := UiTheme.text("", 10, UiTheme.YELLOW_DIM)
 		col.add_child(sub_l)
 		slots_row.add_child(slot)
 		_slot_panels.append(slot)
 		_slot_styles.append(sb)
 		_slot_names.append(name_l)
 		_slot_subs.append(sub_l)
-	_item_name = UiTheme.heading("EMPTY", 24, UiTheme.PAPER)
+	_item_name = UiTheme.heading("EMPTY", 15, UiTheme.PAPER)
 	item_box.add_child(_item_name)
 	_item_bar = ProgressBar.new()
 	_item_bar.min_value = 0.0
 	_item_bar.max_value = 1.0
 	_item_bar.show_percentage = false
-	_item_bar.custom_minimum_size = Vector2(300.0, 10.0)
+	_item_bar.custom_minimum_size = Vector2(190.0, 4.0)
 	var fill := StyleBoxFlat.new()
-	fill.bg_color = UiTheme.YELLOW
+	fill.bg_color = Color(UiTheme.YELLOW, 0.8)
 	_item_bar.add_theme_stylebox_override("fill", fill)
+	var bar_bg := StyleBoxFlat.new()
+	bar_bg.bg_color = Color(0.0, 0.0, 0.0, 0.3)
+	_item_bar.add_theme_stylebox_override("background", bar_bg)
 	item_box.add_child(_item_bar)
-	_item_hint = UiTheme.text("walk into a glowing item to grab it", 14)
+	_item_hint = UiTheme.text("walk into a glowing item to grab it", 11)
 	_item_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_item_hint.custom_minimum_size = Vector2(300.0, 0.0)
+	_item_hint.custom_minimum_size = Vector2(190.0, 0.0)
 	item_box.add_child(_item_hint)
 
 	var right := VBoxContainer.new()
-	right.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_RIGHT, Control.PRESET_MODE_MINSIZE, 20)
+	right.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_RIGHT, Control.PRESET_MODE_MINSIZE, 14)
 	right.grow_horizontal = Control.GROW_DIRECTION_BEGIN
 	right.grow_vertical = Control.GROW_DIRECTION_BEGIN
 	right.alignment = BoxContainer.ALIGNMENT_END
 	root.add_child(right)
-	_noise_label = UiTheme.heading("NOISE", 20, UiTheme.PAPER)
+	_noise_label = UiTheme.heading("NOISE", 14, UiTheme.PAPER)
 	_noise_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	right.add_child(_noise_label)
 	_noise_bar = ProgressBar.new()
 	_noise_bar.min_value = 0.0
 	_noise_bar.max_value = 100.0
 	_noise_bar.show_percentage = false
-	_noise_bar.custom_minimum_size = Vector2(240.0, 14.0)
+	_noise_bar.custom_minimum_size = Vector2(150.0, 5.0)
 	_noise_fill = StyleBoxFlat.new()
 	_noise_fill.bg_color = Color(0.4, 0.9, 0.4)
 	_noise_bar.add_theme_stylebox_override("fill", _noise_fill)
+	var noise_bg := StyleBoxFlat.new()
+	noise_bg.bg_color = Color(0.0, 0.0, 0.0, 0.3)
+	_noise_bar.add_theme_stylebox_override("background", noise_bg)
 	right.add_child(_noise_bar)
-	_chain_label = UiTheme.text("CHAIN: SLACK", 16)
+	_chain_label = UiTheme.text("CHAIN: SLACK", 12)
 	_chain_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	right.add_child(_chain_label)
 
@@ -232,14 +258,14 @@ func _ready() -> void:
 	_crosshair.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	root.add_child(_crosshair)
 
-	_grab_label = UiTheme.heading("IT HAS YOU\na light in its face, a shot, or your team BRACING beside you", 30, UiTheme.DANGER)
+	_grab_label = UiTheme.heading("IT HAS YOU\na light in its face, a shot, or your team BRACING beside you", 20, UiTheme.DANGER)
 	_grab_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_grab_label.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM, Control.PRESET_MODE_MINSIZE, 150)
 	_grab_label.grow_horizontal = Control.GROW_DIRECTION_BOTH
 	_grab_label.grow_vertical = Control.GROW_DIRECTION_BEGIN
 	_grab_label.visible = false
 	root.add_child(_grab_label)
-	_burn_label = UiTheme.heading("", 26, Color(1.0, 0.95, 0.6))
+	_burn_label = UiTheme.heading("", 18, Color(1.0, 0.95, 0.6))
 	_burn_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_burn_label.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM, Control.PRESET_MODE_MINSIZE, 110)
 	_burn_label.grow_horizontal = Control.GROW_DIRECTION_BOTH
@@ -317,6 +343,7 @@ func _refresh_tasks() -> void:
 func set_help_visible(on: bool) -> void:
 	_help_auto = 0.0
 	_help.visible = on
+	_notes.visible = on
 
 
 ## A caption for something you can hear, with where it is relative to your view.
@@ -354,10 +381,10 @@ func caption(text: String, pos: Vector3) -> void:
 	if now - int(_caption_recent.get(line, -100000)) < 1800:
 		return
 	_caption_recent[line] = now
-	var l := UiTheme.text(line, 18, Color(0.95, 0.95, 0.9))
+	var l := UiTheme.text(line, 14, Color(0.95, 0.95, 0.9))
 	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	var bg := StyleBoxFlat.new()
-	bg.bg_color = Color(0.0, 0.0, 0.0, 0.55)
+	bg.bg_color = Color(0.0, 0.0, 0.0, 0.25)
 	bg.set_content_margin_all(4)
 	l.add_theme_stylebox_override("normal", bg)
 	_captions_box.add_child(l)
@@ -416,6 +443,7 @@ func reset() -> void:
 func toggle_help() -> void:
 	_help_auto = 0.0
 	_help.visible = not _help.visible
+	_notes.visible = _help.visible  # the controls' first showing at the start doesn't bring the checklist
 
 
 func _process(delta: float) -> void:
@@ -438,9 +466,9 @@ func _process(delta: float) -> void:
 		_fps_t = 0.5
 		var horde := get_tree().get_first_node_in_group("horde")
 		var crowd_awake := horde != null and bool(horde.get("enabled"))
-		_fps_label.visible = Settings.show_fps or crowd_awake
+		_fps_label.visible = Settings.show_fps  # the swarm's numbers too: nobody needs a head count to be scared
 		_fps_label.text = "%d FPS" % Engine.get_frames_per_second()
-		if crowd_awake:
+		if crowd_awake and Settings.show_fps:
 			_fps_label.text += "\n" + String(horde.call("stats_text"))
 		_update_invite_label()
 	if me == null:
@@ -477,6 +505,16 @@ func _process(delta: float) -> void:
 		_item_name.text = "EMPTY"
 		_item_hint.text = "walk into a glowing item to grab it"
 		_item_bar.visible = false
+	# The card speaks up when something changes (a pickup, a switch, a shot), then fades back.
+	var sig := "%s|%d|%s|%d" % [str(me.slot_ids), me.selected_slot, me.ammo_text, int(me.item_charge * 10.0)]
+	if sig != _item_sig:
+		_item_sig = sig
+		_item_seen_t = 0.0
+	else:
+		_item_seen_t += delta
+	var idle := _item_seen_t > ITEM_IDLE_SECONDS
+	_item_panel.modulate.a = lerpf(_item_panel.modulate.a, ITEM_IDLE_ALPHA if idle else 1.0, clampf(delta * 3.0, 0.0, 1.0))
+	_item_hint.visible = not idle
 	# Someone is burning a grabber with a light: show how close it is to letting go.
 	var burn := 0.0
 	var burn_who := ""

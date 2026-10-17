@@ -90,7 +90,7 @@ const FLOOR_LOOT: Array = [
 ]
 ## Procedural scares that fit a pizzeria: [kind, weight].
 const SCARE_POOL: Array = [
-	["jukebox_skip", 2], ["balloon", 2], ["vent_patter", 2], ["pepperoni_eyes", 2], ["bell", 1],
+	["face", 3], ["lunge", 2], ["ceiling_drop", 2], ["crawler", 2], ["peek", 2], ["hands", 2], ["behind", 2], ["jukebox_skip", 2], ["balloon", 2], ["vent_patter", 2], ["pepperoni_eyes", 2], ["bell", 1],
 	["static_face", 1], ["whisper", 1], ["figure", 1], ["breath", 2], ["footsteps", 1], ["stalker", 1],
 ]
 ## What to do on each floor, ticked off on the HUD; completion is checked in _tick_tasks.

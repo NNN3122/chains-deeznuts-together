@@ -32,7 +32,11 @@ const KIND_WEIGHTS: Array[float] = [0.8, 0.2, 0.0]  # the default mix (a level s
 const FLYING: Array[bool] = [false, false, true]  # Flitters ignore walls and the field's floor
 const HIT_HEIGHTS: Array[float] = [0.75, 1.3, 1.1]  # m: the capsule a round has to cross, per kind
 const CLIMB_MAXES: Array[float] = [2.6, 1.2, 0.0]  # m a pile lifts one, per kind: roaches climb roaches
-const CLIMBER: Array[bool] = [false, true, false]  # Weavers climb walls and swing the gaps between roofs on a thread
+const CLIMBER: Array[bool] = [true, true, false]  # roaches and Weavers climb walls and cross the gaps between roofs
+const THREADED: Array[bool] = [false, true, false]  # Weavers cross on a thread; roaches leap it
+const SWING_RANGES: Array[float] = [9.0, 11.0, 0.0]  # m each kind looks across a gap for the next roof
+const LEAP_ARC: float = 1.6  # m a roach leaping a gap rises over the straight line
+const LEAP_SPEED: float = 9.0  # m/s along a roach's leap
 const CLIMB_SPEED: float = 3.4  # m/s up a wall face
 const CLIMB_STEP: float = 0.7  # m onto the roof once over its edge
 const SWING_RANGE: float = 11.0  # m a Weaver looks across a gap for the next roof
@@ -79,6 +83,8 @@ var count: int = 0
 var spawn_seed: int = 0
 var enabled: bool = true  # off, the crowd sleeps entirely (the level flips it when the Line arrives)
 var debug_frozen: bool = false  # tests: nothing moves, nothing claws
+var muted: bool = false  # every peer: no chitter (the roof's hush before a scare)
+var closest_d2: float = 1.0e12  # m², flat: the nearest living agent to any chained body, as of the last active pick
 
 # Agents.
 var px: PackedFloat32Array = PackedFloat32Array()
@@ -444,6 +450,7 @@ func _pick_active() -> void:
 		sorted.append(best)
 	alive = living
 	sorted.sort()
+	closest_d2 = sorted[0] if sorted.size() > 0 else 1.0e12
 	var threshold := 1.0e12
 	if sorted.size() > 0:
 		threshold = sorted[mini(ACTIVE_COUNT, sorted.size()) - 1]
@@ -540,7 +547,10 @@ func _simulate(delta: float) -> void:
 			var ue := u * u * (3.0 - 2.0 * u)
 			px[i] = lerpf(sw_x0[i], sw_x1[i], ue)
 			pz[i] = lerpf(sw_z0[i], sw_z1[i], ue)
-			py[i] = lerpf(sw_y0[i], sw_y1[i], ue) - SWING_SAG * sin(u * PI) * minf(1.0, dur / 1.2)
+			if THREADED[kind[i]]:
+				py[i] = lerpf(sw_y0[i], sw_y1[i], ue) - SWING_SAG * sin(u * PI) * minf(1.0, dur / 1.2)
+			else:
+				py[i] = lerpf(sw_y0[i], sw_y1[i], ue) + LEAP_ARC * sin(u * PI)  # a roach leaps it
 			phase[i] += dt * 1.5
 			var hx := sw_x1[i] - sw_x0[i]
 			var hz := sw_z1[i] - sw_z0[i]
@@ -705,14 +715,14 @@ func _simulate(delta: float) -> void:
 			var tnext := terrain[cin]
 			var hl := sqrt(vxx * vxx + vzz * vzz)
 			if tnext == HordeField.VOID and hl > 0.1:
-				var land := fld.floor_ahead(x, z, vxx / hl, vzz / hl, SWING_RANGE)
+				var land := fld.floor_ahead(x, z, vxx / hl, vzz / hl, SWING_RANGES[k])
 				if land.is_empty() and _d2[i] < 1.0e11:
 					# Not that way: straight at whoever is nearest, then.
 					var tx := _near_x[i] - x
 					var tz := _near_z[i] - z
 					var tl := sqrt(tx * tx + tz * tz)
 					if tl > 0.5:
-						land = fld.floor_ahead(x, z, tx / tl, tz / tl, SWING_RANGE)
+						land = fld.floor_ahead(x, z, tx / tl, tz / tl, SWING_RANGES[k])
 				if land.size() == 3:
 					_start_swing(i, land[0], land[2], land[1])
 					if is_active and (x - mex) * (x - mex) + (z - mez) * (z - mez) < 900.0:
@@ -819,7 +829,7 @@ func _start_swing(i: int, tx: float, ty: float, tz: float) -> void:
 	sw_z1[i] = tz
 	sw_y1[i] = ty
 	var d := sqrt((tx - px[i]) * (tx - px[i]) + (tz - pz[i]) * (tz - pz[i]) + (ty - py[i]) * (ty - py[i]))
-	sw_dur[i] = clampf(d / SWING_SPEED, 0.35, 2.2)
+	sw_dur[i] = clampf(d / (SWING_SPEED if THREADED[kind[i]] else LEAP_SPEED), 0.35, 2.2)
 	timer[i] = sw_dur[i]
 	climb[i] = 0.0
 	grab_a[i] = -1
@@ -1363,9 +1373,15 @@ func _draw_threads(threads: int) -> void:
 	_web_mesh.clear_surfaces()
 	if threads == 0:
 		return
+	var silk := 0  # only Weavers hang from silk; a leaping roach has none
+	for i in count:
+		if state[i] == AState.SWING and THREADED[kind[i]]:
+			silk += 1
+	if silk == 0:
+		return
 	_web_mesh.surface_begin(Mesh.PRIMITIVE_LINES, _web_mat)
 	for i in count:
-		if state[i] != AState.SWING:
+		if state[i] != AState.SWING or not THREADED[kind[i]]:
 			continue
 		_web_mesh.surface_add_vertex(swing_anchor(i))
 		_web_mesh.surface_add_vertex(Vector3(px[i], py[i] + 0.35 * scl[i], pz[i]))
@@ -1391,7 +1407,7 @@ func clear_near(center: Vector3, radius: float) -> void:
 
 
 func _process(delta: float) -> void:
-	if count == 0 or not enabled or Sfx.is_silent():
+	if count == 0 or not enabled or muted or Sfx.is_silent():
 		return
 	var me := Net.get_local_player()
 	if me == null:

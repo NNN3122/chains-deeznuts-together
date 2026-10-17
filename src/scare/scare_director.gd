@@ -1,17 +1,24 @@
 extends Node
 ## Autoload "ScareDirector". The server decides WHEN and WHERE (scripted triggers plus a
 ## procedural director that picks on whoever wandered off); every peer plays the scare locally.
-## Office scares: lunge, lights_out, tile, figure, whisper, phone, slam, dennis.
+## Every level: face (its monster's face lunges into yours), lunge (its monster rushes you out
+## of the dark), ceiling_drop (it drops head first in front of you), crawler (it comes at you on
+## all fours), peek (a face at the edge of your view, staring), hands (arms up out of the floor at
+## your face), behind (a breath at your ear: it's there when you turn round), figure (its silhouette).
+## Office: lights_out, tile, whisper, phone,
+## slam, dennis.
 ## Pizzeria scares (played by Pizzeria.play_scare): jukebox_skip, balloon, vent_patter,
 ## pepperoni_eyes, bell, static_face, counter_bell, order_window, curtain, costume_rack,
 ## birthday_song. Each level offers its own pool (level.scare_pool) for where the target stands.
+## Roof scares (HordeArena.play_scare): roof_hush, roof_glimpse, roof_drop, roof_swarm,
+## roof_shadow, roof_scrape. The roof paces its own (RoofDread, level.paces_own_scares).
 
-const FIRST_DELAY: float = 50.0
-const MIN_GAP: float = 30.0
-const MAX_GAP: float = 70.0
+const FIRST_DELAY: float = 22.0  # s into a run before the first (the user: more often)
+const MIN_GAP: float = 16.0
+const MAX_GAP: float = 34.0
 const REPEAT_PENALTY: float = 0.25  # weight multiplier for the last two kinds played, so runs vary
 const POOL: Array = [
-	["lights_out", 2], ["tile", 2], ["whisper", 2], ["slam", 2], ["figure", 2], ["phone", 1], ["dennis", 1],
+	["face", 3], ["lunge", 2], ["ceiling_drop", 2], ["crawler", 2], ["peek", 2], ["hands", 2], ["behind", 2], ["lights_out", 2], ["tile", 2], ["whisper", 1], ["slam", 2], ["figure", 2], ["phone", 1], ["dennis", 1],
 	["breath", 2], ["footsteps", 2], ["stalker", 1],
 ]
 
@@ -93,6 +100,9 @@ func _process(delta: float) -> void:
 	if players.is_empty():
 		return
 	var target := _pick_target(players)
+	var level := get_tree().get_first_node_in_group("level")
+	if level != null and level.has_method("paces_own_scares") and level.call("paces_own_scares", target.global_position):
+		return  # the roof waits for quiet and builds its own (RoofDread)
 	trigger_for(_pick_kind(target.global_position), target)
 
 
@@ -159,6 +169,10 @@ func trigger_for(kind: String, p: Player) -> void:
 				p.apply_knockback(fwd * 2.5 + Vector3.UP * 1.5)  # the flinch jerks the Line
 		"vent_patter":
 			pos = feet + fwd * 1.5
+		"roof_drop":
+			pos = feet + fwd * 1.3  # in your face
+		"face", "ceiling_drop", "crawler", "peek", "hands", "behind":
+			pos = feet  # played round the target's own camera
 		"breath", "stalker", "roof_swarm":
 			pos = feet - fwd * 1.6  # right behind you
 		"footsteps":
@@ -201,12 +215,37 @@ func play_local(kind: String, pos: Vector3, target_peer: int = 0) -> void:
 	var me := Net.get_local_player()
 	var targeted := me != null and me.peer_id == target_peer
 	match kind:
+		"face":
+			# The big one: whatever haunts this level, its face out of nowhere into yours, a scream,
+			# the picture tearing red. Only the one it picked sees it; everyone near hears it.
+			if targeted:
+				_spawn_face(pos)
+			else:
+				Sfx.play_at(self, "scream", pos + Vector3.UP * 1.6, 2.0, 0.8, 30.0)
+				Sfx.caption(self, "someone screams", pos)
+		"ceiling_drop", "crawler", "peek", "hands", "behind":
+			# Played round the target's own camera; everyone near hears something.
+			if targeted:
+				match kind:
+					"ceiling_drop":
+						_spawn_ceiling_drop(pos)
+					"crawler":
+						_spawn_crawler(pos)
+					"peek":
+						_spawn_peek(pos)
+					"hands":
+						_spawn_hands(pos)
+					_:
+						_spawn_behind(pos)
+			elif kind != "peek":
+				Sfx.play_at(self, "scream", pos + Vector3.UP * 1.6, -2.0, 0.85, 26.0)
 		"lunge":
-			Sfx.play(self, "stinger", 2.0)
+			Sfx.play(self, "stinger", 4.0)
+			Sfx.play_at(self, "scream", pos + Vector3.UP * 1.5, 4.0, 0.7, 25.0)
 			_spawn_lunger(pos)
 			_flash(0.6)
-			_shake(0.9, pos)
-			GameState.post_message_local("UNSCHEDULED EVENT", 1.5)
+			_shake(1.1, pos)
+			ScreenFx.jolt(0.45)
 		"lights_out":
 			# A gutter first, then out for long enough that you need the flashlight to move.
 			flicker(pos, 16.0, 1400)
@@ -293,105 +332,396 @@ func _add_temp(n: Node3D, seconds: float) -> void:
 	get_tree().create_timer(seconds).timeout.connect(n.queue_free)
 
 
+## Which level a spot is in: 0 the offices, 1 the pizzeria, 2 the roof.
+func _level_index(pos: Vector3) -> int:
+	var level := get_tree().get_first_node_in_group("level")
+	if level != null and level.has_method("level_index_at"):
+		return int(level.call("level_index_at", pos))
+	return 0
+
+
+## The body of whatever haunts that level, built (a HireBody, a PappyBody or a JumperBody).
+func _level_body(idx: int) -> Node3D:
+	match idx:
+		1:
+			var p := PappyBody.new()
+			p.build()
+			p.arm_l.rotation.x = 1.6  # reaching for you
+			p.arm_r.rotation.x = 1.6
+			return p
+		2:
+			var j := JumperBody.new()
+			j.build(1.0)
+			for i in j.legs.size():
+				if i < 2:
+					j.legs[i].rotation.z = (1.0 if i % 2 == 1 else -1.0) * 1.3  # the front pair up
+			return j
+	var h := HireBody.new()
+	h.build()
+	h.arm_l.rotation = Vector3(1.9, 0.0, -0.3)  # both arms out at you
+	h.arm_r.rotation = Vector3(1.9, 0.0, 0.3)
+	h.hips.rotation.x = -0.35
+	return h
+
+
+## Local: the face of this level's monster, out of nowhere, up into the camera, a scream, held a
+## moment shaking, gone. Lit by its own sick light so the dark can't hide it.
+func _spawn_face(pos: Vector3) -> void:
+	var cam := get_viewport().get_camera_3d()
+	if cam == null:
+		return
+	var idx := _level_index(pos)
+	var face := Node3D.new()
+	face.name = "ScareFace"
+	var m: Mesh
+	var mat: Material
+	var center := Vector3.ZERO
+	match idx:
+		1:
+			m = PappyBody.face()
+			mat = Sculpt.material(0.25, 0.3, 0.0, 0.1, 0.55)
+			center = Vector3(0.0, 0.3, -0.3)
+		2:
+			m = JumperBody.face()
+			mat = Sculpt.material(0.45, 0.5, 0.0, 0.0, 0.35)
+			center = Vector3(0.0, -0.12, -0.2)
+		_:
+			m = HireBody.skull(true)
+			mat = Sculpt.material(0.3, 0.5, 0.75, 0.15, 0.5)
+			center = Vector3(0.0, 0.22, -0.1)
+	Sculpt.put(face, m, mat, -center)
+	if idx == 0:
+		var jaw := Node3D.new()  # its jaw hanging open, far too wide
+		jaw.position = HireBody.JAW_HINGE - center
+		jaw.rotation.x = -1.0
+		face.add_child(jaw)
+		Sculpt.put(jaw, HireBody.jaw_mesh(), mat)
+	if idx == 1:
+		for x: float in [-0.14, 0.14]:  # his eyes, burning
+			var e := MeshInstance3D.new()
+			var sm := SphereMesh.new()
+			sm.radial_segments = 12  # a glowing eye: a few hundred triangles, not four thousand
+			sm.rings = 6
+			sm.radius = 0.022
+			sm.height = 0.044
+			e.mesh = sm
+			e.material_override = LevelKit.mat("pepperoni")
+			e.position = Vector3(x, 0.4, -0.29) - center
+			face.add_child(e)
+	var light := OmniLight3D.new()
+	light.light_color = Color(0.85, 1.0, 0.75) if idx != 1 else Color(1.0, 0.35, 0.2)
+	light.light_energy = 2.5
+	light.omni_range = 2.5
+	light.position = Vector3(0.25, 0.35, 0.6)  # between it and you, a little above
+	face.add_child(light)
+	cam.add_child(face)
+	face.rotation = Vector3(0.0, PI, 0.0)  # its -z face toward the camera
+	face.position = Vector3(0.35, -0.15, -4.0)
+	face.scale = Vector3.ONE * 0.7
+	Sfx.play(self, "stinger", 6.0)
+	Sfx.play(self, "scream", 3.0, 1.05)
+	var tw := face.create_tween()
+	tw.tween_property(face, "position", Vector3(0.0, -0.02, -0.34 if idx != 1 else -0.62), 0.16).set_trans(Tween.TRANS_EXPO).set_ease(Tween.EASE_IN)
+	tw.parallel().tween_property(face, "scale", Vector3.ONE, 0.16)
+	tw.tween_callback(func() -> void:
+		_flash(0.55)
+		ScreenFx.jolt(0.5)
+		var me := Net.get_local_player()
+		if me != null:
+			me.add_shake(1.0))
+	for k in 6:
+		tw.tween_property(face, "rotation", Vector3(randf_range(-0.12, 0.12), PI + randf_range(-0.15, 0.15), randf_range(-0.25, 0.25)), 0.06)
+	tw.tween_callback(face.queue_free)
+
+
+## The big hit of a jump scare on this screen: the sting, a red flash, the picture tearing, a shake.
+func _hit(strength: float = 1.0) -> void:
+	Sfx.play(self, "stinger", 4.0 * strength)
+	Sfx.play(self, "scream", 1.0 * strength, randf_range(0.9, 1.2))
+	_flash(0.55 * strength)
+	ScreenFx.jolt(0.45 * strength)
+	var me := Net.get_local_player()
+	if me != null:
+		me.add_shake(strength)
+
+
+## A light of its own for a scare body, so the dark can't hide it.
+func _scare_light(parent: Node3D, at: Vector3, idx: int) -> void:
+	var light := OmniLight3D.new()
+	light.light_color = Color(0.85, 1.0, 0.75) if idx != 1 else Color(1.0, 0.35, 0.2)
+	light.light_energy = 2.2
+	light.omni_range = 3.5
+	light.position = at
+	parent.add_child(light)
+
+
+## Local: this level's monster drops head-first out of the ceiling right in front of your face,
+## hanging upside down, twitching, and is yanked back up into the dark.
+func _spawn_ceiling_drop(pos: Vector3) -> void:
+	var cam := get_viewport().get_camera_3d()
+	if cam == null:
+		return
+	var idx := _level_index(pos)
+	var m := _level_body(idx)
+	m.name = "ScareDrop"
+	if m is HireBody:
+		(m as HireBody).jaw.rotation.x = -0.9
+		(m as HireBody).arm_l.rotation.x = PI - 0.3  # hanging down past its head, toward you
+		(m as HireBody).arm_r.rotation.x = PI - 0.3
+	var fwd := -cam.global_transform.basis.z
+	fwd.y = 0.0
+	fwd = fwd.normalized() if fwd.length() > 0.01 else Vector3.FORWARD
+	var face_at := cam.global_position + fwd * 0.9
+	var head_h := 1.9 if idx == 0 else (2.35 if idx == 1 else 1.1)
+	_add_temp(m, 1.6)
+	m.global_position = face_at + Vector3.UP * (head_h + 3.0)
+	m.look_at(m.global_position - fwd * 2.0, Vector3.UP)  # its -z front at you
+	m.rotate_object_local(Vector3.FORWARD, PI)  # upside down
+	_scare_light(m, Vector3(0.0, head_h - 0.3, -0.6), idx)  # body space: by the head, before the flip
+	var tw := m.create_tween()
+	tw.tween_property(m, "global_position", face_at + Vector3.UP * (head_h - 0.05), 0.22).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+	tw.tween_callback(_hit)
+	for k in 5:
+		tw.tween_property(m, "global_position", face_at + Vector3.UP * (head_h + randf_range(-0.08, 0.08)) + Vector3(randf_range(-0.06, 0.06), 0.0, 0.0), 0.12)
+	tw.tween_property(m, "global_position", face_at + Vector3.UP * (head_h + 4.0), 0.25).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+
+
+## Local: this level's monster on all fours, coming at you along the floor far too fast, skittering;
+## it reaches you, screams, and is gone.
+func _spawn_crawler(pos: Vector3) -> void:
+	var cam := get_viewport().get_camera_3d()
+	if cam == null:
+		return
+	var idx := _level_index(pos)
+	var m := _level_body(idx)
+	m.name = "ScareCrawler"
+	if m is HireBody:
+		var h := m as HireBody
+		h.hips.rotation.x = -1.35  # flat out, face first
+		h.hips.position.y = 0.72
+		h.head.rotation.x = 1.25  # head up, looking at you
+		h.jaw.rotation.x = -0.8
+		for limb: Node3D in [h.arm_l, h.arm_r, h.thigh_l, h.thigh_r]:
+			limb.rotation.x = 1.35  # down to the floor
+	elif m is PappyBody:
+		m.rotation.x = -1.2
+	var fwd := -cam.global_transform.basis.z
+	fwd.y = 0.0
+	fwd = fwd.normalized() if fwd.length() > 0.01 else Vector3.FORWARD
+	var feet := Vector3(cam.global_position.x, pos.y, cam.global_position.z)
+	var start := feet + fwd * 8.0 + fwd.cross(Vector3.UP) * randf_range(-1.0, 1.0)
+	var end := feet + fwd * 1.9
+	_add_temp(m, 1.3)
+	m.global_position = start
+	var r := m.rotation
+	m.look_at(feet, Vector3.UP)
+	m.rotation.x += r.x
+	_scare_light(m, Vector3(0.0, 1.0, -1.0), idx)
+	Sfx.play_at(self, "skitter", start, 4.0, 1.4, 30.0)
+	var tw := m.create_tween()
+	var legs: Array[Node3D] = []
+	if m is HireBody:
+		var h := m as HireBody
+		legs = [h.arm_l, h.thigh_r, h.arm_r, h.thigh_l]
+	for k in 7:
+		var u := float(k + 1) / 7.0
+		var at := start.lerp(end, u) + fwd.cross(Vector3.UP) * randf_range(-0.25, 0.25)
+		tw.tween_property(m, "global_position", at, 0.085)
+		for i in legs.size():
+			tw.parallel().tween_property(legs[i], "rotation:x", 1.35 + (0.45 if (k + i) % 2 == 0 else -0.45), 0.085)
+	# The last of it: it springs up off the floor at your face.
+	var pounce := Vector3(cam.global_position.x, pos.y, cam.global_position.z) + fwd * 0.75 + Vector3.UP * maxf(0.0, cam.global_position.y - pos.y - 0.95)
+	tw.tween_property(m, "global_position", pounce, 0.1).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tw.parallel().tween_property(m, "rotation:x", m.rotation.x + 0.6, 0.1)
+	tw.tween_callback(_hit)
+	tw.tween_interval(0.25)
+	tw.tween_callback(m.queue_free)
+
+
+## Local: a face slides in at the edge of your view, close, and stares. No sound but a breath. Then
+## it snaps away.
+func _spawn_peek(pos: Vector3) -> void:
+	var cam := get_viewport().get_camera_3d()
+	if cam == null:
+		return
+	var idx := _level_index(pos)
+	var side := -1.0 if randf() < 0.5 else 1.0
+	var face := _face_node(idx)
+	face.name = "ScarePeek"
+	cam.add_child(face)
+	face.rotation = Vector3(0.0, PI, side * 0.35)  # its face toward you, tilted
+	# The edge of the frame at that depth, whatever the field of view and the window's shape.
+	var vp := get_viewport().get_visible_rect().size
+	var edge := 0.9 * tan(deg_to_rad(cam.fov) * 0.5) * (vp.x / maxf(vp.y, 1.0))
+	face.position = Vector3(side * (edge + 0.35), 0.05, -0.9)  # just outside the frame
+	Sfx.play(self, "whisper", -4.0, 0.5)
+	var tw := face.create_tween()
+	tw.tween_property(face, "position", Vector3(side * (edge - 0.16), 0.05, -0.9), 0.7).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+	tw.tween_interval(1.1)
+	tw.tween_callback(func() -> void: Sfx.play(self, "click", 0.0, 0.6))
+	tw.tween_property(face, "position", Vector3(side * (edge + 0.6), 0.05, -0.9), 0.1)
+	tw.tween_callback(face.queue_free)
+
+
+## Local: arms burst up out of the floor into your view, long fingers clawing at your face.
+func _spawn_hands(pos: Vector3) -> void:
+	var cam := get_viewport().get_camera_3d()
+	if cam == null:
+		return
+	var idx := _level_index(pos)
+	var root := Node3D.new()
+	root.name = "ScareHands"
+	cam.add_child(root)
+	var mat := Sculpt.material(0.3, 0.5, 0.75, 0.15, 0.5)
+	var xs: Array[float] = [-0.42, -0.15, 0.14, 0.4]
+	for i in xs.size():
+		var arm := Node3D.new()
+		root.add_child(arm)
+		var mesh: Mesh = HireBody.arm(1.0 if i % 2 == 0 else -1.0)
+		if idx == 1:
+			mesh = PappyBody.arm(1.0 if i % 2 == 0 else -1.0)
+			mat = Sculpt.material(0.15, 0.2, 0.0, 0.0, 0.5)
+		elif idx == 2:
+			mesh = JumperBody.lower_leg(1.0)
+			mat = Sculpt.material(0.45, 0.5, 0.0, 0.0, 0.35)
+		var mi := Sculpt.put(arm, mesh, mat)
+		mi.rotation = Vector3(PI, 0.0, -xs[i] * 0.8) if idx != 2 else Vector3(0.0, 0.0, PI * 0.5 + xs[i] * 0.6)
+		arm.position = Vector3(xs[i], -2.0, -0.55 - 0.08 * float(i % 2))
+		var tw := arm.create_tween()
+		tw.tween_interval(0.05 * float(i))
+		tw.tween_property(arm, "position:y", -1.0 + 0.12 * float(i % 2), 0.16).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+		for k in 4:
+			tw.tween_property(arm, "rotation:z", randf_range(-0.25, 0.25), 0.1)
+		tw.tween_property(arm, "position:y", -2.4, 0.2)
+	_scare_light(root, Vector3(0.0, -0.4, -0.3), idx)
+	_hit(0.8)
+	get_tree().create_timer(1.1).timeout.connect(root.queue_free)
+
+
+## Local: it is standing right behind you. A breath at your ear. Turn round and it screams in
+## your face; don't, and after a few seconds it's simply gone.
+func _spawn_behind(pos: Vector3) -> void:
+	var cam := get_viewport().get_camera_3d()
+	if cam == null:
+		return
+	var idx := _level_index(pos)
+	var m := _level_body(idx)
+	m.name = "ScareBehind"
+	if m is HireBody:
+		# Stooped over you, its face at the height of yours, mouth open, hands up.
+		var h := m as HireBody
+		h.hips.position.y = 0.72
+		h.hips.rotation.x = -0.5
+		h.head.rotation.x = 0.55
+		h.jaw.rotation.x = -0.9
+	var fwd := -cam.global_transform.basis.z
+	fwd.y = 0.0
+	fwd = fwd.normalized() if fwd.length() > 0.01 else Vector3.FORWARD
+	var feet := Vector3(cam.global_position.x, pos.y, cam.global_position.z)
+	var lurker := Lurker.new()
+	lurker.body = m
+	lurker.director = self
+	get_tree().current_scene.add_child(lurker)
+	lurker.global_position = feet - fwd * 1.4
+	lurker.add_child(m)
+	lurker.look_at(feet, Vector3.UP)
+	_scare_light(m, Vector3(0.0, 1.5, -0.8), idx)
+	Sfx.play_at(self, "whisper", lurker.global_position + Vector3.UP * 1.7, 2.0, 0.5, 6.0)
+	Sfx.caption(self, "breathing, right behind you", lurker.global_position + Vector3.UP * 1.6)
+
+
+## The thing standing behind you (_spawn_behind): it waits for you to look at it.
+class Lurker extends Node3D:
+	const WAIT: float = 5.0  # s before it gives up and is just gone
+	const SEEN_ANGLE: float = 0.55  # rad off the centre of your view
+	var body: Node3D
+	var director: Node
+	var _t: float = 0.0
+	var _done: bool = false
+
+	func _process(delta: float) -> void:
+		_t += delta
+		if _done:
+			return
+		if _t > WAIT:
+			queue_free()
+			return
+		var cam := get_viewport().get_camera_3d()
+		if cam == null:
+			return
+		var to := global_position + Vector3.UP * 1.5 - cam.global_position
+		if (-cam.global_transform.basis.z).angle_to(to) < SEEN_ANGLE:
+			_done = true
+			director.call("_hit", 1.0)
+			var tw := create_tween()
+			var close := global_position.lerp(Vector3(cam.global_position.x, global_position.y, cam.global_position.z), 0.55)
+			tw.tween_property(self, "global_position", close, 0.12)
+			tw.tween_interval(0.35)
+			tw.tween_callback(queue_free)
+
+
+## A head on its own for a camera-attached scare, facing -z, centred on its face.
+func _face_node(idx: int) -> Node3D:
+	var face := Node3D.new()
+	var mat: Material
+	match idx:
+		1:
+			mat = Sculpt.material(0.25, 0.3, 0.0, 0.1, 0.55)
+			Sculpt.put(face, PappyBody.face(), mat, -Vector3(0.0, 0.3, -0.3))
+		2:
+			mat = Sculpt.material(0.45, 0.5, 0.0, 0.0, 0.35)
+			Sculpt.put(face, JumperBody.face(), mat, -Vector3(0.0, -0.12, -0.2))
+		_:
+			mat = Sculpt.material(0.3, 0.5, 0.75, 0.15, 0.5)
+			var center := Vector3(0.0, 0.22, -0.1)
+			Sculpt.put(face, HireBody.skull(true), mat, -center)
+			var jaw := Node3D.new()
+			jaw.position = HireBody.JAW_HINGE - center
+			jaw.rotation.x = -0.35
+			face.add_child(jaw)
+			Sculpt.put(jaw, HireBody.jaw_mesh(), mat)
+	_scare_light(face, Vector3(0.2, 0.2, -0.5), idx)
+	return face
+
+
+## Local: this level's monster rushes you from the dark ahead, arms out, and is gone.
 func _spawn_lunger(at: Vector3) -> void:
-	var m := Node3D.new()
+	var m := _level_body(_level_index(at))
 	m.name = "ScareMonster"
-	var dark := StandardMaterial3D.new()
-	dark.albedo_color = Color(0.04, 0.0, 0.02)
-	dark.roughness = 0.3
-	var body := MeshInstance3D.new()
-	var bm := CapsuleMesh.new()
-	bm.radius = 0.45
-	bm.height = 2.6
-	body.mesh = bm
-	body.position = Vector3(0.0, 1.3, 0.0)
-	body.material_override = dark
-	m.add_child(body)
-	var glow := StandardMaterial3D.new()
-	glow.albedo_color = Color(1.0, 0.95, 0.85)
-	glow.emission_enabled = true
-	glow.emission = Color(1.0, 0.85, 0.6)
-	glow.emission_energy_multiplier = 5.0
-	for sx: float in [-0.17, 0.17]:
-		var eye := MeshInstance3D.new()
-		var em := SphereMesh.new()
-		em.radius = 0.08
-		em.height = 0.16
-		eye.mesh = em
-		eye.position = Vector3(sx, 2.2, -0.38)
-		eye.material_override = glow
-		m.add_child(eye)
-	var mouth := MeshInstance3D.new()
-	var mm := BoxMesh.new()
-	mm.size = Vector3(0.5, 0.5, 0.05)
-	mouth.mesh = mm
-	mouth.position = Vector3(0.0, 1.75, -0.42)
-	var red := StandardMaterial3D.new()
-	red.albedo_color = Color(0.5, 0.0, 0.0)
-	red.emission_enabled = true
-	red.emission = Color(0.9, 0.0, 0.0)
-	red.emission_energy_multiplier = 2.0
-	mouth.material_override = red
-	m.add_child(mouth)
-	for sx: float in [-1.0, 1.0]:
-		var arm := MeshInstance3D.new()
-		var am := CapsuleMesh.new()
-		am.radius = 0.08
-		am.height = 1.6
-		arm.mesh = am
-		arm.material_override = dark
-		arm.position = Vector3(sx * 0.6, 1.9, -0.4)
-		arm.rotation = Vector3(-1.2, 0.0, sx * 0.4)
-		m.add_child(arm)
-	_add_temp(m, 1.0)
+	var light := OmniLight3D.new()
+	light.light_color = Color(0.9, 0.2, 0.1)
+	light.light_energy = 3.0
+	light.omni_range = 4.0
+	light.position = Vector3(0.0, 1.6, -1.2)
+	m.add_child(light)
+	_add_temp(m, 0.9)
 	m.global_position = at
 	var cam := get_viewport().get_camera_3d()
 	if cam != null:
 		var target := Vector3(cam.global_position.x, at.y, cam.global_position.z)
 		if target.distance_to(at) > 0.05:
 			m.look_at(target, Vector3.UP)
-	m.scale = Vector3(0.3, 0.3, 0.3)
-	var tw := m.create_tween()
-	tw.tween_property(m, "scale", Vector3(1.2, 1.2, 1.2), 0.07)
-	tw.tween_property(m, "scale", Vector3.ONE, 0.1)
 	if cam != null:
-		var close := at.lerp(Vector3(cam.global_position.x, at.y, cam.global_position.z), 0.5)
-		tw.parallel().tween_property(m, "global_position", close, 0.25)
+		var close := at.lerp(Vector3(cam.global_position.x, at.y, cam.global_position.z), 0.7)
+		m.create_tween().tween_property(m, "global_position", close, 0.28).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
 
 
+## Local: this level's monster as a black silhouette, standing there for a breath.
 func _spawn_figure(at: Vector3) -> void:
-	var m := Node3D.new()
+	var m := _level_body(_level_index(at))
 	m.name = "Figure"
 	var black := StandardMaterial3D.new()
 	black.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	black.albedo_color = Color(0.0, 0.0, 0.0)
-	var body := MeshInstance3D.new()
-	var bm := CapsuleMesh.new()
-	bm.radius = 0.22
-	bm.height = 2.3
-	body.mesh = bm
-	body.position = Vector3(0.0, 1.15, 0.0)
-	body.material_override = black
-	m.add_child(body)
-	var head := MeshInstance3D.new()
-	var hm := SphereMesh.new()
-	hm.radius = 0.17
-	hm.height = 0.38
-	head.mesh = hm
-	head.position = Vector3(0.0, 2.45, 0.0)
-	head.material_override = black
-	m.add_child(head)
-	for sx: float in [-0.3, 0.3]:
-		var arm := MeshInstance3D.new()
-		var am := CapsuleMesh.new()
-		am.radius = 0.05
-		am.height = 1.7
-		arm.mesh = am
-		arm.position = Vector3(sx, 1.35, 0.0)
-		arm.material_override = black
-		m.add_child(arm)
+	for n in m.find_children("*", "MeshInstance3D", true, false):
+		(n as MeshInstance3D).material_override = black
 	_add_temp(m, 1.3)
 	m.global_position = at
+	var me := Net.get_local_player()
+	if me != null:
+		var target := Vector3(me.global_position.x, at.y, me.global_position.z)
+		if target.distance_to(at) > 0.05:
+			m.look_at(target, Vector3.UP)  # its -z front at you
 
 
 ## Dennis from Accounts: a cardboard Employee-of-the-Month standee. Monsters never touch Dennis.

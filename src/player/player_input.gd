@@ -30,7 +30,8 @@ const TRACKED: Array[String] = [
 	"turn_left", "turn_right", "look_up", "look_down", "run", "brace", "use_item",
 ]
 
-const KEY_TURN_EASE: float = 9.0  # how quickly keyboard turning reaches full speed
+const KEY_TURN_EASE: float = 18.0  # 1/s, how quickly keyboard turning reaches full speed
+const REMOTE_LOOK_RATE: float = 55.0  # 1/s, how fast a remote cursor's motion is fed into the view
 const REMOTE_LOOK_SCALE: float = 1.4  # cursor pixels turn a bit more than raw mouse counts
 const LOOK_JUMP_PX: float = 300.0  # one cursor jump this big is a teleport (refocus, warp), not a flick
 const EDGE_ZONE: float = 0.07  # fraction of the window width at each side that keeps turning
@@ -232,7 +233,9 @@ func consume_look() -> Vector2:
 	look_delta = Vector2.ZERO
 	var take := _look_pending
 	if Settings.remote_mode:
-		take = _look_pending * (1.0 - exp(-22.0 * get_process_delta_time()))
+		# Just enough to blend one cursor chunk into the next frame or two. At 22/s this trailed the
+		# mouse by a tenth of a second and the user felt the view arrive late.
+		take = _look_pending * (1.0 - exp(-REMOTE_LOOK_RATE * get_process_delta_time()))
 	_look_pending -= take
 	return take
 

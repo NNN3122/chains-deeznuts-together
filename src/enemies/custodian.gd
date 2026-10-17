@@ -181,6 +181,8 @@ func _build_visuals() -> void:
 	for ex: float in [-0.11, 0.11]:
 		var e := MeshInstance3D.new()
 		var em := SphereMesh.new()
+		em.radial_segments = 12
+		em.rings = 6
 		em.radius = 0.035
 		em.height = 0.07
 		e.mesh = em
@@ -189,31 +191,17 @@ func _build_visuals() -> void:
 		_eyes.add_child(e)
 	_eyes.visible = false
 	add_child(_eyes)
-	# Unshaded black: no light can brighten it, so it always reads as a silhouette against the
-	# red-lit ceiling around the hole.
-	var flesh := StandardMaterial3D.new()
-	flesh.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	flesh.albedo_color = Color(0.008, 0.004, 0.006)
+	# A wet black limb, sinews standing out, catching the hole's red light at its edges.
+	var flesh := CustodianParts.material()
 	for i in 4:
 		var seg := MeshInstance3D.new()
-		var cm := CapsuleMesh.new()
-		cm.radius = 0.075 - 0.01 * float(i)
-		cm.height = 0.7
-		seg.mesh = cm
+		seg.mesh = CustodianParts.segment(0.075 - 0.01 * float(i))
 		seg.material_override = flesh
 		seg.visible = false
 		add_child(seg)
 		_arm.append(seg)
 	_claws = Node3D.new()
-	for i in 4:
-		var claw := MeshInstance3D.new()
-		var cb := BoxMesh.new()
-		cb.size = Vector3(0.025, 0.28, 0.025)
-		claw.mesh = cb
-		claw.material_override = flesh
-		claw.position = Vector3(cos(TAU * float(i) / 4.0) * 0.16, -0.08, sin(TAU * float(i) / 4.0) * 0.16)
-		claw.rotation = Vector3(sin(TAU * float(i) / 4.0) * 0.6, 0.0, -cos(TAU * float(i) / 4.0) * 0.6)
-		_claws.add_child(claw)
+	Sculpt.put(_claws, CustodianParts.hand(), flesh, Vector3(0.0, 0.25, 0.0))
 	_claws.visible = false
 	add_child(_claws)
 	_hole_glow = OmniLight3D.new()
@@ -680,6 +668,8 @@ func _update_grab_visuals() -> void:
 	var show := victim != null
 	if grab_peer != _shown_grab_peer:
 		_shown_grab_peer = grab_peer
+		if show:
+			Sfx.play_at(self, "scream", stain_point(), 8.0, 0.82, 40.0)  # out of the ceiling, right over you
 		if show and victim.is_local:
 			Sfx.play(self, "stinger", 0.0)
 	_hole.visible = show

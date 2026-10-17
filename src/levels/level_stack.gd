@@ -158,6 +158,11 @@ func scare_pool(p: Vector3) -> Array:
 	return YellowRooms.SCARE_POOL
 
 
+## The roof paces its own scares (RoofDread); the building's are the ScareDirector's.
+func paces_own_scares(p: Vector3) -> bool:
+	return level_index_at(p) == 2
+
+
 ## A level's own scare visuals (the pizzeria's); the office has none of its own.
 func play_scare(kind: String, pos: Vector3, targeted: bool) -> void:
 	if kind.begins_with("roof_"):

@@ -24,6 +24,8 @@ const MOUSE_SENSITIVITY: float = 0.0022
 const PITCH_LIMIT: float = 1.45
 const TP_ARM_LENGTH: float = 2.7
 const STAND_HEIGHT: float = 1.8  # capsule, meters
+const GRAB_LOOK_RATE: float = 10.0  # 1/s, how hard a caught player's view is held on the face that has them
+const ORPHAN_GRAB_TIME: float = 0.4  # s held by nothing before the grab is dropped
 const CROUCH_HEIGHT: float = 1.25
 const EYE_HEIGHT: float = 1.55
 const CROUCH_EYE_HEIGHT: float = 1.05
@@ -107,6 +109,8 @@ var body_yaw: float = 0.0
 var ignore_gravity_this_tick: bool = false
 var slots: Array[ItemBase] = [null, null, null]
 var grabbed_by: Node = null
+var _grab_origin: Vector3 = Vector3.ZERO  # where the grab caught you: a spot known to be clear
+var _orphan_grab_t: float = 0.0  # seconds held by something that no longer says it holds you
 var _mantle_t: float = 0.0
 var _mantle_start: Vector3 = Vector3.ZERO
 var _mantle_target: Vector3 = Vector3.ZERO
@@ -133,6 +137,8 @@ var _yaw: float = 0.0
 var _pitch: float = -0.15
 var _shake: float = 0.0
 var _heartbeat_t: float = 0.0
+var _was_grabbed: bool = false
+var _pov_forced: bool = false  # caught while playing in third person: the view is your own eyes until it lets go
 var _rig_pos: Vector3 = Vector3.ZERO
 var _land_off: float = 0.0
 var _land_v: float = 0.0
@@ -321,7 +327,23 @@ func _apply_camera_mode() -> void:
 	model.set_first_person(fp)
 
 
+## Caught: through your own eyes whatever camera you chose; let go: back to it.
+func _set_pov_forced(on: bool) -> void:
+	if _rig == null:
+		return
+	_pov_forced = on and camera_mode == CameraMode.THIRD_PERSON
+	if _pov_forced:
+		_tp_camera.current = false
+		_fp_camera.current = true
+		model.visible = true
+		model.set_first_person(true)
+	else:
+		_apply_camera_mode()
+
+
 func local_camera() -> Camera3D:
+	if _pov_forced:
+		return _fp_camera
 	if _rig == null:
 		return null
 	return _fp_camera if camera_mode == CameraMode.FIRST_PERSON else _tp_camera
@@ -351,13 +373,21 @@ func _process(delta: float) -> void:
 func _update_local_camera(delta: float) -> void:
 	var look := input.consume_look() * MOUSE_SENSITIVITY * Settings.mouse_sensitivity
 	var keys := input.key_look(delta)
-	_yaw -= look.x + keys.x
-	var pitch_in := look.y * (-1.0 if Settings.invert_y else 1.0)
-	_pitch = clampf(_pitch - pitch_in + keys.y, -PITCH_LIMIT, PITCH_LIMIT)
-	if synced_flags & SFLAG_GRABBED:
-		_pitch = lerpf(_pitch, 1.15, clampf(delta * 3.0, 0.0, 1.0))  # it makes you look up
+	# Caught: you look at it. For the whole hold the view is your own eyes (first person, whichever
+	# camera you play with) locked on its face, and the mouse does nothing; when it lets go (or you
+	# are taken) the camera you chose comes back.
+	var grabbed_now := (synced_flags & SFLAG_GRABBED) != 0
+	if grabbed_now != _was_grabbed:
+		_was_grabbed = grabbed_now
+		_set_pov_forced(grabbed_now)
+	if grabbed_now:
 		add_shake(delta * 0.8)
-	var fp := camera_mode == CameraMode.FIRST_PERSON
+		_turn_toward_grabber(delta)
+	else:
+		_yaw -= look.x + keys.x
+		var pitch_in := look.y * (-1.0 if Settings.invert_y else 1.0)
+		_pitch = clampf(_pitch - pitch_in + keys.y, -PITCH_LIMIT, PITCH_LIMIT)
+	var fp := camera_mode == CameraMode.FIRST_PERSON or _pov_forced
 	# The eye drops with a crouch, smoothly, so the view never pops.
 	var crouching := (synced_flags & SFLAG_BRACING) != 0
 	var sliding := (synced_flags & SFLAG_SLIDING) != 0
@@ -377,8 +407,8 @@ func _update_local_camera(delta: float) -> void:
 	var target := _visual_position() + Vector3(0.0, _eye_h, 0.0)
 	if _rig_pos.distance_to(target) > 3.0:
 		_rig_pos = target  # teleport / respawn
-	var kh := 1.0 - exp(-(34.0 if fp else 14.0) * delta)
-	var kv := 1.0 - exp(-(16.0 if fp else 8.0) * delta)
+	var kh := 1.0 - exp(-(60.0 if fp else 26.0) * delta)
+	var kv := 1.0 - exp(-(22.0 if fp else 12.0) * delta)
 	_rig_pos = Vector3(lerpf(_rig_pos.x, target.x, kh), lerpf(_rig_pos.y, target.y, kv), lerpf(_rig_pos.z, target.z, kh))
 	_land_v += (-_land_off * 160.0 - _land_v * 18.0) * delta
 	_land_off += _land_v * delta
@@ -403,7 +433,7 @@ func _update_local_camera(delta: float) -> void:
 	_tp_camera.h_offset = 0.5 + randf_range(-s, s)
 	_tp_camera.v_offset = 0.3 + randf_range(-s, s)
 	_tp_camera.rotation.z = _roll + _slide_tilt * 0.5
-	if camera_mode == CameraMode.THIRD_PERSON:
+	if camera_mode == CameraMode.THIRD_PERSON and not _pov_forced:
 		# A wall behind you pulls the camera in: hide your own head (or all of you) so it never
 		# fills the screen.
 		var arm := _spring_arm.get_hit_length()
@@ -412,6 +442,36 @@ func _update_local_camera(delta: float) -> void:
 	else:
 		model.visible = true
 	_tick_heartbeat(delta)
+
+
+## Eases the local view toward the monster whose grab_peer is us (grab_peer reaches every peer).
+func _turn_toward_grabber(delta: float) -> void:
+	var grabber: Node3D = null
+	var candidates := get_tree().get_nodes_in_group("monster") + get_tree().get_nodes_in_group("custodian")
+	for m in candidates:
+		var gp: Variant = m.get("grab_peer")
+		if m is Node3D and gp != null and int(gp) == peer_id:
+			grabber = m as Node3D
+			break
+	if grabber == null:
+		return
+	var head := grabber.global_position + Vector3(0.0, 1.5, 0.0)
+	if grabber.has_method("face_point"):
+		head = grabber.call("face_point")
+	elif grabber.has_method("head_point"):
+		head = grabber.call("head_point")
+	elif grabber.has_method("stain_point"):
+		head = grabber.call("stain_point")
+	var eye := _visual_position() + Vector3(0.0, _eye_h, 0.0)
+	var to := head - eye
+	var flat := Vector2(to.x, to.z).length()
+	if flat < 0.05 and absf(to.y) < 0.05:
+		return
+	var want_yaw := atan2(-to.x, -to.z)
+	var want_pitch := clampf(atan2(to.y, maxf(flat, 0.01)), -PITCH_LIMIT, PITCH_LIMIT)
+	var k := 1.0 - exp(-GRAB_LOOK_RATE * delta)
+	_yaw += wrapf(want_yaw - _yaw, -PI, PI) * k
+	_pitch = lerpf(_pitch, want_pitch, k)
 
 
 func _tick_heartbeat(delta: float) -> void:
@@ -604,6 +664,7 @@ func _server_tick(delta: float) -> void:
 		State.GRABBED:
 			velocity = Vector3.ZERO
 			external_velocity = Vector3.ZERO
+			_tick_orphan_grab(delta)
 		_:
 			_tick_normal(delta)
 	_tick_noise(delta, dragged)
@@ -902,8 +963,11 @@ func teleport_to(pos: Vector3, yaw: float) -> void:
 
 
 func grab_start(by: Node) -> void:
+	if state != State.GRABBED:
+		_grab_origin = global_position
 	state = State.GRABBED
 	grabbed_by = by
+	_orphan_grab_t = 0.0
 	velocity = Vector3.ZERO
 	_slide_t = 0.0
 
@@ -911,8 +975,44 @@ func grab_start(by: Node) -> void:
 func grab_end() -> void:
 	if state == State.GRABBED:
 		state = State.NORMAL
+		# A monster can let go with you lifted into the ceiling tiles or pressed into a wall; a
+		# capsule left inside the world can't move again. Back to where it caught you.
+		if _capsule_blocked(global_position) and not _capsule_blocked(_grab_origin):
+			global_position = _grab_origin
+			synced_position = global_position
 	grabbed_by = null
+	_orphan_grab_t = 0.0
+	_fall_speed = 0.0
 	velocity = Vector3(0.0, -1.0, 0.0)
+
+
+## Server: held, but the monster that grabbed you is gone or says it holds someone else (two
+## grabbed the same player and one let go, a floor reset, a freed node). Never stay pinned to nothing.
+func _tick_orphan_grab(delta: float) -> void:
+	var holder := grabbed_by
+	var holds := holder != null and is_instance_valid(holder) and holder.is_inside_tree()
+	if holds:
+		var gp: Variant = holder.get("grab_peer")
+		holds = gp == null or int(gp) == peer_id
+	if holds:
+		_orphan_grab_t = 0.0
+		return
+	_orphan_grab_t += delta
+	if _orphan_grab_t >= ORPHAN_GRAB_TIME:
+		grab_end()
+
+
+## True when this body's capsule, stood at pos, would overlap level geometry.
+func _capsule_blocked(pos: Vector3) -> bool:
+	if _shape == null or _shape.shape == null or not is_inside_tree():
+		return false
+	var q := PhysicsShapeQueryParameters3D.new()
+	q.shape = _shape.shape
+	# A few cm up: standing on the floor isn't being stuck in it.
+	q.transform = Transform3D(_shape.basis, pos + _shape.position + Vector3(0.0, 0.06, 0.0))
+	q.collision_mask = ChainBody.LAYER_WORLD
+	q.exclude = [get_rid()]
+	return not get_world_3d().direct_space_state.intersect_shape(q, 1).is_empty()
 
 
 func is_grabbed() -> bool:

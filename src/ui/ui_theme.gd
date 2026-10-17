@@ -42,6 +42,18 @@ static func panel_style(alpha: float = 0.88) -> StyleBoxFlat:
 	return sb
 
 
+## The in-game HUD's frames: mostly see-through, a thin dim edge, tight margins. Menus keep
+## panel_style; what sits over the game should barely be there.
+static func hud_panel(alpha: float = 0.28) -> StyleBoxFlat:
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.03, 0.025, 0.02, alpha)
+	sb.border_color = Color(YELLOW_DIM, 0.35)
+	sb.set_border_width_all(1)
+	sb.set_corner_radius_all(4)
+	sb.set_content_margin_all(8)
+	return sb
+
+
 static func get_theme() -> Theme:
 	if _theme != null:
 		return _theme

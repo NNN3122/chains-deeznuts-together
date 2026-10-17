@@ -48,6 +48,7 @@ var _red: float = 0.0
 var _jitter: float = 0.0
 var _blur: float = 0.0
 var _vignette: float = 0.5
+static var _jolt_until: int = 0  # msec: a jump scare shakes the picture and floods it red until then
 
 
 func _ready() -> void:
@@ -76,7 +77,11 @@ func _process(delta: float) -> void:
 				hunted = true
 	var k := clampf(delta * 4.0, 0.0, 1.0)
 	_red = lerpf(_red, 1.0 if grabbed else 0.0, k)
+	var jolting := Time.get_ticks_msec() < _jolt_until
 	_jitter = lerpf(_jitter, 1.0 if buff == 1 else 0.0, k)
+	if jolting:
+		_jitter = 3.0
+		_red = 1.0
 	_blur = lerpf(_blur, 0.7 if buff == 2 else 0.0, k)
 	_vignette = lerpf(_vignette, 1.2 if hunted else 0.5, k * 0.5)
 	mat.set_shader_parameter("red_pulse", _red)
@@ -85,3 +90,8 @@ func _process(delta: float) -> void:
 	mat.set_shader_parameter("desat", _blur * 0.6)
 	mat.set_shader_parameter("vignette", _vignette)
 	mat.set_shader_parameter("fade", fade)
+
+
+## Any peer: a jump scare's jolt on this screen (the picture tears and flushes red) for seconds.
+static func jolt(seconds: float) -> void:
+	_jolt_until = Time.get_ticks_msec() + int(seconds * 1000.0)

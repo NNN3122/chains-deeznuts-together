@@ -80,6 +80,7 @@ func _run_host() -> void:
 	await _test_items()
 	await _test_hires()
 	await _test_playtest()
+	await _test_grab_release()
 	await _test_forced()
 	await _test_scares()
 	await _test_crouch()
@@ -450,6 +451,95 @@ func _test_playtest() -> void:
 	_check("voice volume zero remains silent", Voice.playback_volume_db(false) <= -80.0, "")
 	Settings.voice_volume = saved_volume
 	_place(_level.test_points["spawn"], 0.0)
+
+
+## The caught-camera bug: a grab must never leave you stuck. A release with your head in the
+## ceiling tiles puts you back where you were caught; a holder that vanishes (or says it holds
+## someone else) lets go on its own; and the view is only pulled toward the monster briefly.
+func _test_grab_release() -> void:
+	var monsters := get_tree().get_nodes_in_group("custodian")
+	var at: Vector3 = _level.test_points["plate"]
+	_freeze_hires(true)
+	_place(at, 0.0)
+	await _wait(0.4)
+	if not monsters.is_empty():
+		var c := monsters[0] as Custodian
+		c.debug_reset(at + Vector3(0.0, 0.0, 6.0))
+		c.debug_frozen = true
+		var base_y := _host.global_position.y
+		c._start_grab(_host)
+		c.grab_lift = 1.7
+		_host.global_position = Vector3(at.x, base_y + 1.7, at.z)  # head through the ceiling tiles
+		var embedded := _host._capsule_blocked(_host.global_position)
+		c.release(false)
+		await _wait(0.3)
+		var moved := 0.0  # the best of four directions: the spot may have a wall or the lift beside it
+		for dir: Vector2 in [Vector2(1.0, 0.0), Vector2(-1.0, 0.0), Vector2(0.0, 1.0), Vector2(0.0, -1.0)]:
+			var start := _host.global_position
+			_bot(dir, 0.0, 0)
+			await _wait(0.5)
+			_bot(Vector2.ZERO, 0.0, 0)
+			await _wait(0.2)
+			moved = maxf(moved, Vector2(_host.global_position.x - start.x, _host.global_position.z - start.z).length())
+		_check("let go with your head in the ceiling, you are back on your feet and can walk", not _host.is_grabbed() and not _host._capsule_blocked(_host.global_position) and moved > 0.8 and absf(_host.global_position.y - base_y) < 0.5,
+			"embedded %s, y %.2f (floor %.2f), moved %.2f m" % [embedded, _host.global_position.y, base_y, moved])
+		c.debug_reset(at + Vector3(0.0, 0.0, 14.0))
+	# A holder that vanishes mid-grab.
+	_place(at, 0.0)
+	await _wait(0.3)
+	var ghost := Node3D.new()
+	add_child(ghost)
+	_host.grab_start(ghost)
+	_host._pitch = -0.4
+	await _wait(0.2)
+	ghost.queue_free()
+	await _wait(0.8)
+	_check("a grab whose monster is gone lets go by itself", not _host.is_grabbed() and _host.state == Player.State.NORMAL, "state %d" % _host.state)
+	# A Hire that says it holds someone else no longer holds you.
+	var hire: HollowHire = _level.hires_on(1)[0]  # the B3 runner, on this floor
+	hire.grab_peer = 0
+	_host.grab_start(hire)
+	await _wait(0.8)
+	_check("a grab the monster no longer claims lets go by itself", not _host.is_grabbed(), "state %d" % _host.state)
+	# The catch: held up by the throat, raked, then the jaw drops for the bite; the caught player
+	# sees all of it through their own eyes, locked on its face, and the camera comes back after.
+	hire.debug_reset(at + Vector3(0.0, 0.0, -3.0), PI)
+	hire.debug_frozen = true
+	var was_mode := _host.camera_mode
+	_host.camera_mode = Player.CameraMode.THIRD_PERSON
+	_host._apply_camera_mode()
+	for b in Net.get_chain_bodies():
+		if b != _host:
+			b.teleport_to(at + Vector3(4.0, 0.0, 0.0), 0.0)  # out of rescue reach: let it play out
+	var floor_y := _host.global_position.y
+	hire._start_grab(_host)
+	await _wait(1.0)
+	_host._pitch = -0.6  # the mouse tries to look away
+	_host._yaw += 1.0
+	await _wait(0.4)
+	var cam := _host.local_camera()
+	var to_face := (hire.face_point() - cam.global_position).normalized()
+	var aim := -cam.global_transform.basis.z
+	var looking := aim.angle_to(to_face)
+	var pov := _host._pov_forced and cam == _host._fp_camera
+	var lifted := _host.global_position.y - floor_y
+	var jaw_open := 0.0
+	for i in 30:
+		await _wait(0.05)
+		jaw_open = minf(jaw_open, hire._jaw.rotation.x)
+		if not _host.is_grabbed():
+			break
+	hire.release(false)
+	await _wait(0.3)
+	_check("caught by a Hire: lifted by the throat, the view your own eyes locked on its face, the jaw opening for the bite", looking < 0.3 and pov and lifted > 0.08 and jaw_open < -0.6,
+		"off its face %.2f rad, first person %s, lifted %.2f m, jaw %.2f" % [looking, pov, lifted, jaw_open])
+	_check("let go, the camera you chose comes back", not _host._pov_forced and _host._tp_camera.current, "")
+	_host.camera_mode = was_mode
+	_host._apply_camera_mode()
+	await _wait(0.5)
+	hire.respawn_at(at + Vector3(20.0, 0.0, 0.0))
+	_place(_level.test_points["spawn"], 0.0)
+	await _wait(0.3)
 
 
 func _rel(cell: Vector3) -> String:
@@ -1364,7 +1454,7 @@ func _escape_by_helicopter(lot: HordeArena, tp: Dictionary, prefix: String) -> v
 		bodies[i].teleport_to(tp[prefix + "gap"] + Vector3(1.0 * float(i), 0.0, 0.0), 0.0)
 	await _wait(1.2)
 	var two_done := GameState.task_done(0) and GameState.task_done(1)
-	var round2 := lot.rounds_spawned >= 2 and lot.horde.spawned_of(Horde.KIND_WEAVER) > 50
+	var round2 := lot.rounds_spawned >= 2
 	var last_key := prefix + "roof%d" % HordeArena.ROOF_COUNT
 	for i in bodies.size():
 		bodies[i].teleport_to(tp[last_key] + Vector3(-1.0 + 1.0 * float(i), 0.0, -2.0), 0.0)
@@ -1377,14 +1467,14 @@ func _escape_by_helicopter(lot: HordeArena, tp: Dictionary, prefix: String) -> v
 		bodies[i].teleport_to(tp[prefix + "helipad"] + Vector3(-4.0 + 1.0 * float(i), 0.0, 4.0), 0.0)
 	await _wait(1.2)
 	var climbed := GameState.task_done(HordeArena.TASK_ESCAPE)
-	var round3 := lot.rounds_spawned >= lot.wave_count() and lot.horde.alive_of(Horde.KIND_FLITTER) > 50
+	var round3 := lot.rounds_spawned >= lot.wave_count() and not lot.waves_spawn(Horde.KIND_WEAVER) and not lot.waves_spawn(Horde.KIND_FLITTER)
 	var cp_ok := GameState.checkpoint_index == lot.helipad_checkpoint_index()
-	_check("the gap brings wave two (spiders), the helipad the last wave (bats) and the helipad checkpoint", two_done and round2 and climbed and round3 and cp_ok,
+	_check("the gap brings wave two, the helipad the helipad checkpoint, and no spider or bat ever comes in a wave (they are jump scares now)", two_done and round2 and climbed and round3 and cp_ok,
 		"tasks %s, waves %d, weavers %d, flitters %d, checkpoint %d (want %d)" % [str(GameState.tasks), lot.rounds_spawned, lot.horde.alive_of(Horde.KIND_WEAVER), lot.horde.alive_of(Horde.KIND_FLITTER), GameState.checkpoint_index, lot.helipad_checkpoint_index()])
 	# Standing below a passing aircraft must never count as boarding.
-	var airborne: bool = lot.heli_position().y - tp[prefix + "helipad"].y > 3.8
+	var airborne: bool = lot.heli_position().y - tp[prefix + "helipad"].y > 3.5  # it bobs between 3.85 and 4.55 m; a jump reaches 1.6
 	var initial := lot.heli_position()
-	await _wait(2.0)
+	await _wait(3.0)  # slowest at the ends of a pass: 2 s there can be under 2 m
 	_check("helicopter flies past immediately; waiting on the pad cannot win", airborne and initial.distance_to(lot.heli_position()) > 2.0 and not GameState.escaped and GameState.task_done(HordeArena.TASK_PAD), "moved %.1f m" % initial.distance_to(lot.heli_position()))
 	var supply := 0
 	for p in Net.get_players():
@@ -1436,56 +1526,66 @@ func _test_route() -> void:
 		l.debug_frozen = true
 	var failed := ""
 	var wipes0 := GameState.wipes
+	var o2 := Vector2(arena.origin.x, arena.origin.z)
 	for i in range(1, arena.roofs.size() - 1):
 		var r: HordeArena.Roof = arena.roofs[i]
 		var prev: HordeArena.Roof = arena.roofs[i - 1]
-		var edge_z := arena.origin.z + prev.rect.position.y
-		var start := arena.origin + Vector3(r.cross_x, prev.y + 0.1, prev.rect.position.y + 5.0)
-		_host.teleport_to(start, 0.0)
+		var d := r.dir
+		var d3 := Vector3(d.x, 0.0, d.y)
+		var yaw := atan2(-d.x, -d.y)
+		var edge := o2.dot(d) + prev.edge_along(d)  # the edge you leave from, as a coordinate along d
+		var near := edge + r.gap  # this roof's near edge
+		var start := arena.origin + Vector3(r.cross.x, prev.y + 0.1, r.cross.y) - d3 * 5.0
+		_host.teleport_to(start, yaw)
 		if _mate != null:
-			_mate.teleport_to(start + Vector3(0.0, 0.0, 2.2), 0.0)
-		_bot(Vector2.ZERO, 0.0, 0)
+			_mate.teleport_to(start - d3 * 2.2, yaw)
+		_bot(Vector2.ZERO, yaw, 0)
 		await _wait(0.4)
-		var run := r.link == HordeArena.Link.JUMP
+		# Where to take off: the edge for a jump or a leap, then each chimney stack's far edge.
+		var takeoffs: Array[float] = []
+		if r.link == HordeArena.Link.JUMP or r.link == HordeArena.Link.LEAP or r.link == HordeArena.Link.STONES:
+			takeoffs.append(edge)
+		for s in r.stones:
+			takeoffs.append(o2.dot(d) + Vector2(s.x, s.z).dot(d) + HordeArena.STONE_DEPTH * 0.5)
+		var run := not takeoffs.is_empty() or r.link == HordeArena.Link.DROP
 		var flags := Player.FLAG_RUN if run else 0
-		var jumped := false
-		var mate_jumped := false
+		var jumped := 0
+		var mate_jumped := 0
 		var landed := false
 		var mate_p := _mate as Player
 		var mate_landed := mate_p == null
-		for k in 120:
+		for k in 140:
 			await _wait(0.05)
-			var z := _host.global_position.z
+			var along := Vector2(_host.global_position.x, _host.global_position.z).dot(d)
 			var tap := false
-			if run and not jumped and z < edge_z + 0.8:
+			if jumped < takeoffs.size() and along > takeoffs[jumped] - 0.8:
 				tap = true
-				jumped = true
-			elif r.link == HordeArena.Link.CLIMB and k % 6 == 0:
+				jumped += 1
+			elif r.link == HordeArena.Link.CLIMB and k % 6 == 0 and along < near + 0.3:
 				tap = true  # Space into the unit, then the roof
-			var floor_ok := z < arena.origin.z + r.rect.end.y - 4.0  # well clear of the edge: the teammate is coming over behind
-			if not landed and arena.roof_at(_host.global_position) == i and _host.is_on_floor() and floor_ok:
-				landed = true
-			_bot(Vector2.ZERO if landed else Vector2(0.0, -1.0), 0.0, 0 if landed else flags, tap and not landed)
-			# A teammate (co-op) crosses the same way, jumping at their own edge.
+			if not landed and arena.roof_at(_host.global_position) == i and _host.is_on_floor() and along > near + 2.4:
+				landed = true  # clear of the edge: the teammate is coming over behind
+			_bot(Vector2.ZERO if landed else d, yaw, 0 if landed else flags, tap and not landed)  # world-space, like _send_input
+			# A teammate (co-op) crosses the same way, jumping at their own edges.
 			if mate_p != null:
-				var mz := mate_p.global_position.z
+				var m_along := Vector2(mate_p.global_position.x, mate_p.global_position.z).dot(d)
 				var mtap := false
-				if run and not mate_jumped and mz < edge_z + 0.8:
+				if mate_jumped < takeoffs.size() and m_along > takeoffs[mate_jumped] - 0.8:
 					mtap = true
-					mate_jumped = true
-				elif r.link == HordeArena.Link.CLIMB and k % 6 == 3:
+					mate_jumped += 1
+				elif r.link == HordeArena.Link.CLIMB and k % 6 == 3 and m_along < near + 0.3:
 					mtap = true
-				if not mate_landed and arena.roof_at(mate_p.global_position) == i and mate_p.is_on_floor() and mz < arena.origin.z + r.rect.end.y - 1.0:
+				if not mate_landed and arena.roof_at(mate_p.global_position) == i and mate_p.is_on_floor() and m_along > near + 0.6:
 					mate_landed = true
-				_drive_mate(Vector2.ZERO if mate_landed else Vector2(0.0, -1.0), 0 if mate_landed else flags, mtap and not mate_landed)
+				_drive_mate(Vector2.ZERO if mate_landed else d, 0 if mate_landed else flags, mtap and not mate_landed)
 			if landed and mate_landed:
 				break
-		_bot(Vector2.ZERO, 0.0, 0)
+		_bot(Vector2.ZERO, yaw, 0)
 		_drive_mate(Vector2.ZERO, 0, false)
 		await _wait(0.6)
 		if not landed or arena.roof_at(_host.global_position) != i or not mate_landed:
-			failed += "roof %d (%s) not reached: host at %s on roof %d, mate landed %s; " % [i, HordeArena.LINK_NAMES[r.link], _host.global_position, arena.roof_at(_host.global_position), mate_landed]
-	_check("every link of the route can be crossed by running, jumping, walking and climbing, with the partner on the chain (no layoffs)", failed == "" and GameState.wipes == wipes0, failed + "wipes %d -> %d" % [wipes0, GameState.wipes])
+			failed += "roof %d (%s, heading %s) not reached: host at %s on roof %d, mate landed %s; " % [i, HordeArena.LINK_NAMES[r.link], d, _host.global_position, arena.roof_at(_host.global_position), mate_landed]
+	_check("every link of the route can be crossed by running, jumping, walking and climbing, whichever way it turns, with the partner on the chain (no layoffs)", failed == "" and GameState.wipes == wipes0, failed + "wipes %d -> %d" % [wipes0, GameState.wipes])
 	# And the fire escape: landing by landing up the tower to the helipad, the way a player does it
 	# (walk into the side of the next landing and tap Space; off the last one onto the pad).
 	var steps: Array[Vector3] = arena.escape_steps
@@ -1537,30 +1637,53 @@ func _test_district() -> void:
 	await _wait(1.8)  # and any layoff it started lands now, not mid-test
 	var links_ok := true
 	var why := ""
+	var turns := 0
+	var heights: Array[float] = []
 	for i in range(1, arena.roofs.size()):
 		var r: HordeArena.Roof = arena.roofs[i]
 		var prev: HordeArena.Roof = arena.roofs[i - 1]
 		var dy := r.y - prev.y
-		var inside := r.cross_x > prev.rect.position.x + 2.0 and r.cross_x < prev.rect.end.x - 2.0 and r.cross_x > r.rect.position.x + 2.0 and r.cross_x < r.rect.end.x - 2.0
-		var ok := inside and r.y >= 0.0
+		var side := arena._side(r.dir)
+		var t := r.cross.dot(side)
+		var lo_p := minf(prev.rect.position.dot(side), prev.rect.end.dot(side))
+		var hi_p := maxf(prev.rect.position.dot(side), prev.rect.end.dot(side))
+		var lo_r := minf(r.rect.position.dot(side), r.rect.end.dot(side))
+		var hi_r := maxf(r.rect.position.dot(side), r.rect.end.dot(side))
+		var inside := t > lo_p + 2.0 and t < hi_p - 2.0 and t > lo_r + 2.0 and t < hi_r - 2.0
+		var ok := inside and r.y >= 0.0 and r.y <= 14.0 + HordeArena.TOWER_RISE and r.dir.y <= 0.0
+		if r.dir != HordeArena.NORTH:
+			turns += 1
+		heights.append(r.y)
 		if i < arena.roofs.size() - 1:
 			for v in r.vents:
-				if absf(v.x - r.enter.x) < 1.4 or absf(v.x - r.exit.x) < 1.4:
+				if arena._lane_distance(r, v) < 1.2:
 					ok = false
-					why += "roof %d has a vent in a crossing lane; " % i
+					why += "roof %d has a vent on the walk across it; " % i
+		# Clear of every roof but its neighbours.
+		for j in range(0, i - 1):
+			if arena.roofs[j].rect.grow(3.9).intersects(r.rect):
+				ok = false
+				why += "roof %d sits on roof %d; " % [i, j]
 		match r.link:
 			HordeArena.Link.JUMP:
-				ok = ok and r.gap >= 2.3 and r.gap <= 3.5 and dy <= 0.6 and dy >= -2.5
+				ok = ok and r.gap >= 2.9 and r.gap <= 4.0 and dy <= 0.3 and dy >= -2.7
+			HordeArena.Link.LEAP:
+				ok = ok and r.gap >= 1.4 and r.gap <= 2.2 and dy >= 0.7 and dy <= 1.3
 			HordeArena.Link.PLANK, HordeArena.Link.PIPE:
-				ok = ok and r.gap >= 3.9 and r.gap <= 6.6 and absf(dy) < 0.01
+				ok = ok and r.gap >= 4.4 and r.gap <= 7.6 and absf(dy) < 0.01
 			HordeArena.Link.DROP:
-				ok = ok and r.gap >= 1.3 and r.gap <= 2.5 and dy <= -3.3
+				ok = ok and r.gap >= 1.7 and r.gap <= 2.7 and dy <= -3.3
 			HordeArena.Link.CLIMB:
 				ok = ok and r.gap == 0.0 and dy >= 2.5 and dy <= (HordeArena.TOWER_RISE + 0.01 if i == arena.roofs.size() - 1 else 3.6)
+			HordeArena.Link.STONES:
+				ok = ok and r.stones.size() >= 2 and r.gap > 8.0 and dy <= 0.01
 		if not ok:
 			links_ok = false
-			why += "roof %d link %d gap %.1f dy %.1f inside %s; " % [i, r.link, r.gap, dy, inside]
-	_check("eleven roofs and the tower, every link within reach (jump 2.3-3.5 m, plank 4-6.5 m level, drop a storey, climb two mantles), the crossing inside both roofs and clear of vents, nothing below the lot", links_ok and arena.roofs.size() == HordeArena.ROOF_COUNT + 2, why)
+			why += "roof %d link %d heading %s gap %.1f dy %.1f inside %s; " % [i, r.link, r.dir, r.gap, dy, inside]
+	heights.sort()
+	var spread := heights[heights.size() - 2] - heights[0]  # the route's roofs, not the tower
+	_check("eleven roofs and the tower scattered at their own heights (not a line: %d turns, %.1f m between lowest and highest), every link within reach, the crossing inside both roofs and clear of vents, no roof on another" % [turns, spread], links_ok and arena.roofs.size() == HordeArena.ROOF_COUNT + 2 and turns >= 1 and spread > 3.0, why)
+	_check("no green route signs: nothing but the red light points the way", arena.find_children("*", "Label3D", true, false).filter(func(l: Node) -> bool: return (l as Label3D).modulate.g > 0.9 and (l as Label3D).modulate.r < 0.6).is_empty(), "")
 	var f := arena.field
 	var r1: HordeArena.Roof = arena.roofs[1]
 	var mid := arena.origin + Vector3(r1.cross_x, 0.0, r1.rect.end.y + r1.gap * 0.5)
@@ -1603,64 +1726,36 @@ func _test_district() -> void:
 	var landed := arena.roof_at(_host.global_position)
 	_check("a run and a jump off the lot's edge lands on the first roof, and the chain brings the partner (no layoff)", landed == 1 and GameState.wipes == wipes0 and arena.furthest_roof >= 1,
 		"on roof %d at %s (roof 1 enters at %s), wipes %d -> %d, furthest %d" % [landed, _host.global_position, enter, wipes0, GameState.wipes, arena.furthest_roof])
-	# A Weaver on the roof behind you swings the gap on a thread.
-	arena.debug_spawn_all_rounds()
-	var r2: HordeArena.Roof = arena.roofs[2]
-	var stand := arena.origin + r2.enter
+	# A Weaver on the roof behind you swings the gap on a thread. (None come in waves now; the
+	# crowd tech still supports them, so the test brings one.)
+	var wk := 2
+	while wk < arena.roofs.size() - 2 and (arena.roofs[wk].link == HordeArena.Link.CLIMB or arena.roofs[wk].link == HordeArena.Link.STONES):
+		wk += 1  # a link with open street to swing across
+	var r2: HordeArena.Roof = arena.roofs[wk]
+	var r_from: HordeArena.Roof = arena.roofs[wk - 1]
+	var d2 := Vector3(r2.dir.x, 0.0, r2.dir.y)
+	var stand := arena.origin + r2.enter + d2 * 1.0
 	_host.teleport_to(stand, 0.0)
 	if _mate != null:
-		_mate.teleport_to(stand + Vector3(1.5, 0.0, -2.0), 0.0)
-	var weaver := -1
-	for i in _horde.count:
-		if _horde.kind[i] == Horde.KIND_WEAVER and _horde.state[i] == Horde.AState.WALK:
-			weaver = i
-			break
-	_horde.place(weaver, arena.origin + r1.exit + Vector3(0.0, 0.0, 1.0))
-	await _wait(0.6)
-	_horde.debug_frozen = false
-	var swung := false
-	var arrived := false
-	for i in 60:
-		await _wait(0.1)
-		if _horde.state[weaver] == Horde.AState.SWING:
-			swung = true
-		if swung and _horde.state[weaver] == Horde.AState.WALK and arena.roof_at(_horde.agent_position(weaver)) == 2:
-			arrived = true
-			break
-	_check("a Weaver at the edge of the roof behind you swings the gap on a thread and lands on yours", swung and arrived, "swung %s, arrived %s, state %d, at %s" % [swung, arrived, _horde.state[weaver], _horde.agent_position(weaver)])
-	# ...and climbs the tower's face to the helipad.
+		_mate.teleport_to(stand + d2 * 1.5, 0.0)
+	_horde.clear_near(arena.origin, 500.0)  # the rest of the swarm climbs and leaps too now: keep it out of this
+	for k: int in [Horde.KIND_WEAVER, Horde.KIND_ROACH]:
+		await _agent_crosses_and_climbs(k, wk, r_from, d2)
 	_horde.debug_frozen = true
-	var tower: HordeArena.Roof = arena.roofs[arena.roofs.size() - 1]
-	var last: HordeArena.Roof = arena.roofs[arena.roofs.size() - 2]
-	var pad: Vector3 = arena.test_points["helipad"]
-	_host.teleport_to(pad + Vector3(0.0, 0.0, 3.0), 0.0)
-	if _mate != null:
-		_mate.teleport_to(pad + Vector3(1.5, 0.0, 1.0), 0.0)
-	_horde.place(weaver, arena.origin + Vector3(tower.rect.get_center().x + 4.0, last.y, tower.rect.end.y + 1.5))
-	await _wait(0.6)
-	_horde.debug_frozen = false
-	var climbed := false
-	var up := false
-	for i in 80:
-		await _wait(0.1)
-		if _horde.state[weaver] == Horde.AState.CLIMB:
-			climbed = true
-		if climbed and _horde.state[weaver] != Horde.AState.CLIMB and _horde.py[weaver] > pad.y - 0.5:
-			up = true
-			break
-	_check("a Weaver below the helipad climbs the tower's face up to it", climbed and up, "climbed %s, up %s, state %d, y %.1f (pad %.1f)" % [climbed, up, _horde.state[weaver], _horde.py[weaver], pad.y])
-	_horde.debug_frozen = true
-	# The Jumper on the third roof crosses to you on the fourth (a thread, or up the wall).
-	var jumper: Launcher = arena.launchers[4]
-	var r3: HordeArena.Roof = arena.roofs[3]
-	var r4: HordeArena.Roof = arena.roofs[4]
+	# The route's Jumper crosses from its roof to you on the next (a thread, or up the wall).
+	var jk: int = HordeArena.JUMPER_ROOFS[0]
+	var jumper: Launcher = arena.launchers[HordeArena.LOT_JUMPERS]
+	var r3: HordeArena.Roof = arena.roofs[jk]
+	var r4: HordeArena.Roof = arena.roofs[jk + 1]
+	var d4 := Vector3(r4.dir.x, 0.0, r4.dir.y)
 	var there := arena.origin + r4.enter
-	_host.teleport_to(there + Vector3(0.0, 0.0, -minf(8.0, r4.rect.size.y - 3.0)), 0.0)  # out of lunge range: it has to cross first
+	var deep := absf(r4.rect.size.dot(r4.dir))  # how far the roof runs the way you came in
+	_host.teleport_to(there + d4 * minf(8.0, deep - 3.0), 0.0)  # out of lunge range: it has to cross first
 	if _mate != null:
 		_mate.teleport_to(_host.global_position + Vector3(1.5, 0.0, -1.0), 0.0)
 	_bot(Vector2.ZERO, 0.0, 0)
 	await _wait(0.3)
-	jumper.debug_reset(arena.origin + r3.exit + Vector3(0.0, 0.0, 2.0))
+	jumper.debug_reset(arena.origin + r3.exit - d4 * 2.0)
 	jumper.debug_frozen = false
 	var crossed := false
 	var how := ""
@@ -1672,14 +1767,69 @@ func _test_district() -> void:
 			how = "jump"
 		elif jumper.lstate == Launcher.LState.CLIMB and how == "":
 			how = "climb"
-		if how != "" and arena.roof_at(jumper.global_position) == 4:
+		if how != "" and arena.roof_at(jumper.global_position) == jk + 1:
 			crossed = true
 			break
 	jumper.debug_frozen = true
 	_check("the Jumper on the roof behind crosses to yours (link: %s)" % HordeArena.LINK_NAMES[r4.link], crossed and how != "", "crossed %s by %s, state %d, at roof %d" % [crossed, how, jumper.lstate, arena.roof_at(jumper.global_position)])
-	jumper.debug_reset(arena.launcher_homes[4])
+	jumper.debug_reset(arena.launcher_homes[HordeArena.LOT_JUMPERS])
 	jumper.release(false)
 	await _wait(0.5)
+
+
+## One of a kind (a Weaver on its thread, a roach with a leap) at the edge of the roof behind you
+## crosses the gap to yours, then from the foot of the tower climbs its face to the helipad.
+func _agent_crosses_and_climbs(k: int, wk: int, r_from: HordeArena.Roof, d2: Vector3) -> void:
+	var arena := _arena
+	var r2: HordeArena.Roof = arena.roofs[wk]
+	var label := "Weaver" if k == Horde.KIND_WEAVER else "roach"
+	_horde.debug_frozen = true
+	var stand := arena.origin + r2.enter + d2 * 1.0
+	_host.teleport_to(stand, 0.0)
+	if _mate != null:
+		_mate.teleport_to(stand + d2 * 1.5, 0.0)
+	var from := arena.origin + r_from.exit - d2 * 1.0
+	var weights: Array[float] = [0.0, 1.0, 0.0]
+	if k == Horde.KIND_ROACH:
+		weights = [1.0, 0.0, 0.0]
+	_horde.spawn_group(1, Rect2(from.x - 0.5, from.z - 0.5, 1.0, 1.0), 4242 + k, weights)
+	var agent := _horde.count - 1
+	_horde.place(agent, from)
+	await _wait(0.6)
+	_horde.debug_frozen = false
+	var swung := false
+	var arrived := false
+	for i in 60:
+		await _wait(0.1)
+		if _horde.state[agent] == Horde.AState.SWING:
+			swung = true
+		if swung and _horde.state[agent] == Horde.AState.WALK and arena.roof_at(_horde.agent_position(agent)) == wk:
+			arrived = true
+			break
+	_check("a %s at the edge of the roof behind you %s the gap and lands on yours" % [label, "swings" if k == Horde.KIND_WEAVER else "leaps"], swung and arrived,
+		"swung %s, arrived %s, state %d, at %s from %s; roof %d heading %s link %d" % [swung, arrived, _horde.state[agent], _horde.agent_position(agent), from, wk, r2.dir, r2.link])
+	_horde.debug_frozen = true
+	var tower: HordeArena.Roof = arena.roofs[arena.roofs.size() - 1]
+	var last: HordeArena.Roof = arena.roofs[arena.roofs.size() - 2]
+	var pad: Vector3 = arena.test_points["helipad"]
+	_host.teleport_to(pad + Vector3(0.0, 0.0, 3.0), 0.0)
+	if _mate != null:
+		_mate.teleport_to(pad + Vector3(1.5, 0.0, 1.0), 0.0)
+	_horde.place(agent, arena.origin + Vector3(tower.rect.get_center().x + 4.0, last.y, tower.rect.end.y + 1.5))
+	await _wait(0.6)
+	_horde.debug_frozen = false
+	var climbed := false
+	var up := false
+	for i in 80:
+		await _wait(0.1)
+		if _horde.state[agent] == Horde.AState.CLIMB:
+			climbed = true
+		if climbed and _horde.state[agent] != Horde.AState.CLIMB and _horde.py[agent] > pad.y - 0.5:
+			up = true
+			break
+	_check("a %s below the helipad climbs the tower's face up to it" % label, climbed and up, "climbed %s, up %s, state %d, y %.1f (pad %.1f)" % [climbed, up, _horde.state[agent], _horde.py[agent], pad.y])
+	_horde.debug_frozen = true
+	_horde.clear_near(_horde.agent_position(agent), 3.0)
 
 
 # --- The Loading Lot (--arena): the Level 3 tech ------------------------------------------------------
@@ -1695,7 +1845,7 @@ func _run_arena(arena: HordeArena) -> void:
 	await _wait(0.6)
 	var bodies := Net.get_chain_bodies()
 	_mate = bodies[1] if bodies.size() > 1 else null
-	_check("arena built: field, the first wave of the swarm, the Jumpers, the route, loot", _horde.count >= 350 and _horde.count < arena.horde_count and arena.launchers.size() >= 4 and arena.field.cell_count() > 9000 and arena.roofs.size() == HordeArena.ROOF_COUNT + 2 and get_tree().get_nodes_in_group("pickups").size() >= 10,
+	_check("arena built: field, the first wave of the swarm (a smaller one now), the Jumpers, the route, loot", _horde.count >= 100 and _horde.count <= 200 and _horde.count < arena.horde_count and arena.launchers.size() == HordeArena.LOT_JUMPERS + HordeArena.JUMPER_ROOFS.size() and arena.field.cell_count() > 9000 and arena.roofs.size() == HordeArena.ROOF_COUNT + 2 and get_tree().get_nodes_in_group("pickups").size() >= 10,
 		"agents %d, launchers %d, cells %d, pickups %d" % [_horde.count, arena.launchers.size(), arena.field.cell_count(), get_tree().get_nodes_in_group("pickups").size()])
 	var chain := _chain()
 	_check("chain links every body", chain != null and chain.segments.size() == bodies.size() - 1, "%d segments" % (chain.segments.size() if chain != null else -1))
@@ -1718,6 +1868,7 @@ func _run_arena(arena: HordeArena) -> void:
 ## Clearing the lot: the three tasks done, then everyone back on the pad clocks out.
 func _test_lot_clear() -> void:
 	await _test_roof_scares()
+	await _test_roof_dread()
 	await _escape_by_helicopter(_arena, _arena.test_points, "")
 
 
@@ -1734,6 +1885,85 @@ func _test_roof_scares() -> void:
 	var shown := lot.find_children("RoofScare*", "MeshInstance3D", true, false).size()
 	await _wait(2.0)
 	_check("roof scares play and their temporary silhouettes clean up", ScareDirector.scares_played >= before + 3 and shown >= 6 and lot.find_children("RoofScare*", "MeshInstance3D", true, false).is_empty(), "scares %d, silhouettes %d" % [ScareDirector.scares_played - before, shown])
+
+
+## The roof's horror pacing (RoofDread): darker night, no scare while a bug is close, the hush
+## (wind and swarm silent, heartbeat, a lamp out) before every scare, the scripted ones waiting
+## for quiet too, the Tall Tenant glimpsed and gone, landing lamps dying as you come near.
+func _test_roof_dread() -> void:
+	var lot: HordeArena = _arena if _arena != null else _stack.lot
+	var lvl: Node = _arena if _arena != null else _stack
+	var dread := lot.dread
+	var horde := lot.horde
+	horde.debug_frozen = true
+	for l in lot.launchers:
+		l.debug_frozen = true
+	var env := LevelKit.make_environment(2, 2)
+	var beacon_mat := LevelKit.mat("beacon") as StandardMaterial3D
+	_check("the roof's night is dark and fogged; the tower's red light ignores the fog", env.ambient_light_energy <= 0.08 and env.fog_density >= 0.03 and beacon_mat.disable_fog and lot.beacon != null and lot.beacon.omni_range >= 40.0, "ambient %.3f, fog %.3f" % [env.ambient_light_energy, env.fog_density])
+	_check("the ScareDirector's timer leaves the roof to its own pacing", bool(lvl.call("paces_own_scares", _host.global_position)), "")
+	var spot := lot.origin + lot.roofs[2].center() + Vector3(0.0, 0.1, 0.0)
+	_place(spot, 0.0)
+	await _wait(0.5)
+	dread._glimpse_t = 999.0
+	dread._pending.clear()
+	horde.clear_near(spot, 90.0)
+	horde.place(0, spot + Vector3(4.0, 0.0, 0.0))
+	horde.closest_d2 = 16.0  # the next active pick says the same; don't race it
+	dread._quiet = 0.0
+	dread._cool = 0.0
+	dread._need = 1.5
+	var b0 := dread.builds
+	await _wait(3.0)
+	_check("no scare builds while a bug is close: it has to go quiet first", dread.builds == b0 and dread._quiet == 0.0, "builds %d, nearest %.1f m" % [dread.builds - b0, sqrt(horde.closest_d2)])
+	horde.clear_near(spot, 90.0)
+	var heard := dread.hushes_heard
+	var played := ScareDirector.scares_played
+	for k in 50:
+		await _wait(0.1)
+		if dread.builds > b0:
+			break
+	await _wait(0.3)
+	_check("once it's quiet the build starts: the wind and the swarm drop away, the heartbeat", dread.builds == b0 + 1 and dread.hushes_heard > heard and dread.hushed() and horde.muted and dread.is_building(), "builds %d, heard %d" % [dread.builds - b0, dread.hushes_heard - heard])
+	await _wait(RoofDread.HUSH_SECONDS + 0.4)
+	_check("after the silence the scare lands (or only a glimpse)", not dread.is_building() and dread.fired.size() >= 1 and ScareDirector.scares_played >= played + 1, "ended in '%s'" % (dread.fired.back() if not dread.fired.is_empty() else "?"))
+	# A scripted one (the spider roofs) waits its turn and still gets the hush first.
+	dread._cool = 999.0
+	var n := dread.fired.size()
+	dread.queue("roof_drop", _host, 0.0)
+	for k in 30:
+		await _wait(0.1)
+		if dread.is_building():
+			break
+	var building := dread.is_building()
+	await _wait(RoofDread.HUSH_SECONDS + 0.4)
+	_check("a scripted spider drop is built like the rest: hush, silence, then the spider", building and dread.fired.size() == n + 1 and dread.fired.back() == "roof_drop", "")
+	# The Tall Tenant: past the edge of a lamp, and gone when you come close.
+	var gs := dread.glimpse_spot(_host)
+	var flat := Vector2(gs.x - _host.global_position.x, gs.z - _host.global_position.z).length() if gs != Vector3.INF else -1.0
+	_check("the Tall Tenant gets a spot on a roof, out past the light, at a distance", gs != Vector3.INF and lot.roof_under(gs) >= 0 and flat >= 15.0 and flat <= 34.0, "%.1f m" % flat)
+	if gs != Vector3.INF:
+		var s := dread.spawn_glimpse(gs)
+		await _wait(0.3)
+		var stood := is_instance_valid(s) and not s.is_leaving()
+		var under := lot.roofs[lot.roof_under(gs)]
+		_place(gs.lerp(lot.origin + under.center(), 0.3) + Vector3(0.0, 0.1, 0.0), 0.0)
+		await _wait(0.8)
+		_check("it stands there while nobody comes near, and steps back into the dark when you do", stood and not is_instance_valid(s), "")
+	# A landing lamp that dies as the Line comes near (the route test may have killed it already).
+	var dying: OmniLight3D = null
+	for lamp in lot.lamps:
+		if bool(lamp.get_meta("can_die", false)):
+			dying = lamp
+			if int(lamp.get_meta("die_at", 0)) == 0:
+				break
+	if dying != null:
+		var lp := dying.global_position
+		_place(Vector3(lp.x, lp.y - 4.9, lp.z), 0.0)
+		await _wait(0.25 + float(RoofDread.LAMP_GUTTER_MSEC) * 0.001 + 0.5)
+	_check("landing lamps gutter and die as you come near", dying != null and bool(dying.get_meta("dead", false)) and dying.light_energy < float(dying.get_meta("base_energy")) * 0.2 and dread.lamps_died >= 1, "%d died" % dread.lamps_died)
+	_check("the roof skitters: vents ahead and under your feet, heard before they're seen", dread.skitters >= 1, "%d" % dread.skitters)
+	horde.muted = false
 
 
 func _test_horde_field() -> void:
@@ -1864,13 +2094,14 @@ func _test_horde() -> void:
 			near += 1
 	_check("...and the respawn pad is clear of them", near == 0, "%d within 15 m" % near)
 	_horde.debug_frozen = true
-	# The Flitters: they fly, they dive at you, and they never hang on the chain.
+	# The Flitters: they fly, they dive at you, and they never hang on the chain. (No wave brings
+	# them any more; the crowd tech still supports them, so the test brings one.)
 	_arena.debug_spawn_all_rounds()
+	_horde.spawn_group(1, Rect2(spawn.x - 0.5, spawn.z + 1.0, 1.0, 1.0), 4343, [0.0, 0.0, 1.0] as Array[float])
 	var bat := -1
 	for i in _horde.count:
 		if _horde.kind[i] == Horde.KIND_FLITTER and _horde.state[i] == Horde.AState.WALK:
 			bat = i
-			break
 	_host.teleport_to(spawn, 0.0)
 	if _mate != null:
 		_mate.teleport_to(spawn + Vector3(0.0, 0.0, 3.0), 0.0)
@@ -1988,6 +2219,9 @@ func _test_launcher() -> void:
 ## The budget: a thousand agents, all walking, with the active set in full, in well under a frame.
 func _test_horde_perf() -> void:
 	_arena.debug_spawn_all_rounds()
+	# The waves are a few hundred now; the budget is still checked at a thousand (the crowd tech's
+	# headroom for later levels).
+	_horde.spawn_group(maxi(0, 1000 - _horde.count), Rect2(_arena.origin.x - 44.0, _arena.origin.z - 46.0, 88.0, 40.0), 5151, [1.0, 0.0, 0.0] as Array[float])
 	_horde.debug_frozen = false
 	for l in _arena.launchers:
 		l.debug_frozen = true
@@ -2067,7 +2301,7 @@ func _run_client() -> void:
 ## A joiner who started with the default building and was handed the host's Loading Lot.
 func _run_client_arena(arena: HordeArena) -> void:
 	var main := get_tree().current_scene
-	_check("client: the host's world config arrived and the Lot was rebuilt (joined with no --arena)", bool(Net.world_config.get("arena", false)) and arena.horde.count >= 400 and bool(main.get("_rejoined")), "config %s, rejoined %s" % [Net.world_config, main.get("_rejoined")])
+	_check("client: the host's world config arrived and the Lot was rebuilt (joined with no --arena)", bool(Net.world_config.get("arena", false)) and arena.horde.count >= 100 and bool(main.get("_rejoined")), "config %s, rejoined %s" % [Net.world_config, main.get("_rejoined")])
 	if only == "lot_clear":
 		var moving := false
 		var previous := arena.heli_position()
