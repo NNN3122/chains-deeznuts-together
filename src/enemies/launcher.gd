@@ -1,0 +1,698 @@
+class_name Launcher
+extends Node3D
+## The Jumper (class Launcher, after the move): a spider the size of a sofa, one of the things that
+## came up out of the walls of Carrow Heights. It scuttles at 1.3 m/s; inside six
+## metres it stops, screeches, and crouches for 0.6 s (the tell), then throws itself 5-6 m
+## along the line it had when it crouched. Step out of that line (a sprint, a slide) and it
+## lands on nothing. Hit, it pins its victim to the ground: teammates brace beside them, a
+## flashlight in its face, an air horn or two Snubby hits get it off; nobody comes in a few
+## seconds and the Line is laid off. Three Snubby hits or a bomb kill it.
+## Host-authoritative like the Custodian; position, state and grab are replicated.
+
+enum LState { SHAMBLE, WINDUP, LUNGE, RECOVER, GRAB, STUNNED, DEAD }
+
+const SHAMBLE_SPEED: float = 1.3  # m/s
+const SIGHT_RANGE: float = 42.0
+const LUNGE_MIN: float = 2.6  # m: closer than this it just claws (grabs) instead of jumping
+const LUNGE_MAX: float = 6.2  # m: it crouches when a player is inside this
+const WINDUP_TIME: float = 0.6
+const LUNGE_DIST: float = 5.6  # m it flies, on the line fixed when the crouch began
+const LUNGE_TIME: float = 0.5
+const LUNGE_ARC: float = 1.1  # m of height at the top of the jump
+const HIT_RADIUS: float = 1.05
+const RECOVER_TIME: float = 1.0
+const GRAB_TIME: float = 5.0  # s pinned before the layoff
+const RESCUE_NEEDED: float = 2.5  # resist-seconds from teammates beside the victim (bracing counts double)
+const RESCUE_RADIUS: float = 2.6
+const BURN_TO_RELEASE: float = 1.0
+const BURN_RANGE: float = 16.0
+const BURN_ANGLE: float = 0.5
+const BURN_DECAY: float = 0.25
+const HITS_TO_RELEASE: int = 2
+const HITS_TO_DIE: int = 3
+const STUN_TIME: float = 3.0
+const DEAD_LINGER: float = 25.0
+const NOISE_DRAW: float = 30.0  # unseen players this loud draw it over
+const TURN_SPEED: float = 5.0  # rad/s
+const BODY_H: float = 1.0  # m: the body hangs this high on its legs
+
+var floor_y: float = 0.0  # fallback when no floor is under it
+var asleep: bool = false  # the level's call: nobody is on this level yet
+var debug_frozen: bool = false
+
+# Replicated.
+var synced_position: Vector3 = Vector3.ZERO
+var synced_yaw: float = 0.0
+var lstate: int = LState.SHAMBLE
+var hunt_peer: int = 0
+var grab_peer: int = 0
+var burn_fraction: float = 0.0
+var hits: int = 0
+var lunges: int = 0  # stat, replicated so clients can react too
+
+# Server.
+var _target: Player = null
+var _grabbed: Player = null
+var _t: float = 0.0
+var _lunge_dir: Vector3 = Vector3.ZERO
+var _lunge_from: Vector3 = Vector3.ZERO
+var _lunge_len: float = 0.0
+var _rescue: float = 0.0
+var _burn: float = 0.0
+var _hiss_t: float = 0.0
+var _hits_in_grab: int = 0
+var _dead_t: float = 0.0
+var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
+
+# Visuals.
+var _model: Node3D
+var _body: Node3D
+var _head: Node3D
+var _legs: Array[Node3D] = []  # eight root pivots, left legs even
+var _knees: Array[Node3D] = []
+var _eyes: Array[MeshInstance3D] = []
+var _hitbox: Area3D
+var _phase: float = 0.0
+var _shown_state: int = -1
+var _shown_grab: int = 0
+var _last_pos: Vector3 = Vector3.ZERO
+var _vis_speed: float = 0.0
+var _caption_t: float = 0.0
+var _crouch: float = 0.0  # 0 standing, 1 coiled
+
+
+func _enter_tree() -> void:
+	if has_node("Sync"):
+		return
+	var sync := MultiplayerSynchronizer.new()
+	sync.name = "Sync"
+	var cfg := SceneReplicationConfig.new()
+	for prop in ["synced_position", "synced_yaw", "lstate", "hunt_peer", "grab_peer", "burn_fraction", "hits", "lunges"]:
+		var path := NodePath(".:" + prop)
+		cfg.add_property(path)
+		cfg.property_set_replication_mode(path, SceneReplicationConfig.REPLICATION_MODE_ALWAYS)
+	sync.replication_config = cfg
+	add_child(sync)
+
+
+func _ready() -> void:
+	add_to_group("monster")
+	add_to_group("launcher")
+	_rng.seed = hash(name)
+	synced_position = global_position
+	synced_yaw = rotation.y
+	_last_pos = global_position
+	_build_visuals()
+
+
+# --- Visuals: a spider the size of a sofa ------------------------------------------------------------
+
+func _build_visuals() -> void:
+	_model = Node3D.new()
+	_model.name = "Model"
+	add_child(_model)
+	var shell := LevelKit.mat("jumper_shell")
+	var fur := LevelKit.mat("jumper_fur")
+	var joint := LevelKit.mat("rubber")
+	_body = Node3D.new()
+	_body.position = Vector3(0.0, BODY_H, 0.0)
+	_model.add_child(_body)
+	# Cephalothorax forward, the big furred abdomen behind, a stripe down its back.
+	_box(_body, Vector3(1.0, 0.7, 1.1), Vector3(0.0, 0.0, -0.3), shell)
+	_sphere(_body, 0.75, Vector3(0.0, 0.15, 0.9), fur, Vector3(1.1, 0.9, 1.3))
+	_box(_body, Vector3(0.12, 0.05, 1.4), Vector3(0.0, 0.5, 0.8), LevelKit.mat("courier_sash"))
+	# The head: a cluster of eyes over a pair of fangs, chelicerae that work while it winds up.
+	_head = Node3D.new()
+	_head.position = Vector3(0.0, 0.1, -0.85)
+	_body.add_child(_head)
+	_box(_head, Vector3(0.6, 0.45, 0.4), Vector3(0.0, 0.0, 0.0), shell)
+	for k in 8:
+		var a := float(k) / 8.0 * TAU
+		var r := 0.17 if k % 2 == 0 else 0.26
+		var e := MeshInstance3D.new()
+		var em := SphereMesh.new()
+		em.radius = 0.055 if k % 2 == 0 else 0.035
+		em.height = em.radius * 2.0
+		e.mesh = em
+		e.position = Vector3(cos(a) * r, 0.08 + sin(a) * 0.12, -0.21)
+		e.material_override = LevelKit.mat("infected_eye")
+		_head.add_child(e)
+		_eyes.append(e)
+	for s: float in [-1.0, 1.0]:
+		_box(_head, Vector3(0.08, 0.3, 0.08), Vector3(s * 0.12, -0.3, -0.15), joint)
+	# Eight legs: a root pivot at the body's side, a knee pivot halfway, two thick segments and a
+	# claw. Rows front to back; the back pair is the spring.
+	for row in 4:
+		for s: float in [-1.0, 1.0]:
+			var z := -0.55 + float(row) * 0.4
+			var root := Node3D.new()
+			root.position = Vector3(s * 0.5, -0.1, z)
+			_body.add_child(root)
+			var upper := 1.0 + 0.2 * float(row == 0 or row == 3)
+			_cyl(root, 0.075, upper, Vector3(s * upper * 0.5, 0.0, 0.0), shell, true)
+			var knee := Node3D.new()
+			knee.position = Vector3(s * upper, 0.0, 0.0)
+			root.add_child(knee)
+			var lower := 1.1
+			_cyl(knee, 0.055, lower, Vector3(s * lower * 0.35, -lower * 0.45, 0.0), joint, true)
+			_box(knee, Vector3(0.06, 0.18, 0.06), Vector3(s * lower * 0.7, -lower * 0.95, 0.0), joint)
+			root.rotation.z = s * 0.55  # up from the body...
+			knee.rotation.z = -s * 1.45  # ...and down to the ground
+			root.rotation.y = -s * (0.5 - float(row) * 0.33)  # fanned front to back
+			_legs.append(root)
+			_knees.append(knee)
+	_hitbox = Area3D.new()
+	_hitbox.collision_layer = ChainBody.LAYER_MONSTER
+	_hitbox.collision_mask = 0
+	_hitbox.monitoring = false
+	var hs := CollisionShape3D.new()
+	var cap := CapsuleShape3D.new()
+	cap.radius = 0.9
+	cap.height = 2.0
+	hs.shape = cap
+	hs.position = Vector3(0.0, BODY_H, 0.0)
+	hs.rotation.x = PI * 0.5  # lying along its body
+	_hitbox.add_child(hs)
+	add_child(_hitbox)
+
+
+func _box(parent: Node3D, size: Vector3, at: Vector3, m: Material) -> void:
+	var mi := MeshInstance3D.new()
+	var b := BoxMesh.new()
+	b.size = size
+	mi.mesh = b
+	mi.position = at
+	mi.material_override = m
+	parent.add_child(mi)
+
+
+func _sphere(parent: Node3D, r: float, at: Vector3, m: Material, scl: Vector3 = Vector3.ONE) -> void:
+	var mi := MeshInstance3D.new()
+	var s := SphereMesh.new()
+	s.radius = r
+	s.height = r * 2.0
+	mi.mesh = s
+	mi.position = at
+	mi.scale = scl
+	mi.material_override = m
+	parent.add_child(mi)
+
+
+## A leg segment: a tapered cylinder lying along x (sideways) when `along_x`, else upright.
+func _cyl(parent: Node3D, r: float, h: float, at: Vector3, m: Material, along_x: bool = false) -> void:
+	var mi := MeshInstance3D.new()
+	var c := CylinderMesh.new()
+	c.top_radius = r * 0.7
+	c.bottom_radius = r
+	c.height = h
+	mi.mesh = c
+	mi.position = at
+	if along_x:
+		mi.rotation.z = PI * 0.5
+	mi.material_override = m
+	parent.add_child(mi)
+
+
+func chest_point() -> Vector3:
+	return global_position + Vector3(0.0, BODY_H, 0.0)
+
+
+func head_point() -> Vector3:
+	return global_position + Vector3(0.0, BODY_H + 0.3, 0.0)
+
+
+func is_hunting() -> bool:
+	return lstate == LState.WINDUP or lstate == LState.LUNGE or lstate == LState.GRAB
+
+
+func is_dead() -> bool:
+	return lstate == LState.DEAD
+
+
+# --- Server ------------------------------------------------------------------------------------
+
+func _physics_process(delta: float) -> void:
+	if multiplayer.is_server():
+		_server_tick(delta)
+	else:
+		if lstate == LState.LUNGE:
+			global_position = global_position.lerp(synced_position, clampf(delta * 20.0, 0.0, 1.0))
+		else:
+			global_position = global_position.lerp(synced_position, clampf(delta * 12.0, 0.0, 1.0))
+	_update_visuals(delta)
+
+
+func _server_tick(delta: float) -> void:
+	if (debug_frozen or asleep) and lstate != LState.GRAB:
+		return
+	match lstate:
+		LState.SHAMBLE:
+			_tick_shamble(delta)
+		LState.WINDUP:
+			_t -= delta
+			_face_dir(_lunge_dir)
+			if _t <= 0.0:
+				_launch()
+		LState.LUNGE:
+			_tick_lunge(delta)
+		LState.RECOVER:
+			_t -= delta
+			_settle_floor()
+			if _t <= 0.0:
+				lstate = LState.SHAMBLE
+		LState.GRAB:
+			_tick_grab(delta)
+		LState.STUNNED:
+			_t -= delta
+			_settle_floor()
+			if _t <= 0.0:
+				lstate = LState.SHAMBLE
+		LState.DEAD:
+			_dead_t += delta
+	if lstate != LState.GRAB:
+		burn_fraction = 0.0
+	synced_position = global_position
+	synced_yaw = _model.rotation.y
+
+
+func _tick_shamble(delta: float) -> void:
+	var p := _pick_target()
+	_target = p
+	hunt_peer = p.peer_id if p != null else 0
+	if p == null:
+		# Nobody in sight: drift toward whatever is loud, else sway where it stands.
+		var loud := _loudest()
+		if loud != null:
+			_walk_toward(loud.global_position, delta)
+		return
+	var to := p.global_position - global_position
+	to.y = 0.0
+	var d := to.length()
+	if d <= LUNGE_MAX and d >= LUNGE_MIN and p.state == Player.State.NORMAL:
+		_start_windup(p)
+		return
+	if d < LUNGE_MIN and p.state == Player.State.NORMAL and absf(p.global_position.y - global_position.y) < 1.6:
+		_start_grab(p)  # right on top of someone: it just takes them
+		return
+	_walk_toward(p.global_position, delta)
+
+
+func _walk_toward(target: Vector3, delta: float) -> void:
+	var to := target - global_position
+	to.y = 0.0
+	if to.length() < 0.05:
+		return
+	var dir := to.normalized()
+	_face_dir(dir, delta)
+	var step := dir * minf(SHAMBLE_SPEED * delta, to.length())
+	var space := get_world_3d().direct_space_state
+	var q := PhysicsRayQueryParameters3D.create(chest_point(), chest_point() + step.normalized() * 0.6, ChainBody.LAYER_WORLD)
+	if space.intersect_ray(q).is_empty():
+		global_position += step
+	_settle_floor()
+
+
+## Stands on whatever is under it (a lunge can end on a crate or a car roof).
+func _settle_floor() -> void:
+	var space := get_world_3d().direct_space_state
+	var q := PhysicsRayQueryParameters3D.create(global_position + Vector3(0.0, 1.2, 0.0), global_position - Vector3(0.0, 3.0, 0.0), ChainBody.LAYER_WORLD)
+	var hit := space.intersect_ray(q)
+	if hit.is_empty():
+		global_position.y = floor_y
+	else:
+		global_position.y = (hit["position"] as Vector3).y
+
+
+func _start_windup(p: Player) -> void:
+	lstate = LState.WINDUP
+	_t = WINDUP_TIME
+	hunt_peer = p.peer_id
+	_target = p
+	var to := p.global_position - global_position
+	to.y = 0.0
+	_lunge_dir = to.normalized() if to.length() > 0.05 else Vector3(-sin(_model.rotation.y), 0.0, -cos(_model.rotation.y))
+	_lunge_len = clampf(to.length() + 0.6, 3.0, LUNGE_DIST)
+	_face_dir(_lunge_dir)
+	_fx("screech", 4.0, _rng.randf_range(0.9, 1.15))
+
+
+func _launch() -> void:
+	lstate = LState.LUNGE
+	lunges += 1
+	_t = 0.0
+	_lunge_from = global_position
+	_fx("thump", -2.0, 1.4)
+
+
+func _tick_lunge(delta: float) -> void:
+	_t += delta
+	var u := clampf(_t / LUNGE_TIME, 0.0, 1.0)
+	var flat := _lunge_from + _lunge_dir * _lunge_len * u
+	var want := Vector3(flat.x, _lunge_from.y + 4.0 * LUNGE_ARC * u * (1.0 - u), flat.z)
+	# A wall in the way ends the jump early.
+	var space := get_world_3d().direct_space_state
+	var q := PhysicsRayQueryParameters3D.create(global_position + Vector3.UP, want + Vector3.UP, ChainBody.LAYER_WORLD)
+	var hit := space.intersect_ray(q)
+	if not hit.is_empty():
+		global_position = (hit["position"] as Vector3) - Vector3.UP + (hit["normal"] as Vector3) * 0.4
+		_land(false)
+		return
+	global_position = want
+	# The hit test is a capsule overlap, not physics: whoever is in the line and not under it.
+	for p in Net.get_players():
+		if p.state != Player.State.NORMAL or p.is_sliding():
+			continue  # a slide goes under it
+		var d := Vector2(p.global_position.x - global_position.x, p.global_position.z - global_position.z).length()
+		if d < HIT_RADIUS and absf(p.global_position.y - global_position.y) < 1.8:
+			_start_grab(p)
+			return
+	if u >= 1.0:
+		_land(true)
+
+
+func _land(missed: bool) -> void:
+	lstate = LState.RECOVER
+	_t = RECOVER_TIME
+	_settle_floor()
+	_fx("thump", 0.0, 0.7)
+	if missed and _target != null and is_instance_valid(_target):
+		GameState.post_message("%s dodged the Jumper." % _target.display_name, 2.0)
+
+
+func _start_grab(p: Player) -> void:
+	lstate = LState.GRAB
+	_grabbed = p
+	grab_peer = p.peer_id
+	hunt_peer = p.peer_id
+	_t = 0.0
+	_rescue = 0.0
+	_burn = 0.0
+	_hits_in_grab = 0
+	_settle_floor()
+	var to := p.global_position - global_position
+	to.y = 0.0
+	if to.length() > 0.05:
+		_face_dir(to.normalized())
+	p.grab_start(self)
+	_fx("growl", 4.0, 0.6)
+	GameState.post_message("IT'S ON %s. Everyone beside them: HOLD CTRL. Or a light in its face, the air horn, or two shots." % p.display_name.to_upper(), 4.0)
+
+
+func _tick_grab(delta: float) -> void:
+	if _grabbed == null or not is_instance_valid(_grabbed) or not _grabbed.is_grabbed():
+		release(false)
+		return
+	_t += delta
+	var fwd := Vector3(-sin(_model.rotation.y), 0.0, -cos(_model.rotation.y))
+	_grabbed.global_position = global_position + fwd * 0.5 + Vector3(0.0, 0.05, 0.0)
+	_grabbed.synced_position = _grabbed.global_position
+	for b in Net.get_chain_bodies():
+		if b != _grabbed and b.global_position.distance_to(_grabbed.global_position) < RESCUE_RADIUS:
+			_rescue += b.resist_value() * delta
+	if _rescue >= RESCUE_NEEDED:
+		GameState.post_message("They pulled it off %s. GO." % _grabbed.display_name, 3.0)
+		release(false)
+		stun(1.6)
+		return
+	if _tick_burn(delta):
+		GameState.post_message("The light in its eyes. It let go.", 3.0)
+		release(false)
+		stun(2.0)
+		return
+	if _t >= GRAB_TIME:
+		var victim := _grabbed.display_name
+		release(true)
+		var level := get_tree().get_first_node_in_group("level")
+		if level != null and level.has_method("request_layoff"):
+			level.call("request_layoff", "%s was taken by a Jumper." % victim)
+
+
+## Server. Lets go of whoever it pins. killed: the victim was taken.
+func release(killed: bool) -> void:
+	var victim := _grabbed
+	_grabbed = null
+	grab_peer = 0
+	if victim != null and is_instance_valid(victim) and victim.is_grabbed():
+		victim.grab_end()
+		if not killed:
+			victim.apply_knockback(Vector3(-sin(_model.rotation.y), 0.0, -cos(_model.rotation.y)) * 3.0 + Vector3.UP * 3.0)
+	if lstate == LState.GRAB:
+		lstate = LState.RECOVER
+		_t = RECOVER_TIME
+
+
+## Server: air horn, a rescue. It reels and drops whoever it holds.
+func stun(seconds: float) -> void:
+	if lstate == LState.DEAD:
+		return
+	if _grabbed != null:
+		release(false)
+	var left := _t if lstate == LState.STUNNED else 0.0
+	lstate = LState.STUNNED
+	_t = maxf(left, seconds)
+	hunt_peer = 0
+	_fx("growl", 0.0, 1.5)
+
+
+## Snubby hit (server): two while it holds someone make it let go; three kill it.
+func take_hit() -> void:
+	if lstate == LState.DEAD:
+		return
+	hits += 1
+	_hits_in_grab += 1
+	_fx("thump", -6.0, 1.8)
+	if hits >= HITS_TO_DIE:
+		die()
+	elif lstate == LState.GRAB and _hits_in_grab >= HITS_TO_RELEASE:
+		GameState.post_message("Two hits. It dropped them.", 2.5)
+		release(false)
+		stun(1.2)
+	elif lstate == LState.WINDUP:
+		lstate = LState.STUNNED  # a shot mid-crouch spoils the jump
+		_t = 0.8
+
+
+func blast() -> void:
+	die()
+
+
+func die() -> void:
+	if lstate == LState.DEAD:
+		return
+	if _grabbed != null:
+		release(false)
+	lstate = LState.DEAD
+	hunt_peer = 0
+	grab_peer = 0
+	_dead_t = 0.0
+	_fx("growl", 2.0, 0.4)
+	GameState.post_message("Jumper down.", 2.0)
+
+
+## Tests and respawns: back on its feet at a spot.
+func debug_reset(at: Vector3) -> void:
+	if _grabbed != null:
+		release(false)
+	global_position = at
+	synced_position = at
+	lstate = LState.SHAMBLE
+	hits = 0
+	_hits_in_grab = 0
+	hunt_peer = 0
+	grab_peer = 0
+	_t = 0.0
+	_burn = 0.0
+	burn_fraction = 0.0
+	_settle_floor()
+
+
+func _pick_target() -> Player:
+	var best: Player = null
+	var best_d := INF
+	var space := get_world_3d().direct_space_state
+	for p in Net.get_players():
+		if p.state == Player.State.GRABBED:
+			continue
+		var d := p.global_position.distance_to(global_position)
+		if d > SIGHT_RANGE or d >= best_d:
+			continue
+		var q := PhysicsRayQueryParameters3D.create(chest_point(), p.eye_position(), ChainBody.LAYER_WORLD)
+		if space.intersect_ray(q).is_empty():
+			best = p
+			best_d = d
+	return best
+
+
+func _loudest() -> Node3D:
+	var best: Node3D = null
+	var best_eff := NOISE_DRAW
+	for n in get_tree().get_nodes_in_group("noise_source"):
+		var n3 := n as Node3D
+		if n3 == null or not n3.is_inside_tree() or not n3.has_method("noise_level"):
+			continue
+		var d := n3.global_position.distance_to(global_position)
+		if d > 40.0:
+			continue
+		var eff := float(n3.call("noise_level")) * (1.0 - d / 40.0)
+		if eff > best_eff:
+			best_eff = eff
+			best = n3
+	return best
+
+
+func _face_dir(dir: Vector3, delta: float = -1.0) -> void:
+	if Vector2(dir.x, dir.z).length() < 0.01:
+		return
+	var want := atan2(-dir.x, -dir.z)
+	if delta < 0.0:
+		_model.rotation.y = want
+	else:
+		_model.rotation.y += clampf(wrapf(want - _model.rotation.y, -PI, PI), -TURN_SPEED * delta, TURN_SPEED * delta)
+	synced_yaw = _model.rotation.y
+
+
+func _tick_burn(delta: float) -> bool:
+	var lit := false
+	var space := get_world_3d().direct_space_state
+	for p in Net.get_players():
+		if p.held_item == null or p.held_item.data.id != "flashlight" or not p.held_item.is_active:
+			continue
+		var eye := p.eye_position()
+		for target: Vector3 in [head_point(), chest_point()]:
+			var to := target - eye
+			var d := to.length()
+			if d > BURN_RANGE or d < 0.1 or p.aim_direction().angle_to(to / d) > BURN_ANGLE:
+				continue
+			var q := PhysicsRayQueryParameters3D.create(eye, target - (to / d) * 0.3, ChainBody.LAYER_WORLD)
+			q.exclude = [p.get_rid()]
+			if space.intersect_ray(q).is_empty():
+				lit = true
+				break
+		if lit:
+			break
+	if lit:
+		_burn += delta
+		_hiss_t -= delta
+		if _hiss_t <= 0.0:
+			_hiss_t = 0.35
+			_fx("scrape", -6.0, 1.9)
+	else:
+		_burn = maxf(0.0, _burn - delta * BURN_DECAY)
+	burn_fraction = clampf(_burn / BURN_TO_RELEASE, 0.0, 1.0)
+	return _burn >= BURN_TO_RELEASE
+
+
+func _fx(id: String, vol: float, pitch: float) -> void:
+	var fx := Effects.find(self)
+	if fx != null:
+		fx.fx_sound.rpc(id, chest_point(), vol, pitch)
+
+
+# --- Visuals (every peer) --------------------------------------------------------------------------
+
+func _update_visuals(delta: float) -> void:
+	var moved := global_position.distance_to(_last_pos) / maxf(delta, 0.0001)
+	_last_pos = global_position
+	_vis_speed = lerpf(_vis_speed, moved, clampf(delta * 8.0, 0.0, 1.0))
+	if not multiplayer.is_server():
+		_model.rotation.y = lerp_angle(_model.rotation.y, synced_yaw, clampf(delta * 12.0, 0.0, 1.0))
+	if lstate != _shown_state:
+		_shown_state = lstate
+		if lstate == LState.DEAD:
+			var tw := create_tween()
+			tw.tween_property(_model, "rotation:z", PI, 0.6).set_ease(Tween.EASE_IN)  # on its back
+			tw.parallel().tween_property(_model, "position:y", BODY_H * 0.6, 0.6)
+			Sfx.caption(self, "it goes down", chest_point())
+		elif _shown_state == LState.SHAMBLE and _model.rotation.z != 0.0:
+			_model.rotation.z = 0.0
+			_model.position.y = 0.0
+	if grab_peer != _shown_grab:
+		_shown_grab = grab_peer
+		var victim := Net.find_player(grab_peer)
+		if victim != null and victim.is_local:
+			Sfx.play(self, "stinger", 0.0)
+	_model.visible = lstate != LState.DEAD or _dead_t < DEAD_LINGER
+	_hitbox.collision_layer = 0 if lstate == LState.DEAD else ChainBody.LAYER_MONSTER
+	var t := Time.get_ticks_msec() * 0.001
+	var walking := lstate == LState.SHAMBLE and _vis_speed > 0.2
+	_phase += delta * (_vis_speed * 4.0 + 0.6)
+	var crouch_want := 1.0 if lstate == LState.WINDUP else 0.0
+	_crouch = lerpf(_crouch, crouch_want, 1.0 - exp(-14.0 * delta))
+	# Body height and pitch by state: low and coiled before the jump, flat in flight, over the
+	# victim when it has one, twitching on its back when stunned.
+	var body_y := BODY_H
+	var pitch := 0.0
+	match lstate:
+		LState.WINDUP:
+			body_y = BODY_H * 0.45
+			pitch = 0.35
+		LState.LUNGE:
+			body_y = BODY_H
+			pitch = -0.35
+		LState.GRAB:
+			body_y = BODY_H * 0.75
+			pitch = 0.3
+		LState.STUNNED:
+			body_y = BODY_H * 0.8
+			pitch = 0.2 * sin(t * 23.0)
+		LState.RECOVER:
+			body_y = BODY_H * 0.7
+	var k := 1.0 - exp(-14.0 * delta)
+	_body.position.y = lerpf(_body.position.y, body_y + (0.02 * sin(t * 2.1) if lstate == LState.SHAMBLE else 0.0), k)
+	_body.rotation.x = lerpf(_body.rotation.x, pitch, k)
+	# Legs: a sweeping gait in two sets, coiled under for the wind-up, flung wide in the jump,
+	# the front pair holding whoever it has.
+	for i in _legs.size():
+		var root := _legs[i]
+		var knee := _knees[i]
+		var s := 1.0 if i % 2 == 1 else -1.0  # the side the leg points to
+		var row := i / 2
+		var set_off := PI if (row + i) % 2 == 0 else 0.0
+		var fan := -s * (0.5 - float(row) * 0.33)
+		var sweep := 0.0
+		var lift := 0.55
+		var bend := 1.45
+		if walking:
+			sweep = sin(_phase + set_off) * 0.35
+			lift = 0.55 + maxf(0.0, cos(_phase + set_off)) * 0.3
+		match lstate:
+			LState.WINDUP:
+				lift = 1.3 + 0.1 * sin(t * 40.0 + float(i))
+				bend = 2.4
+			LState.LUNGE:
+				lift = -0.1 if row < 2 else 0.9
+				bend = 0.6 if row < 2 else 2.2
+				sweep = -0.4 if row < 2 else 0.3
+			LState.GRAB:
+				if row == 0:
+					lift = -0.3
+					bend = 1.9
+					sweep = -0.5 + 0.1 * sin(t * 13.0 + float(i))
+				else:
+					lift = 0.7
+			LState.STUNNED:
+				lift = 0.9 + 0.3 * sin(t * 27.0 + float(i) * 1.7)
+				sweep = 0.3 * sin(t * 31.0 + float(i))
+			LState.DEAD:
+				lift = 1.2
+				bend = 2.3
+				sweep = 0.2 * s
+		root.rotation.z = lerpf(root.rotation.z, s * lift, k)
+		root.rotation.y = lerpf(root.rotation.y, fan + sweep, k)
+		knee.rotation.z = lerpf(knee.rotation.z, -s * bend, k)
+	# The head: the eye cluster brightens before the jump; the fangs work.
+	var eye_e := 2.5
+	if lstate == LState.WINDUP:
+		eye_e = 8.0
+	elif lstate == LState.DEAD:
+		eye_e = 0.0
+	for e in _eyes:
+		(e.material_override as StandardMaterial3D).emission_energy_multiplier = eye_e
+	_head.rotation.x = 0.15 * sin(t * 1.9) + (0.3 * absf(sin(t * 25.0)) if lstate == LState.WINDUP else 0.0)
+	# Captions: the screech has its own; the scuttle gets one when it's near.
+	_caption_t -= delta
+	if _caption_t <= 0.0 and lstate == LState.SHAMBLE and walking:
+		var me := Net.get_local_player()
+		if me != null and me.global_position.distance_to(global_position) < 22.0:
+			_caption_t = 6.0
+			Sfx.caption(self, "legs on the asphalt, big ones", chest_point())

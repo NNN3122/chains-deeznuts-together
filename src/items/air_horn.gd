@@ -28,11 +28,15 @@ func _tick(delta: float, _held: bool, pressed: bool) -> void:
 	holder.add_noise(100.0)
 	if f != null:
 		f.fx_sound.rpc("airhorn", holder.eye_position(), 6.0, randf_range(0.95, 1.05))
-	for m in holder.get_tree().get_nodes_in_group("pappy"):
-		var pappy := m as PappyPepperoni
-		if pappy != null and pappy.global_position.distance_to(holder.global_position) < RANGE:
-			pappy.stun(STUN)
+	for m in holder.get_tree().get_nodes_in_group("monster"):
+		if not m.has_method("stun") or (m as Node3D).global_position.distance_to(holder.global_position) >= RANGE:
+			continue
+		m.call("stun", STUN)
+		if m is PappyPepperoni:
 			GameState.post_message("%s hit the air horn. He's locked up. GO." % holder.display_name, 3.0)
+	var horde := holder.get_tree().get_first_node_in_group("horde")
+	if horde != null:
+		horde.call("stun", holder.global_position, RANGE * 0.5)
 	for p in Net.get_players():
 		if p != holder and p.global_position.distance_to(holder.global_position) < 3.0:
 			p.model.pop_hat(Vector3.UP * 5.0 + (p.global_position - holder.global_position).normalized() * 3.0)

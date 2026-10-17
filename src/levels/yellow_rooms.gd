@@ -1,13 +1,20 @@
 class_name YellowRooms
 extends Node3D
 ## Level 1: The Yellow Rooms. Four floors (B4 at the bottom to B1) of 6 m office cells built
-## from a fixed seed, so every peer builds the identical building before connecting.
+## from a seed the host picks (a new layout every run; the tests use DEFAULT_SEED), so every
+## peer builds the identical building before connecting.
 ## Each floor: a Break Room you arrive in (checkpoint), a maze of halls / cubicles / meeting rooms
-## / storage / dark rooms, a Custodian in the ceiling, loot, scripted scares, and one ascent:
+## / storage / dark rooms, Hollow Hires walking the halls, loot, scripted scares, and one ascent:
 ##   B4 crates through a ceiling hole, B3 a plate-and-lift, B2 a shelf shaft (stand on a teammate
 ##   or use the jetpack), B1 the freight car up to Level 2 (the pizzeria, built right above).
 ## Lives under LevelStack, which handles layoffs and regroups for the whole building.
 ## Server only: populates pickups, starts the freight car once everyone is inside.
+## The route forces noise and running on every floor: B4 and B1 have a jammed door on the
+## path that has to be shouldered open at a sprint (a bang the floor hears), B3's lift is locked
+## until the fire alarm is pulled (40 s of the floor awake), B2's shelf-shaft hole is under a
+## hatch that stays open 25 s after its release switch two rooms back, and reaching B1's
+## freight elevator brings a Hire screaming through the door behind the group. The power on the
+## Line's floor stutters out for 12-20 s every 60-90 s; Break Rooms keep their lights.
 
 const CELL: float = 6.0
 const GRID: int = 6
@@ -20,7 +27,8 @@ const DOOR_W: float = 1.4
 const DOOR_H: float = 2.3
 const HOLE: float = 2.6
 const CAR_HOLE: float = 3.3  # the freight car's shaft through B1's ceiling
-const SEED: int = 1931
+const DEFAULT_SEED: int = 1931
+var seed_value: int = DEFAULT_SEED  # set by LevelStack before _ready: the host picks it, joiners get it in the handshake
 
 enum Ascent { CRATES, LIFT, BOOST, ELEVATOR }
 enum Conn { NONE, DOOR, OPEN }
@@ -28,10 +36,10 @@ enum Conn { NONE, DOOR, OPEN }
 const ASCENTS: Array = [Ascent.CRATES, Ascent.LIFT, Ascent.BOOST, Ascent.ELEVATOR]
 const FLOOR_NAMES: Array[String] = ["B4", "B3", "B2", "B1"]
 const OBJECTIVES: Array[String] = [
-	"B4 Orientation: find the maintenance hole in the ceiling and climb to B3. Stay quiet: something lives up there.",
-	"B3: find the service lift. One holds the plate, the lift carries the rest. Then hoist them up with the chain.",
-	"B2: the shelf shaft is too tall. Stand on a teammate's head, or find the jetpack.",
-	"B1: find the freight elevator. Everyone inside to ride it up out of the Yellow Rooms.",
+	"B4 Orientation: find the maintenance hole in the ceiling and climb to B3. The Hollow Hires walk the route: one that sees you calls the others.",
+	"B3: the service lift is locked out until the fire alarm is pulled. Then one holds the plate, the lift carries the rest, and the floor is awake.",
+	"B2: the shelf shaft is under a hatch. Its release gives you 25 seconds. Stand on a teammate's head, or find the jetpack.",
+	"B1: find the freight elevator. Everyone inside to ride it up out of the Yellow Rooms. Don't stop.",
 ]
 const FLOOR_LOOT: Array = [
 	["flashlight", "decoy"],
@@ -52,13 +60,24 @@ const SCARE_POOL: Array = [
 ## What to do on each floor, ticked off on the HUD. [text, ...]; completion is checked in
 ## _tick_tasks.
 const TASKS: Array = [
-	["Follow the green signs to MAINTENANCE ACCESS", "Climb the crates up through the ceiling (walk into one, tap Space)"],
-	["Find the SERVICE LIFT", "One of you stands on the yellow plate: the lift rises", "Hoist the plate-holder up on the chain"],
-	["Find the SHELF SHAFT", "Grab the jetpack in that room (or stack up on a teammate)", "Everyone up through the hole"],
-	["Find the FREIGHT ELEVATOR", "Everyone inside: it rides up to the pizzeria"],
+	["Follow the green signs to MAINTENANCE ACCESS", "Shoulder the jammed door open (sprint into it)", "Climb the crates up through the ceiling (walk into one, tap Space)"],
+	["Pull the FIRE ALARM (hold Ctrl at it): it releases the lift", "Find the SERVICE LIFT", "One of you stands on the yellow plate: the lift rises", "Hoist the plate-holder up on the chain"],
+	["Throw the HATCH RELEASE (hold Ctrl at it): 25 seconds", "Run to the SHELF SHAFT: jetpack, or stack up on a teammate", "Everyone up through the hatch before it slams"],
+	["Find the FREIGHT ELEVATOR", "Shoulder the jammed door open (sprint into it)", "Everyone inside before they catch you: it rides up to the pizzeria"],
 ]
+const HIRES_PER_FLOOR: Array[int] = [2, 3, 3, 3]  # Hollow Hires walking each floor
+const RESPAWN_SECONDS: float = 45.0  # a dead Hire is replaced after this, out of sight
+const DOOR_FLOORS: Array[int] = [0, 3]  # floors with a jammed door on the route
+const ALARM_FLOOR: int = 1  # the lift floor: locked out until the fire alarm is pulled
+const HATCH_FLOOR: int = 2  # the shelf shaft floor: its hole is under the timed hatch
+const AMBUSH_FLOOR: int = 3  # reaching this floor's climb room brings a Hire through the door behind you
+const STUTTER_MIN: float = 60.0  # s between power stutters on the Line's floor
+const STUTTER_MAX: float = 90.0
+const STUTTER_DARK_MIN: float = 12.0  # s the floor stays dark (Break Rooms excepted)
+const STUTTER_DARK_MAX: float = 20.0
+const CALLOUT_MESSAGE_GAP_MS: int = 12000
 const SCRIPTED_SCARES: Array = [
-	[[2, "stain_pass"], [4, "dennis"]],
+	[[2, "footsteps"], [4, "dennis"]],
 	[[2, "lights_out"], [4, "phone"]],
 	[[2, "lunge"], [4, "whisper"]],
 	[[2, "tile"], [4, "figure"]],
@@ -76,6 +95,16 @@ var _boost_jetpack_pos: Vector3 = Vector3.ZERO
 var _drone: AudioStreamPlayer
 var _pending_signs: Array = []
 var _tasks_floor: int = -1
+var _hire_respawn_t: Array[float] = [RESPAWN_SECONDS, RESPAWN_SECONDS, RESPAWN_SECONDS, RESPAWN_SECONDS]
+var _doors: Dictionary = {}  # floor -> StuckDoor
+var _alarm: AlarmPull
+var _hatch: TimedHatch
+var _door_done: Dictionary = {}  # floor -> true once its jammed door was shouldered (task tick)
+var _hatch_thrown: bool = false
+var _ambush_armed: bool = true
+var _stutter_t: float = 45.0  # the first stutter comes a little sooner than the steady gap
+var _callout_msec: int = -100000
+var _stutter_rng: RandomNumberGenerator = RandomNumberGenerator.new()
 
 
 func _ready() -> void:
@@ -90,6 +119,7 @@ func _ready() -> void:
 	_drone.volume_db = -14.0
 	add_child(_drone)
 	Sfx.start_loop(_drone)
+	_stutter_rng.randomize()
 
 
 # --- Layout ---------------------------------------------------------------------------------
@@ -98,7 +128,7 @@ func _generate_layout() -> void:
 	var arrive := Vector2i(0, 2)
 	for i in FLOORS:
 		var rng := RandomNumberGenerator.new()
-		rng.seed = SEED + i * 101
+		rng.seed = seed_value + i * 101
 		var conn := _carve_maze(arrive, rng)
 		var dist := _bfs(arrive, conn)
 		var ascent := arrive
@@ -117,7 +147,7 @@ func _generate_layout() -> void:
 				types[c] = kinds[rng.randi() % kinds.size()]
 		types[arrive] = "breakroom"
 		types[ascent] = "ascent"
-		floors.append({"arrive": arrive, "ascent": ascent, "conn": conn, "types": types, "path": path, "rng_seed": SEED * 7 + i})
+		floors.append({"arrive": arrive, "ascent": ascent, "conn": conn, "types": types, "path": path, "rng_seed": seed_value * 7 + i})
 		arrive = ascent
 	var a0: Vector2i = floors[0]["arrive"]
 	spawn_position = cell_center(0, a0) + Vector3(0.0, 0.1, -2.2)
@@ -212,7 +242,7 @@ func cell_of(p: Vector3) -> Vector2i:
 	return Vector2i(clampi(int(floor(p.x / CELL)), 0, GRID - 1), clampi(int(floor(p.z / CELL)), 0, GRID - 1))
 
 
-## False where a climb hole is cut through this floor's ceiling (the Custodian can't grab there),
+## False where a climb hole is cut through this floor's ceiling (nothing falls from there),
 ## and inside the freight car.
 func has_ceiling_at(p: Vector3) -> bool:
 	var i := floor_of(p.y)
@@ -222,13 +252,20 @@ func has_ceiling_at(p: Vector3) -> bool:
 	return not (absf(p.x - center.x) < half and absf(p.z - center.z) < half)
 
 
-## Break Rooms are safe: the Custodian never comes to look at a camper there.
+## Break Rooms are safe: the Hires stop at the door. So is the inside of the freight car (they
+## stand at its open front and stare while the last of you gets in).
 func is_safe_spot(p: Vector3) -> bool:
 	var i := floor_of(p.y)
 	if i < 0 or i >= floors.size():
 		return false
 	var types: Dictionary = floors[i]["types"]
-	return String(types.get(cell_of(p), "")) == "breakroom"
+	if String(types.get(cell_of(p), "")) == "breakroom":
+		return true
+	if i == FLOORS - 1 and _car != null:
+		var c := elevator_center()
+		var half := FreightCar.WIDTH * 0.5 - 0.15
+		return absf(p.x - c.x) < half and absf(p.z - c.z) < half
+	return false
 
 
 ## Floor-level center of the freight car on B1 (the pizzeria is built around the shaft above it).
@@ -311,7 +348,8 @@ func _build_floor(i: int) -> void:
 	_dennis(root, batch, i, rng)
 	_wayfinding(root, batch, i)
 	batch.build(root, "F%d" % i)
-	_build_custodian(i)
+	_build_hires(i)
+	_build_events(root, i)
 	_build_scare_triggers(root, i)
 	if i > 0:
 		var cp := Checkpoint.create("Checkpoint%d" % i, i, cell_center(i, arrive) + Vector3(0.0, 0.1, -2.2), PI, OBJECTIVES[i])
@@ -538,17 +576,20 @@ func _add_light(root: Node3D, batch: LevelKit.BoxBatch, i: int, center: Vector3,
 	var at := center + (Vector3(-1.9, 0.0, -1.9) if holed else Vector3.ZERO)
 	var kind := 0
 	var r := rng.randf()
-	# Dark rooms are mostly dead; storage is dying; the rest flicker now and then. Break Rooms
-	# and the climbs stay lit so the route always reads.
+	# Dark rooms are dead; storage is dying; of the rest, close to half are flickering, dying or
+	# dead, so the floor is pools of light with dark between them and a flashlight is the way
+	# across. Break Rooms and the climbs stay lit so the route always reads.
 	if t == "dark":
-		kind = 3 if r < 0.65 else 2
+		kind = 3 if r < 0.75 else 2
 	elif t == "storage":
-		kind = 2 if r < 0.55 else (1 if r < 0.8 else 0)
+		kind = 2 if r < 0.6 else (3 if r < 0.75 else 1)
 	elif t != "breakroom" and t != "ascent":
-		if r < 0.16:
+		if r < 0.2:
 			kind = 1
-		elif r < 0.26:
+		elif r < 0.36:
 			kind = 2
+		elif r < 0.44:
+			kind = 3
 	var panel := MeshInstance3D.new()
 	var pm := BoxMesh.new()
 	pm.size = Vector3(1.2, 0.04, 0.6)
@@ -565,10 +606,10 @@ func _add_light(root: Node3D, batch: LevelKit.BoxBatch, i: int, center: Vector3,
 	batch.add(Vector3(at.x + 0.62, fy, at.z), Vector3(0.04, 0.05, 0.6), "fixture", false)
 	var light := OmniLight3D.new()
 	light.position = at + Vector3(0.0, CEIL_H - 0.35, 0.0)
-	light.omni_range = 8.5
-	light.omni_attenuation = 1.3
-	light.light_energy = 1.25 if t != "breakroom" else 1.5
-	light.light_color = Color(1.0, 0.92, 0.7) if t != "breakroom" else Color(0.95, 0.96, 0.88)
+	light.omni_range = 8.0
+	light.omni_attenuation = 1.4
+	light.light_energy = 0.85 if t != "breakroom" else 1.5
+	light.light_color = Color(1.0, 0.9, 0.66) if t != "breakroom" else Color(0.95, 0.96, 0.88)
 	light.light_volumetric_fog_energy = 0.6
 	light.light_specular = 0.35
 	light.light_size = 0.45  # soft shadow penumbra, like a wide tube fixture
@@ -577,7 +618,7 @@ func _add_light(root: Node3D, batch: LevelKit.BoxBatch, i: int, center: Vector3,
 	var hum := Sfx.loop_player("hum", -22.0, 9.0)
 	hum.position = panel.position
 	root.add_child(hum)
-	_lights.register(light, panel, i, kind, hum)
+	_lights.register(light, panel, i, kind, hum, t == "breakroom")
 
 
 # --- Rooms ---------------------------------------------------------------------------------
@@ -771,10 +812,11 @@ func _ascent(root: Node3D, batch: LevelKit.BoxBatch, i: int, c: Vector2i, center
 			test_points["tray_end"] = center + Vector3(2.4, tray_y + 0.1, tray_z)
 		Ascent.LIFT:
 			var plate := PressurePlate.create("PlateLift", center + Vector3(-2.0, 0.0, -2.0))
+			plate.enabled = i != ALARM_FLOOR  # locked out until the fire alarm releases it
 			root.add_child(plate)
 			var lift := LiftPlatform.create("Lift", center + Vector3(0.0, base - 0.15 + 0.01, 0.0), base - 0.15 + 0.01, base + FLOOR_H - 0.15, plate, Vector3(2.3, 0.3, 2.3))
 			root.add_child(lift)
-			_sign(root, "SERVICE LIFT\nONE ON THE PLATE", center + Vector3(-2.88, 2.0, -0.5), PI * 0.5)
+			_sign(root, "SERVICE LIFT\nONE ON THE PLATE" if i != ALARM_FLOOR else "SERVICE LIFT\nLOCKED OUT: PULL THE\nFIRE ALARM TO RELEASE", center + Vector3(-2.88, 2.0, -0.5), PI * 0.5)
 			test_points["plate"] = center + Vector3(-2.0, 0.1, -2.0)
 			test_points["lift"] = center + Vector3(0.0, base + 0.1, 0.0)
 			test_points["lift_top_edge"] = center + Vector3(0.0, base + FLOOR_H + 0.1, -HOLE * 0.5 - 0.45)
@@ -783,7 +825,7 @@ func _ascent(root: Node3D, batch: LevelKit.BoxBatch, i: int, c: Vector2i, center
 			batch.add(center + Vector3(0.0, 1.3, -0.6), Vector3(2.4, 2.6, 1.2), "metal")
 			for h: float in [0.9, 1.8, 2.5]:
 				batch.add(center + Vector3(0.0, h, -1.21), Vector3(2.4, 0.08, 0.02), "hazard", false)
-			_sign(root, "SHELF SHAFT\nTOO TALL? STAND ON\nA COLLEAGUE", center + Vector3(0.0, 2.2, -2.88), 0.0)
+			_sign(root, "SHELF SHAFT\nTOO TALL? STAND ON\nA COLLEAGUE" if i != HATCH_FLOOR else "SHELF SHAFT\nHATCH ABOVE: RELEASE\nIS TWO ROOMS BACK", center + Vector3(0.0, 2.2, -2.88), 0.0)
 			_boost_jetpack_pos = center + Vector3(2.0, 0.1, 2.0)
 			test_points["boost_shelf"] = center + Vector3(0.0, 2.7, -0.6)
 		Ascent.ELEVATOR:
@@ -872,14 +914,361 @@ func _build_elevator(root: Node3D, _batch: LevelKit.BoxBatch, _i: int, center: V
 	test_points["exit"] = center + Vector3(0.0, 0.1, 0.0)
 
 
-func _build_custodian(i: int) -> void:
-	var c := Custodian.new()
-	c.name = "Custodian%d" % i
-	c.floor_index = i
-	c.floor_y = float(i) * FLOOR_H
-	c.bounds = Rect2(0.8, 0.8, float(GRID) * CELL - 1.6, float(GRID) * CELL - 1.6)
-	c.dormant_until_heard = i == 0
-	add_child(c)
+## The floor's Hollow Hires: HIRES_PER_FLOOR of them, started in cells well away from the Break
+## Room you arrive in. A dead one is replaced after RESPAWN_SECONDS somewhere nobody can see.
+func _build_hires(i: int) -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = int(floors[i]["rng_seed"]) + 77
+	var spots := _hire_spawn_cells(i, rng, HIRES_PER_FLOOR[i], Vector3.INF)
+	for k in HIRES_PER_FLOOR[i]:
+		var h := HollowHire.new()
+		h.name = "Hire%d_%d" % [i, k]
+		h.level = self
+		h.floor_index = i
+		h.floor_y = float(i) * FLOOR_H
+		h.sentry = k == 0  # the first on each floor keeps to the rooms round the way up
+		var c: Vector2i = spots[k % spots.size()]
+		h.position = cell_center(i, c) + Vector3(rng.randf_range(-1.0, 1.0), 0.0, rng.randf_range(-1.0, 1.0))
+		h.rotation.y = rng.randf() * TAU
+		add_child(h)
+
+
+## Cells a Hire can start in: not the Break Room, not the climb, at least three rooms from the
+## arrival, and (when a position is given) out of everyone's sight and more than 12 m off.
+func _hire_spawn_cells(i: int, rng: RandomNumberGenerator, want: int, _near: Vector3) -> Array[Vector2i]:
+	var f: Dictionary = floors[i]
+	var dist := _bfs(f["arrive"], f["conn"])
+	var out: Array[Vector2i] = []
+	var pool: Array[Vector2i] = []
+	for c in dist:
+		var cell: Vector2i = c
+		if cell == f["arrive"] or cell == f["ascent"] or int(dist[cell]) < 3:
+			continue
+		pool.append(cell)
+	if pool.is_empty():
+		for c in dist:
+			if c != f["arrive"]:
+				pool.append(c)
+	while out.size() < want and not pool.is_empty():
+		var k := rng.randi_range(0, pool.size() - 1)
+		out.append(pool[k])
+		pool.remove_at(k)
+	return out
+
+
+## The rooms on the green-sign route (the Break Room excepted), arrival first: where the Hires
+## patrol, so the Line meets one.
+func patrol_cells(i: int) -> Array[Vector2i]:
+	var out: Array[Vector2i] = []
+	if i < 0 or i >= floors.size():
+		return out
+	var path: Array[Vector2i] = floors[i]["path"]
+	for k in range(1, path.size()):
+		out.append(path[k])
+	return out
+
+
+## Server: a Hire saw someone and screamed; every other one on the floor answers and comes.
+## The tubes on the floor gutter first: you hear it, then the lights tell you it's coming.
+func hire_callout(caller: HollowHire, target: Player) -> void:
+	if not multiplayer.is_server():
+		return
+	var answered := 0
+	for h in hires_on(caller.floor_index):
+		if h != caller and not h.is_dead() and not h.is_hunting():
+			h.join_chase(target)
+			answered += 1
+	if answered > 0:
+		_rpc_floor_stutter.rpc(caller.floor_index, 2.2, 1.4, "the lights gutter: something's coming")
+		var now := Time.get_ticks_msec()
+		if now - _callout_msec > CALLOUT_MESSAGE_GAP_MS:
+			_callout_msec = now
+			GameState.post_message("IT CALLED THE OTHERS. RUN.", 3.0)
+
+
+## Server: something loud on a floor (a shouldered door, the alarm, the hatch slamming): every
+## Hire there goes to look and stays awake for a while. The lights flicker out ahead of them.
+func wake_floor(i: int, pos: Vector3, seconds: float) -> void:
+	if not multiplayer.is_server():
+		return
+	for h in hires_on(i):
+		h.alert(pos, seconds)
+	_rpc_floor_stutter.rpc(i, 1.6, 1.0, "the lights gutter: they're coming to look")
+
+
+## Server: the tubes on a floor strobe for a while (the fire alarm).
+func floor_strobe(i: int, seconds: float) -> void:
+	if multiplayer.is_server():
+		_rpc_floor_stutter.rpc(i, seconds, 0.0, "")
+
+
+## Every peer: flicker, then dark, on one floor (Break Rooms keep their lights).
+@rpc("authority", "call_local", "reliable")
+func _rpc_floor_stutter(i: int, flicker_s: float, dark_s: float, caption: String) -> void:
+	_lights.floor_stutter(i, flicker_s, dark_s)
+	if caption != "":
+		var me := Net.get_local_player()
+		if me != null and floor_of(me.global_position.y) == i:
+			Sfx.caption(self, caption, me.global_position + Vector3.UP * 3.0)
+
+
+## Server: every 60-90 s the power on the Line's floor stutters out for 12-20 s. Not in the
+## middle of a chase (that would be unfair, and the Hires already gutter the lights).
+func _tick_stutter(delta: float) -> void:
+	_stutter_t -= delta
+	if _stutter_t > 0.0:
+		return
+	var players := Net.get_players()
+	if players.is_empty() or GameState.checkpoint_index >= FLOORS:
+		_stutter_t = 10.0
+		return
+	var i := floor_of(players[0].global_position.y)
+	for h in hires_on(i):
+		if h.is_hunting():
+			_stutter_t = 8.0
+			return
+	_stutter_t = _stutter_rng.randf_range(STUTTER_MIN, STUTTER_MAX)
+	power_stutter(i, _stutter_rng.randf_range(STUTTER_DARK_MIN, STUTTER_DARK_MAX))
+
+
+## Server: the floor's tubes flicker for a second and a half, then stay out for `seconds`.
+func power_stutter(i: int, seconds: float) -> void:
+	if not multiplayer.is_server():
+		return
+	_rpc_floor_stutter.rpc(i, 1.5, seconds, "the power stutters out")
+	_rpc_breaker.rpc(i)
+
+
+@rpc("authority", "call_local", "reliable")
+func _rpc_breaker(i: int) -> void:
+	var me := Net.get_local_player()
+	if me != null and floor_of(me.global_position.y) == i:
+		Sfx.play_at(self, "slam", me.global_position + Vector3(randf_range(-6.0, 6.0), 3.0, randf_range(-6.0, 6.0)), -4.0, 0.5, 30.0)
+
+
+## Tests: a stutter now, on a floor.
+func debug_power_stutter(i: int, seconds: float = 14.0) -> void:
+	power_stutter(i, seconds)
+
+
+func lights() -> LightController:
+	return _lights
+
+
+func stuck_door(i: int) -> StuckDoor:
+	return _doors.get(i, null) as StuckDoor
+
+
+func alarm() -> AlarmPull:
+	return _alarm
+
+
+func hatch() -> TimedHatch:
+	return _hatch
+
+
+func on_door_shouldered(i: int) -> void:
+	_door_done[i] = true
+
+
+func on_hatch_released(_i: int) -> void:
+	_hatch_thrown = true
+
+
+## The route's forced events: a jammed door on the path (B4 and B1), the fire alarm that
+## releases B3's lift, and the hatch over B2's shelf shaft with its release two rooms back.
+func _build_events(root: Node3D, i: int) -> void:
+	var f: Dictionary = floors[i]
+	var path: Array[Vector2i] = f["path"]
+	var base := float(i) * FLOOR_H
+	if i in DOOR_FLOORS:
+		var k := _door_edge(i)
+		if k >= 0:
+			var a: Vector2i = path[k]
+			var b: Vector2i = path[k + 1]
+			var out := Vector3(float(b.x - a.x), 0.0, float(b.y - a.y))
+			var at := cell_center(i, a) + out * (CELL * 0.5)
+			at.y = base
+			var axis := Vector3(out.z, 0.0, out.x)  # along the doorway
+			var door := StuckDoor.create("StuckDoor%d" % i, at, axis, DOOR_W, DOOR_H)
+			door.level = self
+			door.floor_index = i
+			root.add_child(door)
+			_doors[i] = door
+			test_points["door%d" % i] = at - out * 1.5 + Vector3(0.0, 0.1, 0.0)  # the arrival side, facing the door
+			test_points["door%d_axis" % i] = out
+	if i == ALARM_FLOOR:
+		var c: Vector2i = path[maxi(1, path.size() - 3)]
+		var spot := _wall_spot(i, c)
+		_alarm = AlarmPull.create("AlarmPull", spot[0], spot[1])
+		_alarm.level = self
+		_alarm.floor_index = i
+		var plate := root.get_node_or_null("PlateLift") as PressurePlate
+		if plate != null:
+			_alarm.on_pulled = Callable(plate, "set_enabled").bind(true)
+		root.add_child(_alarm)
+		test_points["alarm"] = spot[0] + spot[1] * 0.6 + Vector3(0.0, 0.1, 0.0)
+	if i == HATCH_FLOOR:
+		var c: Vector2i = path[maxi(1, path.size() - 3)]
+		var spot := _wall_spot(i, c)
+		var hole_c := cell_center(i, f["ascent"])
+		_hatch = TimedHatch.create("Hatch", hole_c, base + CEIL_H, HOLE, spot[0], spot[1])
+		_hatch.level = self
+		_hatch.floor_index = i
+		root.add_child(_hatch)
+		test_points["hatch_switch"] = spot[0] + spot[1] * 0.6 + Vector3(0.0, 0.1, 0.0)
+		test_points["hatch"] = hole_c + Vector3(0.0, 0.1, 0.0)
+
+
+## Which doorway on the route gets the jammed door: a real door (not an open-plan gap) that is
+## the only way through, nearest the middle of the path; failing that, any real door on it.
+func _door_edge(i: int) -> int:
+	var f: Dictionary = floors[i]
+	var path: Array[Vector2i] = f["path"]
+	var conn: Dictionary = f["conn"]
+	var best := -1
+	var best_score := -INF
+	for k in range(path.size() - 1):
+		var a: Vector2i = path[k]
+		var b: Vector2i = path[k + 1]
+		if int(conn.get(_edge_key(a, b), Conn.NONE)) != Conn.DOOR:
+			continue
+		var cut := conn.duplicate()
+		cut.erase(_edge_key(a, b))
+		var bridge := not _bfs(f["arrive"], cut).has(f["ascent"])
+		var score := (10.0 if bridge else 0.0) - absf(float(k) - float(path.size() - 1) * 0.5)
+		if score > best_score:
+			best_score = score
+			best = k
+	return best
+
+
+## A wall face in a cell to hang a fixture on: [position at floor level on the face, normal
+## into the room]. Picks a side with a real wall and keeps clear of the doorway line.
+func _wall_spot(i: int, c: Vector2i) -> Array:
+	var conn: Dictionary = floors[i]["conn"]
+	var center := cell_center(i, c)
+	var sides: Array[Vector3] = [Vector3(-1, 0, 0), Vector3(1, 0, 0), Vector3(0, 0, -1), Vector3(0, 0, 1)]
+	for side in sides:
+		var nb := c + Vector2i(int(side.x), int(side.z))
+		var inside := nb.x >= 0 and nb.y >= 0 and nb.x < GRID and nb.y < GRID
+		if inside and int(conn.get(_edge_key(c, nb), Conn.NONE)) == Conn.OPEN:
+			continue
+		var along := Vector3(side.z, 0.0, side.x)
+		var pos: Vector3 = center + side * (CELL * 0.5 - WALL_T * 0.5) + along * 1.7
+		return [Vector3(pos.x, center.y, pos.z), -side]
+	return [center + Vector3(-CELL * 0.5 + WALL_T * 0.5, 0.0, 1.7), Vector3(1, 0, 0)]
+
+
+## Server: the first player into B1's elevator room brings a Hire through the door behind them,
+## screaming (which calls the rest). Once per visit; a layoff re-arms it.
+func _tick_ambush() -> void:
+	if not _ambush_armed or GameState.checkpoint_index != AMBUSH_FLOOR or Engine.get_physics_frames() % 5 != 0:
+		return
+	var f: Dictionary = floors[AMBUSH_FLOOR]
+	var ascent: Vector2i = f["ascent"]
+	var victim: Player = null
+	for p in Net.get_players():
+		if p.state == Player.State.NORMAL and floor_of(p.global_position.y) == AMBUSH_FLOOR and cell_of(p.global_position) == ascent:
+			victim = p
+			break
+	if victim == null:
+		return
+	var hires := hires_on(AMBUSH_FLOOR)
+	var pick: HollowHire = null
+	for h in hires:
+		if not h.is_dead() and (pick == null or (pick.is_hunting() and not h.is_hunting())):
+			pick = h
+	if pick == null:
+		return
+	_ambush_armed = false
+	var path: Array[Vector2i] = f["path"]
+	var before: Vector2i = path[maxi(0, path.size() - 2)]
+	var door := (cell_center(AMBUSH_FLOOR, before) + cell_center(AMBUSH_FLOOR, ascent)) * 0.5
+	var back := (cell_center(AMBUSH_FLOOR, before) - cell_center(AMBUSH_FLOOR, ascent)).normalized()
+	pick.ambush(door + back * 0.9, victim)
+	GameState.post_message("BEHIND YOU. Everyone in the elevator. NOW.", 3.0)
+
+
+## The route between two cells through the doorways (the maze), for the Hires.
+func route(i: int, from: Vector2i, to: Vector2i) -> Array[Vector2i]:
+	if i < 0 or i >= floors.size():
+		return []
+	var conn: Dictionary = floors[i]["conn"]
+	var dist := _bfs(from, conn)
+	if not dist.has(to):
+		return []
+	return _path(from, to, conn)
+
+
+func is_safe_cell(i: int, c: Vector2i) -> bool:
+	if i < 0 or i >= floors.size():
+		return false
+	var types: Dictionary = floors[i]["types"]
+	return String(types.get(c, "")) == "breakroom"
+
+
+func hires_on(i: int) -> Array[HollowHire]:
+	var out: Array[HollowHire] = []
+	for h in get_tree().get_nodes_in_group("hire"):
+		if h is HollowHire and (h as HollowHire).floor_index == i:
+			out.append(h)
+	return out
+
+
+## Server: a dead Hire comes back somewhere out of sight once its timer runs out.
+func _tick_hires(delta: float) -> void:
+	for i in FLOORS:
+		var dead: Array[HollowHire] = []
+		for h in hires_on(i):
+			if h.is_dead():
+				dead.append(h)
+		if dead.is_empty():
+			_hire_respawn_t[i] = RESPAWN_SECONDS
+			continue
+		_hire_respawn_t[i] = float(_hire_respawn_t[i]) - delta
+		if float(_hire_respawn_t[i]) > 0.0:
+			continue
+		_hire_respawn_t[i] = RESPAWN_SECONDS
+		var h: HollowHire = dead[0]
+		var spot := _hidden_cell(i)
+		if spot != Vector2i(-1, -1):
+			h.respawn_at(cell_center(i, spot))
+
+
+## A cell on this floor nobody can see into and nobody is near (-1,-1 when there is none).
+func _hidden_cell(i: int) -> Vector2i:
+	var f: Dictionary = floors[i]
+	var rng := RandomNumberGenerator.new()
+	rng.randomize()
+	var cells: Array = f["types"].keys()
+	cells.shuffle()
+	var space := get_world_3d().direct_space_state
+	for c in cells:
+		var cell: Vector2i = c
+		if cell == f["arrive"] or is_safe_cell(i, cell):
+			continue
+		var at := cell_center(i, cell) + Vector3(0.0, 1.6, 0.0)
+		var ok := true
+		for p in Net.get_players():
+			if p.global_position.distance_to(at) < 12.0:
+				ok = false
+				break
+			if floor_of(p.global_position.y) != i:
+				continue
+			var q := PhysicsRayQueryParameters3D.create(p.eye_position(), at, ChainBody.LAYER_WORLD)
+			if space.intersect_ray(q).is_empty():
+				ok = false
+				break
+		if ok:
+			return cell
+	return Vector2i(-1, -1)
+
+
+## Tests: the next dead Hire on a floor comes back at once.
+func debug_force_hire_respawn(i: int) -> void:
+	_hire_respawn_t[i] = 0.0
+	_tick_hires(0.0)
 
 
 ## Green building signs over the doorways along the route to this floor's way up, so the maze is
@@ -977,23 +1366,28 @@ func _tick_tasks() -> void:
 		0:
 			if _anyone_near("crates_start", players, 5.0):
 				GameState.complete_task(0)
+			if _door_done.get(0, false):
+				GameState.complete_task(1)
 		1:
-			if _anyone_near("plate", players, 5.0):
+			if _alarm != null and _alarm.pulled:
 				GameState.complete_task(0)
+			if _anyone_near("plate", players, 5.0):
+				GameState.complete_task(1)
 			var lift := get_node_or_null("Floor1/Lift") as LiftPlatform
 			if lift != null and lift.position.y >= lift.high_y - 0.05:
-				GameState.complete_task(1)
+				GameState.complete_task(2)
 		2:
-			if _anyone_near("boost_shelf", players, 5.0):
+			if _hatch_thrown:
 				GameState.complete_task(0)
-			for p in players:
-				if p.has_item("jetpack"):
-					GameState.complete_task(1)
+			if _anyone_near("boost_shelf", players, 5.0):
+				GameState.complete_task(1)
 		3:
 			if _anyone_near("exit", players, 5.0):
 				GameState.complete_task(0)
-			if _car != null and _car.phase != FreightCar.Phase.WAITING:
+			if _door_done.get(3, false):
 				GameState.complete_task(1)
+			if _car != null and _car.phase != FreightCar.Phase.WAITING:
+				GameState.complete_task(2)
 	# A checkpoint above means everything on the floor below was done.
 	if GameState.checkpoint_index > i:
 		for k in TASKS[i].size():
@@ -1014,6 +1408,19 @@ func _anyone_near(key: String, players: Array[Player], radius: float) -> bool:
 func server_on_respawn() -> void:
 	if _car != null and GameState.checkpoint_index < FLOORS:
 		_car.server_reset()
+	_ambush_armed = true
+	# Nobody respawns into a Hire's arms: the ones near the checkpoint go back to a far cell.
+	for h in get_tree().get_nodes_in_group("hire"):
+		var hire := h as HollowHire
+		if hire == null:
+			continue
+		hire.release(false)
+		if not hire.is_dead() and hire.global_position.distance_to(GameState.checkpoint_position) < 16.0:
+			var rng := RandomNumberGenerator.new()
+			rng.randomize()
+			var spots := _hire_spawn_cells(hire.floor_index, rng, 1, Vector3.INF)
+			if not spots.is_empty():
+				hire.respawn_at(cell_center(hire.floor_index, spots[0]))
 
 
 func car_busy() -> bool:
@@ -1027,6 +1434,9 @@ func _physics_process(delta: float) -> void:
 	if _jetpack_check_t <= 0.0:
 		_jetpack_check_t = 6.0
 		_ensure_boost_jetpack()
+	_tick_hires(delta)
+	_tick_stutter(delta)
+	_tick_ambush()
 	_tick_tasks()
 	_tick_exit()
 
@@ -1056,4 +1466,9 @@ func _tick_exit() -> void:
 		if not inside.has(b):
 			return
 	_car.server_start_ride()
+	# Whatever was chasing you loses you: it lets go and goes back to its rounds.
+	for h in hires_on(FLOORS - 1):
+		if h.is_hunting():
+			h.release(false)
+			h.stun(2.0)
 	GameState.post_message("Everyone's in. The doors are closing. Going up.", 3.0)

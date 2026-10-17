@@ -1,7 +1,7 @@
 extends Node
 ## Autoload "ScareDirector". The server decides WHEN and WHERE (scripted triggers plus a
 ## procedural director that picks on whoever wandered off); every peer plays the scare locally.
-## Office scares: lunge, lights_out, tile, figure, whisper, phone, slam, dennis, stain_pass.
+## Office scares: lunge, lights_out, tile, figure, whisper, phone, slam, dennis.
 ## Pizzeria scares (played by Pizzeria.play_scare): jukebox_skip, balloon, vent_patter,
 ## pepperoni_eyes, bell, static_face, counter_bell, order_window, curtain, costume_rack,
 ## birthday_song. Each level offers its own pool (level.scare_pool) for where the target stands.
@@ -18,7 +18,10 @@ const POOL: Array = [
 var scares_played: int = 0
 var blackout_center: Vector3 = Vector3.ZERO
 var blackout_radius: float = 0.0
+var flicker_center: Vector3 = Vector3.ZERO
+var flicker_radius: float = 0.0
 var _blackout_until: int = 0
+var _flicker_until: int = 0
 var _layer: CanvasLayer
 var _overlay: ColorRect
 var _next_t: float = FIRST_DELAY
@@ -47,6 +50,23 @@ func blackout(center: Vector3, radius: float, msec: int) -> void:
 	blackout_center = center
 	blackout_radius = radius
 	_blackout_until = Time.get_ticks_msec() + msec
+
+
+func flicker_active() -> bool:
+	return Time.get_ticks_msec() < _flicker_until
+
+
+## Local: every light within radius of center gutters for a while (the warning before dark).
+func flicker(center: Vector3, radius: float, msec: int) -> void:
+	flicker_center = center
+	flicker_radius = radius
+	_flicker_until = Time.get_ticks_msec() + msec
+
+
+## How long the lights_out scare keeps a spot dark: 12-20 s, the same on every peer for a spot.
+static func lights_out_msec(pos: Vector3) -> int:
+	var h := sin(pos.x * 3.17 + pos.z * 1.71) * 43758.5453
+	return 12000 + int((h - floorf(h)) * 8000.0)
 
 
 ## Server: called at the start of every run.
@@ -145,12 +165,6 @@ func trigger_for(kind: String, p: Player) -> void:
 			pos = feet - fwd * 6.0
 		"phone", "slam", "bell":
 			pos = feet + Vector3(_rng.randf_range(-1.0, 1.0), 0.0, _rng.randf_range(-1.0, 1.0)).normalized() * _rng.randf_range(7.0, 12.0)
-		"stain_pass":
-			pos = feet + fwd * 8.0
-			for c in get_tree().get_nodes_in_group("custodian"):
-				var cy: float = (c as Node3D).global_position.y
-				if absf(cy - feet.y - 3.9) < 2.0:
-					c.call("investigate", pos)
 	trigger(kind, pos, p.peer_id)
 
 
@@ -194,10 +208,13 @@ func play_local(kind: String, pos: Vector3, target_peer: int = 0) -> void:
 			_shake(0.9, pos)
 			GameState.post_message_local("UNSCHEDULED EVENT", 1.5)
 		"lights_out":
+			# A gutter first, then out for long enough that you need the flashlight to move.
+			flicker(pos, 16.0, 1400)
 			blackout_center = pos
 			blackout_radius = 16.0
-			_blackout_until = Time.get_ticks_msec() + 2600
+			_blackout_until = Time.get_ticks_msec() + 1400 + lights_out_msec(pos)
 			Sfx.play_at(self, "slam", pos + Vector3.UP * 3.0, -6.0, 0.6)
+			Sfx.caption(self, "the lights go out", pos + Vector3.UP * 3.0)
 			if me != null:
 				var behind := me.global_position + Vector3(randf_range(-1.0, 1.0), 1.6, randf_range(-1.0, 1.0)).normalized() * 1.5
 				Sfx.play_at(self, "whisper", behind, 4.0, randf_range(0.85, 1.0), 12.0)
@@ -220,10 +237,6 @@ func play_local(kind: String, pos: Vector3, target_peer: int = 0) -> void:
 			_add_temp(d, 14.0)
 			if targeted:
 				Sfx.play_at(self, "squeak", pos + Vector3.UP * 1.5, -8.0, 0.5, 8.0)
-		"stain_pass":
-			Sfx.play_at(self, "thump", pos + Vector3.UP * 3.5, -2.0, 0.7, 30.0)
-			Sfx.play_at(self, "creak", pos + Vector3.UP * 3.5, 0.0, 1.2, 30.0)
-			GameState.post_message_local("...something is moving in the ceiling.", 3.0)
 		"breath":
 			# The quiet one: a breath at your ear, and nothing there when you turn.
 			if targeted:

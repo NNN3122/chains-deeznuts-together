@@ -1,12 +1,15 @@
 class_name PressurePlate
 extends Area3D
 ## Pressed while any chained body (a player, or the Ballast) stands on it. In solo play it latches
-## on the first step, since nobody can hold it for you. "pressed" is replicated.
+## on the first step, since nobody can hold it for you. "pressed" is replicated. A plate that
+## isn't enabled (B3's, until the fire alarm releases the lift) does nothing and says so.
 
 var pressed: bool = false  # replicated
+var enabled: bool = true  # replicated
 var _latched: bool = false
 var _plate_mesh: MeshInstance3D
 var _mat: StandardMaterial3D
+var _label: Label3D
 var _was_pressed: bool = false
 
 
@@ -23,11 +26,19 @@ func _enter_tree() -> void:
 	var sync := MultiplayerSynchronizer.new()
 	sync.name = "Sync"
 	var cfg := SceneReplicationConfig.new()
-	var path := NodePath(".:pressed")
-	cfg.add_property(path)
-	cfg.property_set_replication_mode(path, SceneReplicationConfig.REPLICATION_MODE_ALWAYS)
+	for prop in ["pressed", "enabled"]:
+		var path := NodePath(".:" + prop)
+		cfg.add_property(path)
+		cfg.property_set_replication_mode(path, SceneReplicationConfig.REPLICATION_MODE_ALWAYS)
 	sync.replication_config = cfg
 	add_child(sync)
+
+
+## Server: the lock-out is released (or applied).
+func set_enabled(on: bool) -> void:
+	enabled = on
+	if not on:
+		_latched = false
 
 
 func _ready() -> void:
@@ -54,15 +65,15 @@ func _ready() -> void:
 	_mat.emission_energy_multiplier = 0.3
 	_plate_mesh.material_override = _mat
 	add_child(_plate_mesh)
-	var label := Label3D.new()
-	label.text = "STAND HERE"
-	label.position = Vector3(0.0, 0.9, 0.0)
-	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	label.font_size = 32
-	label.pixel_size = 0.005
-	label.outline_size = 8
-	label.modulate = Color(1.0, 0.85, 0.3)
-	add_child(label)
+	_label = Label3D.new()
+	_label.text = "STAND HERE"
+	_label.position = Vector3(0.0, 0.9, 0.0)
+	_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	_label.font_size = 32
+	_label.pixel_size = 0.005
+	_label.outline_size = 8
+	_label.modulate = Color(1.0, 0.85, 0.3)
+	add_child(_label)
 	body_entered.connect(_on_body_entered)
 
 
@@ -72,9 +83,14 @@ func _physics_process(_delta: float) -> void:
 		for b in get_overlapping_bodies():
 			if b is ChainBody:
 				count += 1
-		pressed = count > 0 or _latched
+		pressed = enabled and (count > 0 or _latched)
 	_plate_mesh.position.y = 0.0 if pressed else 0.03
-	_mat.albedo_color = Color(0.3, 0.9, 0.3) if pressed else Color(0.85, 0.7, 0.1)
+	if not enabled:
+		_mat.albedo_color = Color(0.45, 0.12, 0.1)
+		_label.text = "NO POWER\nPULL THE FIRE ALARM"
+	else:
+		_mat.albedo_color = Color(0.3, 0.9, 0.3) if pressed else Color(0.85, 0.7, 0.1)
+		_label.text = "STAND HERE"
 	_mat.emission = _mat.albedo_color
 	if pressed != _was_pressed:
 		_was_pressed = pressed
@@ -82,5 +98,5 @@ func _physics_process(_delta: float) -> void:
 
 
 func _on_body_entered(body: Node3D) -> void:
-	if multiplayer.is_server() and body is ChainBody and Net.get_players().size() <= 1:
+	if multiplayer.is_server() and enabled and body is ChainBody and Net.get_players().size() <= 1:
 		_latched = true

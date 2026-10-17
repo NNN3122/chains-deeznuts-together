@@ -37,6 +37,12 @@ const NOISE_LAND: float = 30.0
 const DRINK_BOOST_TIME: float = 8.0
 const DRINK_CRASH_TIME: float = 5.0
 const SLOTS: int = 3
+const SLIDE_MIN_SPEED: float = 4.5  # m/s: you have to be sprinting for Ctrl to drop you into a slide (a walk is 4.2)
+const SLIDE_SPEED: float = 8.4  # m/s at the start of a slide (a sprint is 7)
+const SLIDE_TIME: float = 1.0  # s the slide carries before it ends
+const SLIDE_END_SPEED: float = 1.6  # m/s: a slide that has slowed this far is over
+const SLIDE_COOLDOWN: float = 0.35
+const NOISE_SLIDE: float = 24.0
 
 enum State { NORMAL, MANTLE, GRABBED }
 enum CameraMode { FIRST_PERSON, THIRD_PERSON }
@@ -62,6 +68,7 @@ const SFLAG_USING_ITEM: int = 8
 const SFLAG_GRABBED: int = 16
 const SFLAG_RUNNING: int = 32
 const SFLAG_TALKING: int = 64
+const SFLAG_SLIDING: int = 128
 
 # --- Identity (set by Net.spawn_player_node on every peer) -------------------------
 var peer_id: int = 0
@@ -108,6 +115,11 @@ var _buff_time: float = 0.0
 var _was_on_floor: bool = true
 var _fall_speed: float = 0.0
 var _crouched: bool = false  # server: the capsule is short (wants to brace, or no headroom to stand)
+var _slide_t: float = 0.0  # server: seconds left in the slide, 0 when not sliding
+var _slide_dir: Vector3 = Vector3.ZERO
+var _slide_cooldown: float = 0.0
+var _brace_was: bool = false  # server: Ctrl state last tick (a slide starts on the press, not the hold)
+var hold_drag: float = 0.0  # server: 0..1 of your speed something hanging on the chain takes this tick (set and consumed)
 
 # --- Local-only ----------------------------------------------------------------------
 var camera_mode: CameraMode = CameraMode.THIRD_PERSON
@@ -127,6 +139,8 @@ var _land_v: float = 0.0
 var _roll: float = 0.0
 var _fov_kick: float = 0.0
 var _eye_h: float = EYE_HEIGHT
+var _slide_tilt: float = 0.0
+var _was_sliding: bool = false
 
 # --- Visuals (every peer) --------------------------------------------------------------
 var model: PlayerModel
@@ -286,7 +300,16 @@ func _setup_cameras() -> void:
 	_tp_camera.near = 0.05
 	_spring_arm.add_child(_tp_camera)
 	_yaw = synced_yaw
+	camera_mode = CameraMode.FIRST_PERSON if Settings.first_person else CameraMode.THIRD_PERSON
 	_apply_camera_mode()
+
+
+## Settings and the V key share one switch: either one changes the camera and the saved default.
+func set_first_person_camera(fp: bool) -> void:
+	camera_mode = CameraMode.FIRST_PERSON if fp else CameraMode.THIRD_PERSON
+	Settings.first_person = fp
+	if _rig != null:
+		_apply_camera_mode()
 
 
 func _apply_camera_mode() -> void:
@@ -312,9 +335,9 @@ func _unhandled_input(event: InputEvent) -> void:
 	if not is_local or GameState.ui_blocking:
 		return
 	if event.is_action_pressed("toggle_camera"):
-		camera_mode = CameraMode.FIRST_PERSON if camera_mode == CameraMode.THIRD_PERSON else CameraMode.THIRD_PERSON
-		_apply_camera_mode()
-		GameState.post_message_local("Camera: %s (V)" % ("first person" if camera_mode == CameraMode.FIRST_PERSON else "third person"), 1.5)
+		set_first_person_camera(camera_mode == CameraMode.THIRD_PERSON)
+		Settings.save_settings()
+		GameState.post_message_local("Camera: %s (V, or Settings)" % ("first person" if camera_mode == CameraMode.FIRST_PERSON else "third person"), 1.5)
 
 
 func _process(delta: float) -> void:
@@ -335,7 +358,18 @@ func _update_local_camera(delta: float) -> void:
 	var fp := camera_mode == CameraMode.FIRST_PERSON
 	# The eye drops with a crouch, smoothly, so the view never pops.
 	var crouching := (synced_flags & SFLAG_BRACING) != 0
-	_eye_h = lerpf(_eye_h, CROUCH_EYE_HEIGHT if crouching else EYE_HEIGHT, 1.0 - exp(-10.0 * delta))
+	var sliding := (synced_flags & SFLAG_SLIDING) != 0
+	var eye_target := EYE_HEIGHT
+	if sliding:
+		eye_target = CROUCH_EYE_HEIGHT - 0.2  # lower than a crouch: you're on your back
+	elif crouching:
+		eye_target = CROUCH_EYE_HEIGHT
+	_eye_h = lerpf(_eye_h, eye_target, 1.0 - exp(-(16.0 if sliding else 10.0) * delta))
+	if sliding and not _was_sliding:
+		_land_v -= 2.0  # the drop into the slide
+	_was_sliding = sliding
+	# The view cants over while you slide, like a head tipped back on one shoulder.
+	_slide_tilt = lerpf(_slide_tilt, 0.11 if sliding else 0.0, 1.0 - exp(-8.0 * delta))
 	# Follow the (render-interpolated) body through a spring: tight sideways, softer vertically so
 	# steps, mantles and landings don't jolt the view.
 	var target := _visual_position() + Vector3(0.0, _eye_h, 0.0)
@@ -363,10 +397,10 @@ func _update_local_camera(delta: float) -> void:
 	var s := _shake * _shake * 0.35
 	_fp_camera.h_offset = randf_range(-s, s)
 	_fp_camera.v_offset = randf_range(-s, s)
-	_fp_camera.rotation.z = _roll
+	_fp_camera.rotation.z = _roll + _slide_tilt
 	_tp_camera.h_offset = 0.5 + randf_range(-s, s)
 	_tp_camera.v_offset = 0.3 + randf_range(-s, s)
-	_tp_camera.rotation.z = _roll
+	_tp_camera.rotation.z = _roll + _slide_tilt * 0.5
 	if camera_mode == CameraMode.THIRD_PERSON:
 		# A wall behind you pulls the camera in: hide your own head (or all of you) so it never
 		# fills the screen.
@@ -417,6 +451,9 @@ func _update_visuals(delta: float) -> void:
 	var bracing := (synced_flags & SFLAG_BRACING) != 0
 	var mantling := (synced_flags & SFLAG_MANTLING) != 0
 	var using := (synced_flags & SFLAG_USING_ITEM) != 0
+	var sliding := (synced_flags & SFLAG_SLIDING) != 0
+	if sliding and not model.is_sliding():
+		Sfx.play_at(self, "scrape", global_position, -4.0, randf_range(1.1, 1.3), 30.0)
 	var yaw := body_yaw if multiplayer.is_server() else synced_yaw
 	var p := _pitch if is_local else synced_pitch
 	var yw := _yaw if is_local else synced_yaw
@@ -425,7 +462,7 @@ func _update_visuals(delta: float) -> void:
 	var aiming := held_item_id == "pistol" or (held_item_id == "flashlight" and using)
 	if aiming:
 		yaw = yw  # turn to face where you point it
-	model.animate(delta, _visual_vel, yaw, grounded, bracing, grabbed, mantling, aiming, p)
+	model.animate(delta, _visual_vel, yaw, grounded, bracing, grabbed, mantling, aiming, p, sliding)
 	# Flashlight beam follows your view (local) or the replicated aim (everyone else).
 	var on := held_item_id == "flashlight" and using
 	_flashlight.visible = on
@@ -438,8 +475,8 @@ func _update_visuals(delta: float) -> void:
 		Sfx.start_loop(_jet_sound)
 	elif _jet_sound.playing:
 		_jet_sound.stop()
-	# The capsule follows the replicated crouch on every peer, so collisions match what you see.
-	_apply_capsule(bracing)
+	# The capsule follows the replicated crouch (or slide) on every peer, so collisions match what you see.
+	_apply_capsule(bracing or sliding)
 
 
 func _apply_capsule(crouched: bool) -> void:
@@ -585,6 +622,8 @@ func _server_tick(delta: float) -> void:
 		f |= SFLAG_USING_ITEM
 	if (input_flags & FLAG_RUN) != 0:
 		f |= SFLAG_RUNNING
+	if _slide_t > 0.0 and state == State.NORMAL:
+		f |= SFLAG_SLIDING
 	if Voice.is_peer_talking(peer_id):
 		f |= SFLAG_TALKING
 	synced_flags = f
@@ -634,20 +673,47 @@ func _tick_buff(delta: float) -> void:
 
 func _tick_normal(delta: float) -> void:
 	var on_floor := is_on_floor()
+	_slide_cooldown = maxf(0.0, _slide_cooldown - delta)
+	var brace_now := (input_flags & FLAG_BRACE) != 0
+	var brace_pressed := brace_now and not _brace_was
+	_brace_was = brace_now
+	var horizontal := Vector3(velocity.x, 0.0, velocity.z)
+	# Sprint, then Ctrl: a slide. The speed carries for about a second and bleeds off on a curve,
+	# the capsule is crouch-height so you fit under low things, and the chain yanks whoever you
+	# slide away from exactly as a sprint does.
+	if brace_pressed and on_floor and _slide_t <= 0.0 and _slide_cooldown <= 0.0 \
+			and (input_flags & FLAG_RUN) != 0 and horizontal.length() >= SLIDE_MIN_SPEED:
+		_slide_t = SLIDE_TIME
+		_slide_dir = horizontal.normalized()
+		_crouched = true
+		horizontal = _slide_dir * maxf(horizontal.length(), SLIDE_SPEED * _speed_multiplier())
+		add_noise(NOISE_SLIDE)
 	_tick_crouch(on_floor)
 	var bracing := _crouched and on_floor
-	var target_speed := WALK_SPEED
-	if bracing:
-		target_speed = SNEAK_SPEED
-	elif (input_flags & FLAG_RUN) != 0:
-		target_speed = RUN_SPEED
-	target_speed *= _speed_multiplier()
 	var wish := Vector3(input_move.x, 0.0, input_move.y)
-	var accel := AIR_ACCEL
-	if on_floor:
-		accel = GROUND_ACCEL if wish.length() > 0.1 else GROUND_DECEL
-	var horizontal := Vector3(velocity.x, 0.0, velocity.z)
-	horizontal = horizontal.move_toward(wish * target_speed, accel * delta)
+	var drag := clampf(hold_drag, 0.0, 1.0)
+	hold_drag = 0.0
+	if _slide_t > 0.0:
+		_slide_t -= delta
+		# Ease-out curve: fast at first, then it dies away. Steering is a nudge, not a turn.
+		var u := clampf(_slide_t / SLIDE_TIME, 0.0, 1.0)
+		var speed := lerpf(SLIDE_END_SPEED, SLIDE_SPEED * _speed_multiplier(), u * u) * (1.0 - drag)
+		if wish.length() > 0.1:
+			_slide_dir = _slide_dir.lerp(wish.normalized(), 1.5 * delta).normalized()
+		horizontal = _slide_dir * speed
+		if _slide_t <= 0.0 or not on_floor or speed <= SLIDE_END_SPEED + 0.01:
+			_end_slide()
+	else:
+		var target_speed := WALK_SPEED
+		if bracing:
+			target_speed = SNEAK_SPEED
+		elif (input_flags & FLAG_RUN) != 0:
+			target_speed = RUN_SPEED
+		target_speed *= _speed_multiplier() * (1.0 - drag)
+		var accel := AIR_ACCEL
+		if on_floor:
+			accel = GROUND_ACCEL if wish.length() > 0.1 else GROUND_DECEL
+		horizontal = horizontal.move_toward(wish * target_speed, accel * delta)
 	velocity.x = horizontal.x
 	velocity.z = horizontal.z
 	if not ignore_gravity_this_tick:
@@ -663,8 +729,9 @@ func _tick_normal(delta: float) -> void:
 		velocity.y = JUMP_VELOCITY * (1.15 if buff_state == 1 else 1.0)
 		_jump_buffer = 0.0
 		add_noise(NOISE_JUMP)
-	if wish.length() > 0.1:
-		var want := atan2(-wish.x, -wish.z)
+	var face := _slide_dir if _slide_t > 0.0 else wish
+	if face.length() > 0.1:
+		var want := atan2(-face.x, -face.z)
 		body_yaw += clampf(wrapf(want - body_yaw, -PI, PI), -TURN_SPEED * delta, TURN_SPEED * delta)
 	if not on_floor:
 		_fall_speed = maxf(_fall_speed, -velocity.y)
@@ -679,11 +746,23 @@ func _tick_normal(delta: float) -> void:
 
 ## Crouch down whenever you brace; stand back up only when there's headroom.
 func _tick_crouch(on_floor: bool) -> void:
-	var want := (input_flags & FLAG_BRACE) != 0 and on_floor
+	var want := ((input_flags & FLAG_BRACE) != 0 and on_floor) or _slide_t > 0.0
 	if want:
 		_crouched = true
 	elif _crouched and _headroom():
 		_crouched = false
+
+
+## The slide is over: stand up if there's headroom and Ctrl is up, else stay crouched.
+func _end_slide() -> void:
+	_slide_t = 0.0
+	_slide_cooldown = SLIDE_COOLDOWN
+	if (input_flags & FLAG_BRACE) == 0 and _headroom():
+		_crouched = false
+
+
+func is_sliding() -> bool:
+	return _slide_t > 0.0 and state == State.NORMAL
 
 
 func _headroom() -> bool:
@@ -789,7 +868,7 @@ func chain_weight() -> float:
 
 
 func is_bracing() -> bool:
-	return _crouched and is_on_floor() and state == State.NORMAL
+	return _crouched and is_on_floor() and state == State.NORMAL and _slide_t <= 0.0
 
 
 ## Holding Ctrl with intent (levers, ropes, shutter chains): counts even on the tick the body is
@@ -816,6 +895,7 @@ func teleport_to(pos: Vector3, yaw: float) -> void:
 	grabbed_by = null
 	_jump_buffer = 0.0
 	_fall_speed = 0.0
+	_slide_t = 0.0
 	noise = 0.0
 
 
@@ -823,6 +903,7 @@ func grab_start(by: Node) -> void:
 	state = State.GRABBED
 	grabbed_by = by
 	velocity = Vector3.ZERO
+	_slide_t = 0.0
 
 
 func grab_end() -> void:

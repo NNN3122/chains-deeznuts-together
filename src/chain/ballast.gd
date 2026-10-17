@@ -2,7 +2,7 @@ class_name Ballast
 extends ChainBody
 ## The Ballast: a 35 kg cast-iron hex nut with a smiley face, chained to you when you play solo,
 ## so the chain still matters. It drags, it falls off ledges and pulls you, it gets hoisted, it
-## scrapes loudly enough for the Custodian to hear, and it holds you down when you're grabbed.
+## scrapes loudly enough for the monsters to hear, and it holds you down when you're grabbed.
 ## Lives in every world on every peer; the server turns it on only when exactly one player is in.
 
 const GRAVITY: float = 18.0

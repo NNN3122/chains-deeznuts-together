@@ -8,6 +8,9 @@ signal players_changed
 signal connection_failed(reason: String)
 signal disconnected_from_game(reason: String)
 signal invite_changed
+## Client: the host's world is built differently from ours (another seed, or the Loading Lot).
+## Main rebuilds the world with this config and joins again.
+signal world_mismatch(config: Dictionary)
 
 const DEFAULT_PORT: int = 7777
 const MAX_PLAYERS: int = 6
@@ -16,6 +19,9 @@ const REJECT_GRACE: float = 0.6  # seconds between telling a joiner why and drop
 
 var local_name: String = "Player"
 var is_solo: bool = false
+## How the world is built: {"seed": int, "arena": bool, "horde": int}. The host picks it; every
+## peer must build the same, so a joiner whose config differs is told the host's and rebuilds.
+var world_config: Dictionary = default_world_config()
 ## What the host shows friends: {"state": "opening" | "ready" | "failed" | "off", "code",
 ## "lan", "tailscale", "port", "reason"}. Empty when not hosting.
 var invite: Dictionary = {}
@@ -31,6 +37,22 @@ var ballast: Ballast
 var _next_join_index: int = 0
 var _spawn_counter: int = 0
 var _registered: Dictionary = {}
+
+
+static func default_world_config() -> Dictionary:
+	return {"seed": YellowRooms.DEFAULT_SEED, "arena": false, "horde": HordeArena.HORDE_COUNT}
+
+
+## A fresh building every run: a random seed (the tests pass --seed for a fixed one).
+static func random_world_config(arena: bool) -> Dictionary:
+	var cfg := default_world_config()
+	cfg["seed"] = randi() % 900000 + 1000
+	cfg["arena"] = arena
+	return cfg
+
+
+static func same_world(a: Dictionary, b: Dictionary) -> bool:
+	return int(a.get("seed", 0)) == int(b.get("seed", 0)) and bool(a.get("arena", false)) == bool(b.get("arena", false)) and int(a.get("horde", 0)) == int(b.get("horde", 0))
 
 
 func _ready() -> void:
@@ -249,7 +271,7 @@ func _on_peer_disconnected(id: int) -> void:
 
 
 func _on_connected_to_server() -> void:
-	register_player.rpc_id(1, local_name, get_build_id())
+	register_player.rpc_id(1, local_name, get_build_id(), world_config)
 
 
 func _on_connection_failed() -> void:
@@ -264,7 +286,7 @@ func _on_server_disconnected() -> void:
 
 
 @rpc("any_peer", "call_remote", "reliable")
-func register_player(player_name: String, build: String) -> void:
+func register_player(player_name: String, build: String, config: Dictionary) -> void:
 	if not multiplayer.is_server():
 		return
 	var id := multiplayer.get_remote_sender_id()
@@ -274,19 +296,35 @@ func register_player(player_name: String, build: String) -> void:
 		print("Net: turned away peer %d (build %s, host has %s)" % [id, build.left(12), get_build_id()])
 		_rpc_rejected.rpc_id(id, "Your copy of the game is a different version from the host's. Ask them to send you the latest one.")
 		GameState.post_message_local("%s tried to join with a different version of the game. Send them your latest copy." % player_name.strip_edges().left(16), 6.0)
-		get_tree().create_timer(REJECT_GRACE).timeout.connect(func() -> void:
-			# The joiner usually hangs up on its own first.
-			if multiplayer.multiplayer_peer is ENetMultiplayerPeer and multiplayer.get_peers().has(id):
-				(multiplayer.multiplayer_peer as ENetMultiplayerPeer).disconnect_peer(id))
+		_drop_later(id)
+		return
+	if not same_world(config, world_config):
+		# Their building isn't ours: send them the recipe. They hang up, rebuild, and come back.
+		print("Net: peer %d built world %s, we have %s; sending ours" % [id, config, world_config])
+		_rpc_wrong_world.rpc_id(id, world_config)
+		_drop_later(id)
 		return
 	_spawn_player_for(id, player_name)
 	GameState.post_message("%s clocked in." % player_name.strip_edges(), 3.0)
+
+
+## The joiner usually hangs up on its own first.
+func _drop_later(id: int) -> void:
+	get_tree().create_timer(REJECT_GRACE).timeout.connect(func() -> void:
+		if multiplayer.multiplayer_peer is ENetMultiplayerPeer and multiplayer.get_peers().has(id):
+			(multiplayer.multiplayer_peer as ENetMultiplayerPeer).disconnect_peer(id))
 
 
 @rpc("authority", "call_remote", "reliable")
 func _rpc_rejected(reason: String) -> void:
 	print("Net: the host turned us away: %s" % reason)
 	disconnected_from_game.emit(reason)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _rpc_wrong_world(config: Dictionary) -> void:
+	print("Net: the host's world is %s; rebuilding and joining again" % config)
+	world_mismatch.emit(config)
 
 
 func _spawn_player_for(peer_id: int, player_name: String) -> void:

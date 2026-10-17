@@ -39,7 +39,7 @@ func is_bracing() -> bool:
 	return false
 
 
-## How hard this body holds a grabbed teammate down (the Custodian only lifts).
+## How hard this body holds a grabbed teammate down, or pulls a monster off them.
 func resist_value() -> float:
 	return 1.0 if is_on_floor() else 0.0
 
@@ -49,7 +49,7 @@ func hang_mass() -> float:
 	return 1.0
 
 
-## 0..100: how loud this body is right now (the Custodian hunts by sound).
+## 0..100: how loud this body is right now (monsters come to look at loud things).
 func noise_level() -> float:
 	return 0.0
 

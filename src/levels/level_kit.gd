@@ -450,6 +450,34 @@ static func _make(key: String) -> Material:
 		"party_cloth": return _std(Color(0.95, 0.35, 0.5), 0.8)
 		"camera": return _std(Color(0.85, 0.85, 0.82), 0.4, 0.3)
 		"led_red": return _emissive(Color(1.0, 0.05, 0.05), 5.0)
+		# Level 3 tech: the Loading Lot and the infected.
+		"asphalt": return _std(Color(0.09, 0.09, 0.1), 0.97)
+		"paint": return _std(Color(0.85, 0.8, 0.5), 0.8)
+		"hoarding": return _std(Color(0.2, 0.32, 0.26), 0.55, 0.4)
+		"dumpster": return _std(Color(0.1, 0.3, 0.18), 0.6, 0.3)
+		"van": return _std(Color(0.7, 0.7, 0.68), 0.45, 0.5)
+		"brick": return _std(Color(0.32, 0.17, 0.13), 0.95)
+		"tower": return _std(Color(0.16, 0.18, 0.22), 0.6, 0.3)
+		"tower_far": return _std(Color(0.05, 0.05, 0.07), 0.9)
+		"window_lit": return _emissive(Color(1.0, 0.8, 0.5), 1.6)
+		"window_dark": return _std(Color(0.04, 0.05, 0.07), 0.25, 0.4)
+		"billboard": return _emissive(Color(0.95, 0.85, 0.3), 0.9)
+		"tank": return _std(Color(0.3, 0.2, 0.15), 0.85)
+		"street_lamp": return _emissive(Color(1.0, 0.6, 0.2), 4.0)
+		"jumper_shell": return _std(Color(0.14, 0.16, 0.12), 0.3, 0.2)
+		"jumper_fur": return _std(Color(0.24, 0.2, 0.14), 0.95)
+		"helipad": return _std(Color(0.12, 0.12, 0.13), 0.9)
+		"heli_body": return _std(Color(0.8, 0.78, 0.7), 0.4, 0.4)
+		"heli_glass": return _std(Color(0.1, 0.15, 0.2), 0.1, 0.6)
+		"rotor": return _std(Color(0.08, 0.08, 0.08), 0.5, 0.5)
+		"fire_escape": return _std(Color(0.18, 0.1, 0.08), 0.6, 0.7)
+		"hire_skin": return _std(Color(0.78, 0.74, 0.7), 0.9)
+		"hire_shirt": return _std(Color(0.6, 0.62, 0.66), 0.9)
+		"hire_vest": return _emissive(Color(0.95, 0.42, 0.08), 0.25)
+		"infected_skin": return _std(Color(0.5, 0.55, 0.42), 0.85)
+		"infected_cloth": return _std(Color(0.18, 0.2, 0.26), 0.95)
+		"courier_sash": return _emissive(Color(0.75, 0.85, 0.12), 0.5)
+		"infected_eye": return _emissive(Color(0.9, 0.95, 0.8), 2.5)
 	push_warning("LevelKit: unknown material '%s'" % key)
 	return _std(Color(0.5, 0.5, 0.5))
 
@@ -460,11 +488,30 @@ static func _make(key: String) -> Material:
 static func make_environment(quality: int, level: int = 0) -> Environment:
 	var env := Environment.new()
 	var pizzeria := level == 1
+	var outdoors := level == 2  # the Loading Lot: a sodium dusk, no bounce light to speak of
 	env.background_mode = Environment.BG_COLOR
-	env.background_color = Color(0.008, 0.008, 0.01)
+	env.background_color = Color(0.07, 0.035, 0.03) if outdoors else Color(0.008, 0.008, 0.01)
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	env.ambient_light_color = Color(0.55, 0.42, 0.42) if pizzeria else Color(0.62, 0.55, 0.4)
-	env.ambient_light_energy = 0.11 if pizzeria else 0.09  # rooms are lit by their own tubes, or not at all
+	env.ambient_light_energy = 0.11 if pizzeria else 0.045  # rooms are lit by their own tubes, or not at all; the office is pools of light
+	if outdoors:
+		env.ambient_light_color = Color(0.5, 0.42, 0.5)
+		env.ambient_light_energy = 0.3
+		env.tonemap_mode = Environment.TONE_MAPPER_AGX
+		env.tonemap_exposure = 1.0
+		env.glow_enabled = true
+		env.glow_intensity = 0.6
+		env.glow_hdr_threshold = 1.2
+		env.ssao_enabled = quality >= 1
+		env.fog_enabled = true
+		env.fog_light_color = Color(0.18, 0.1, 0.08)
+		env.fog_density = 0.012
+		env.fog_sky_affect = 0.6
+		env.adjustment_enabled = true
+		env.adjustment_contrast = 1.06
+		env.adjustment_saturation = 0.85
+		env.adjustment_brightness = Settings.brightness
+		return env
 	env.tonemap_mode = Environment.TONE_MAPPER_AGX
 	env.tonemap_exposure = 1.05
 	env.glow_enabled = true
@@ -514,7 +561,7 @@ static func make_camera_attributes() -> CameraAttributesPractical:
 	ca.auto_exposure_scale = 0.45
 	ca.auto_exposure_speed = 1.2
 	ca.auto_exposure_min_sensitivity = 50.0
-	ca.auto_exposure_max_sensitivity = 150.0  # dark stays dark: don't brighten the scary bits
+	ca.auto_exposure_max_sensitivity = 105.0  # dark stays dark: a blackout is not undone by your eyes adjusting
 	return ca
 
 

@@ -5,6 +5,7 @@ extends Control
 signal closed
 
 var _remote: CheckBox
+var _camera: OptionButton
 
 
 func _ready() -> void:
@@ -42,6 +43,19 @@ func _ready() -> void:
 	_check(box, "Fullscreen", Settings.fullscreen, func(on: bool) -> void:
 		Settings.fullscreen = on
 		Settings.apply())
+	var cam_row := HBoxContainer.new()
+	cam_row.add_child(_label("Camera (V flips it in play)"))
+	_camera = OptionButton.new()
+	_camera.add_item("THIRD PERSON")
+	_camera.add_item("FIRST PERSON")
+	_camera.selected = 1 if Settings.first_person else 0
+	_camera.item_selected.connect(func(i: int) -> void:
+		Settings.first_person = i == 1
+		var me := Net.get_local_player()
+		if me != null:
+			me.set_first_person_camera(Settings.first_person))
+	cam_row.add_child(_camera)
+	box.add_child(cam_row)
 	var q_row := HBoxContainer.new()
 	q_row.add_child(_label("Graphics quality"))
 	var q := OptionButton.new()
@@ -61,6 +75,7 @@ func _ready() -> void:
 
 func open() -> void:
 	_remote.button_pressed = Settings.remote_mode
+	_camera.selected = 1 if Settings.first_person else 0  # V may have flipped it since
 	visible = true
 
 

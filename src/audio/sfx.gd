@@ -10,6 +10,7 @@ const IDS: Array[String] = [
 	"whisper", "phone", "slam", "heartbeat", "jet", "gulp", "pickup", "lift", "ding", "tile",
 	"growl", "scrape", "click", "flashlight",
 	"jukebox", "servo", "shutter", "bell", "klaxon", "static", "popper", "airhorn", "birthday", "bang",
+	"screech",
 ]
 
 ## Sounds that get an on-screen caption (Settings.captions), with direction worked out by the HUD.
@@ -19,7 +20,7 @@ const CAPTIONS: Dictionary = {
 	"shot": "gunshot", "squeak": "squeaky toy", "ding": "elevator chime",
 	"servo": "servo whine, rising", "shutter": "a shutter rolls", "bell": "the counter bell rings",
 	"klaxon": "overload klaxon", "popper": "party popper", "airhorn": "AIR HORN", "bang": "BANG on the shutter",
-	"birthday": "the band sings, slowly",
+	"birthday": "the band sings, slowly", "screech": "a SCREECH: it's about to jump",
 }
 
 static var _cache: Dictionary = {}
@@ -154,6 +155,7 @@ static func _build(id: String) -> AudioStreamWAV:
 		"airhorn": return _pack(_airhorn())
 		"birthday": return _pack(_birthday())
 		"bang": return _pack(_bang())
+		"screech": return _pack(_screech())
 	push_warning("Sfx: unknown sound '%s'" % id)
 	return _pack(PackedFloat32Array([0.0]))
 
@@ -620,6 +622,26 @@ static func _birthday() -> PackedFloat32Array:
 		var env := minf(1.0, u * 12.0) * (1.0 if u < 0.85 else exp(-(u - 0.85) * 20.0))
 		lp += a * (voice * env + r.randf_range(-0.04, 0.04) - lp)
 		b[i] = lp
+	return b
+
+
+## The Launcher's tell: a wet throat tearing upward into a shriek, 0.7 s, then it jumps.
+static func _screech() -> PackedFloat32Array:
+	var b := _buf(0.75)
+	var r := _rng(107)
+	var phase := 0.0
+	var lp := 0.0
+	var a := _lp_coef(3200.0)
+	for i in b.size():
+		var t := float(i) / RATE
+		var u := t / 0.75
+		var f := 420.0 + 2200.0 * u * u + 60.0 * sin(TAU * 31.0 * t)
+		phase += f / RATE
+		var saw := 2.0 * (phase - floorf(phase)) - 1.0
+		var grit := r.randf_range(-1.0, 1.0) * (0.5 - 0.3 * u)
+		var env := minf(1.0, t * 30.0) * (1.0 if u < 0.85 else exp(-(u - 0.85) * 40.0))
+		lp += a * ((saw * 0.6 + grit * 0.5 + 0.2 * sin(TAU * f * 0.5 * t)) - lp)
+		b[i] = lp * env * 1.1
 	return b
 
 

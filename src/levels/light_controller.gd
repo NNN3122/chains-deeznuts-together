@@ -1,7 +1,9 @@
 class_name LightController
 extends Node
-## Drives every fluorescent panel on this peer: flicker, dying tubes, dimming near the Custodian,
-## blackout scares, and which few lights near your camera get real shadows. Purely local visuals.
+## Drives every fluorescent panel on this peer: flicker, dying tubes, dimming near a Hollow Hire,
+## blackout scares, whole-floor power stutters (flicker, then dark), and which few lights near
+## your camera get real shadows. Purely local visuals. Tubes registered "safe" (Break Rooms)
+## ignore every blackout, so the route still reads in the dark.
 
 const UPDATE_INTERVAL: float = 0.05
 const SHADOW_LIGHTS: int = 4
@@ -18,6 +20,7 @@ class Tube:
 	var floor_index: int = 0
 	var phase: float = 0.0
 	var hum: AudioStreamPlayer3D
+	var safe: bool = false  # a Break Room tube: never blacks out
 
 var tubes: Array[Tube] = []
 var blackout: bool = false  # the pizzeria's power bank is empty: every tube off
@@ -26,9 +29,11 @@ var _acc: float = 0.0
 var _shadow_t: float = 0.0
 var _shadowed: Array[Tube] = []
 var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
+var _flicker_until: Dictionary = {}  # floor -> msec the strobe/gutter runs to
+var _dark_until: Dictionary = {}  # floor -> msec the floor stays out to (after the flicker)
 
 
-func register(light: OmniLight3D, panel: MeshInstance3D, floor_index: int, kind: int, hum: AudioStreamPlayer3D) -> void:
+func register(light: OmniLight3D, panel: MeshInstance3D, floor_index: int, kind: int, hum: AudioStreamPlayer3D, safe: bool = false) -> void:
 	var t := Tube.new()
 	t.light = light
 	t.panel = panel
@@ -37,7 +42,32 @@ func register(light: OmniLight3D, panel: MeshInstance3D, floor_index: int, kind:
 	t.floor_index = floor_index
 	t.phase = _rng.randf() * 100.0
 	t.hum = hum
+	t.safe = safe
 	tubes.append(t)
+
+
+## A floor's tubes gutter for flicker_s, then stay out for dark_s (0 for a strobe alone).
+func floor_stutter(floor_index: int, flicker_s: float, dark_s: float) -> void:
+	var now := Time.get_ticks_msec()
+	_flicker_until[floor_index] = now + int(flicker_s * 1000.0)
+	_dark_until[floor_index] = now + int((flicker_s + dark_s) * 1000.0)
+
+
+func is_floor_dark(floor_index: int) -> bool:
+	var now := Time.get_ticks_msec()
+	return now >= int(_flicker_until.get(floor_index, 0)) and now < int(_dark_until.get(floor_index, 0))
+
+
+func is_floor_flickering(floor_index: int) -> bool:
+	return Time.get_ticks_msec() < int(_flicker_until.get(floor_index, 0))
+
+
+## Tests: what a tube is putting out right now.
+func tube_energy(light: OmniLight3D) -> float:
+	for t in tubes:
+		if t.light == light:
+			return t.light.light_energy
+	return -1.0
 
 
 func _process(delta: float) -> void:
@@ -50,8 +80,10 @@ func _process(delta: float) -> void:
 	var cam := get_viewport().get_camera_3d()
 	var cam_pos := cam.global_position if cam != null else Vector3.ZERO
 	var cam_floor := int(floor(cam_pos.y / FLOOR_HEIGHT + 0.1))
-	var custodians := get_tree().get_nodes_in_group("custodian")
+	var hires := get_tree().get_nodes_in_group("hire")
 	var pappies := get_tree().get_nodes_in_group("pappy")
+	var now := Time.get_ticks_msec()
+	var scare_flicker := ScareDirector.flicker_active()
 	for tube in tubes:
 		var near_floor := absi(tube.floor_index - cam_floor) <= 1
 		tube.light.visible = near_floor and tube.kind != 3
@@ -64,14 +96,18 @@ func _process(delta: float) -> void:
 		if not near_floor:
 			continue
 		var e := _pattern(tube)
-		for c in custodians:
+		# The Hires carry a static with them: tubes gutter as one walks under, and strobe while
+		# one is running at you.
+		for c in hires:
 			var cn := c as Node3D
+			if bool(c.call("is_dead")):
+				continue
 			var d := Vector2(cn.global_position.x - tube.light.global_position.x, cn.global_position.z - tube.light.global_position.z).length()
-			if d < CUSTODIAN_DIM_RADIUS and absf(cn.global_position.y - tube.light.global_position.y) < 3.0:
+			if d < CUSTODIAN_DIM_RADIUS and absf(cn.global_position.y - tube.light.global_position.y) < 3.5:
 				var k := d / CUSTODIAN_DIM_RADIUS
 				var hunting: bool = c.call("is_hunting")
-				e *= lerpf(0.15 if hunting else 0.45, 1.0, k)
-				if hunting and _rng.randf() < 0.25:
+				e *= lerpf(0.2 if hunting else 0.5, 1.0, k)
+				if hunting and _rng.randf() < 0.3:
 					e *= 0.2
 		# The chef draws current: lights near him gutter, and strobe while he's unwatched.
 		for pp in pappies:
@@ -84,10 +120,18 @@ func _process(delta: float) -> void:
 				e *= lerpf(0.35, 1.0, k)
 				if not bool(pp.get("watched")) and _rng.randf() < 0.2:
 					e *= 0.25
-		if ScareDirector.blackout_active() and tube.light.global_position.distance_to(ScareDirector.blackout_center) < ScareDirector.blackout_radius:
-			e = 0.0
-		if blackout:
-			e = 0.0
+		if not tube.safe:
+			if ScareDirector.blackout_active() and tube.light.global_position.distance_to(ScareDirector.blackout_center) < ScareDirector.blackout_radius:
+				e = 0.0
+			elif scare_flicker and tube.light.global_position.distance_to(ScareDirector.flicker_center) < ScareDirector.flicker_radius:
+				e *= _gutter(tube)
+			# The floor's power: a gutter first, then out, with the odd pop of a tube trying.
+			if now < int(_flicker_until.get(tube.floor_index, 0)):
+				e *= _gutter(tube)
+			elif now < int(_dark_until.get(tube.floor_index, 0)):
+				e = 0.5 if fmod(_t + tube.phase, 4.3) < 0.05 else 0.0
+			if blackout:
+				e = 0.0
 		tube.light.light_energy = tube.base_energy * e
 		tube.panel.set_instance_shader_parameter("glow", e)
 		if tube.hum != null:
@@ -95,6 +139,12 @@ func _process(delta: float) -> void:
 	if _shadow_t <= 0.0:
 		_shadow_t = SHADOW_REFRESH
 		_pick_shadow_lights(cam_pos)
+
+
+## A guttering tube: a 2.5 Hz pulse between a quarter and full, with random drops to nothing.
+func _gutter(tube: Tube) -> float:
+	var pulse := 1.0 if fmod(_t * 2.5 + tube.phase * 0.1, 1.0) < 0.5 else 0.25
+	return 0.0 if _rng.randf() < 0.2 else pulse
 
 
 func _pattern(tube: Tube) -> float:

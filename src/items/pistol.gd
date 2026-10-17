@@ -1,6 +1,6 @@
 extends ItemBase
 ## The Snubby: a 6-round magazine and a pocket of spares. T reloads (or fire on empty). Two hits
-## make the Custodian let go and retreat, but every shot is the loudest thing in the building.
+## drop a Hollow Hire, but every shot is the loudest thing in the building.
 ## Hitting a teammate just shoves them (and the chain with them). Ammo boxes top up the pocket.
 
 const MAG: int = 6
@@ -49,7 +49,13 @@ func _tick(delta: float, _held: bool, pressed: bool) -> void:
 	q.exclude = [holder.get_rid()]
 	var hit := holder.get_world_3d().direct_space_state.intersect_ray(q)
 	var to := from + dir * RANGE
-	if not hit.is_empty():
+	# The horde isn't physics: it tests the ray itself, and whichever is nearer takes the round.
+	var horde := holder.get_tree().get_first_node_in_group("horde")
+	var world_d := from.distance_to(hit["position"]) if not hit.is_empty() else RANGE
+	var horde_d := float(horde.call("hit_ray", from, dir, world_d)) if horde != null else -1.0
+	if horde_d >= 0.0:
+		to = from + dir * horde_d
+	elif not hit.is_empty():
 		to = hit["position"]
 		var col: Object = hit["collider"]
 		if col is Area3D and (col as Node).get_parent() != null and (col as Node).get_parent().has_method("take_hit"):

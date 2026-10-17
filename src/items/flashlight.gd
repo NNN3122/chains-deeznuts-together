@@ -1,7 +1,7 @@
 extends ItemBase
-## Flashlight: F toggles it. Lights the dark rooms, and holding the beam on the Custodian's stain
-## (or on it while it has someone) burns it until it lets go and retreats. The burn check lives
-## in the Custodian, which looks for players whose flashlight is_active.
+## Flashlight: F toggles it. Lights the dark rooms, and holding the beam on a monster's face (a Hire,
+## a Launcher, Pappy while he holds someone) stuns it or makes it let go. The burn checks live
+## in the monsters, which look for players whose flashlight is_active.
 
 
 func _tick(_delta: float, _held: bool, pressed: bool) -> void:

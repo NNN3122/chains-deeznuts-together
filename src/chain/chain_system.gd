@@ -25,6 +25,9 @@ const LINK_SPACING: float = 0.11  # m between link centers (links overlap so the
 const MAX_LINKS_PER_SEGMENT: int = 60
 const JERK_NOISE: float = 22.0
 
+## Server: a segment just snapped from slack to taut (the horde lets go of it).
+signal jerked(segment: Segment)
+
 
 class Segment:
 	var a: ChainBody
@@ -302,6 +305,7 @@ func _detect_jerks(delta: float) -> void:
 				for body in [s.a, s.b]:
 					if body is Player:
 						(body as Player).add_noise(JERK_NOISE)
+				jerked.emit(s)
 		# Idle rattle while the chain swings.
 		s.rattle_time -= delta
 		var speed := (s.points[ROPE_POINTS / 2] - s.prev[ROPE_POINTS / 2]).length() / maxf(delta, 0.0001)

@@ -22,6 +22,7 @@ const DOOR_H: float = 2.3
 const STAGE_H: float = 0.7
 const LOFT_H: float = 2.0  # above the stage floor: one case (1 m) and one mantle up
 const SEED: int = 2207
+var seed_value: int = YellowRooms.DEFAULT_SEED  # the run's seed: the plans are fixed, the dressing (tables, boxes, posters) is not
 const DUMB_HOLE: float = 1.7
 const DUMB_OFF: Vector3 = Vector3(-1.6, 0.0, -1.6)  # the dumbwaiter shaft sits in its cell's corner
 const LIFT_HOLE: float = 3.0
@@ -113,6 +114,8 @@ const POSTERS: Array[String] = [
 
 var arrive_center: Vector3 = Vector3.ZERO  # set by LevelStack before _ready: floor-level car center
 var checkpoint_base: int = 4
+var top_y: float = INF  # set by LevelStack: above this the Line is on the roof and the shift is over
+var roof: Callable = Callable()  # set by LevelStack: called when the hatch opens (else the loft is the escape)
 var test_points: Dictionary = {}
 var desks: Array[SecurityDesk] = []
 var shutters: Array[Shutter] = []
@@ -227,10 +230,11 @@ func blackout() -> bool:
 	return power <= 0.0
 
 
-## True once anyone on the Line has reached the pizzeria (the car counts on its way up).
+## True once anyone on the Line has reached the pizzeria (the car counts on its way up) and
+## nobody has climbed out through the roof hatch yet: above top_y the night shift is over.
 func anyone_here() -> bool:
 	for p in Net.get_players():
-		if p.global_position.y > _origin.y - 1.0:
+		if p.global_position.y > _origin.y - 1.0 and p.global_position.y < top_y:
 			return true
 	return false
 
@@ -357,7 +361,7 @@ func _build_floor(f: int) -> void:
 	add_child(root)
 	var batch := LevelKit.BoxBatch.new()
 	var rng := RandomNumberGenerator.new()
-	rng.seed = SEED + f * 131
+	rng.seed = SEED + seed_value + f * 131
 	var base := _origin.y + float(f) * FLOOR_H
 	var ceil_h: float = CEIL_HS[f]
 	var floor_key := "ktile" if f == 1 else "checker"
@@ -1549,7 +1553,12 @@ func _tick_exit(delta: float) -> void:
 	_exit_t += delta
 	if _exit_t >= EXIT_DELAY:
 		GameState.complete_task(2)
-		GameState.set_escaped()
+		if roof.is_valid():
+			# The Stack takes it from here: out of the hatch onto the roof, where Level 3 waits.
+			_exit_t = -1.0
+			roof.call()
+		else:
+			GameState.set_escaped()
 
 
 @rpc("authority", "call_local", "reliable")

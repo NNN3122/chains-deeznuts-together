@@ -2,7 +2,7 @@ class_name Thrown
 extends Node3D
 ## A thrown decoy or bomb. Spawned by the server through Net's thrown spawner; the server
 ## simulates the arc with raycasts (bounces, then rests), clients interpolate the synced position.
-## Decoy: squeaks for DECOY_TIME, the loudest thing on the floor, so the Custodian goes for it.
+## Decoy: squeaks for DECOY_TIME, the loudest thing on the floor, so the Hires (and the horde) go to it.
 ## Bomb: fuse, then a blast that launches everyone nearby (chain included) and scares it off.
 
 const GRAVITY: float = 18.0
@@ -111,9 +111,14 @@ func _explode() -> void:
 		away.y = 0.0
 		away = away.normalized() if away.length() > 0.05 else Vector3.ZERO
 		body.apply_knockback(away * 9.0 * k + Vector3.UP * (5.0 + 6.0 * k))
-	for c in get_tree().get_nodes_in_group("custodian"):
-		if c.has_method("blast") and (c as Node3D).global_position.distance_to(pos) < BLAST_RADIUS + 3.0:
+	for c in get_tree().get_nodes_in_group("monster"):
+		var cp := (c as Node3D).global_position
+		# Same floor only: a blast doesn't kill through a 5 m concrete slab.
+		if c.has_method("blast") and cp.distance_to(pos) < BLAST_RADIUS + 3.0 and absf(cp.y - pos.y) < 3.5:
 			c.call("blast")
+	var horde := get_tree().get_first_node_in_group("horde")
+	if horde != null:
+		horde.call("blast", pos, BLAST_RADIUS)
 
 
 func _local_fx(delta: float) -> void:

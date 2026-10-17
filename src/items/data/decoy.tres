@@ -7,8 +7,8 @@
 script = ExtResource("1_data")
 id = "decoy"
 display_name = "Squeaky Dennis"
-description = "Throw it. It squeaks. Something comes for it instead of you."
+description = "Throw it. It squeaks for eight seconds, and every Hollow Hire on the floor goes and stares at it instead of you."
 color = Color(1, 0.85, 0.1, 1)
 rarity = 0
 logic_script = ExtResource("2_logic")
-hud_hint = "F throws it"
+hud_hint = "F throws it: the Hires go to IT, not you (8 s)"

@@ -13,6 +13,8 @@ var _status: Label
 var _join_box: VBoxContainer
 var _title: Label
 var _footer: Label
+var _level_button: Button
+var _arena: bool = false  # PLAY SOLO / HOST build the Loading Lot instead of the building
 var _t: float = 0.0
 
 
@@ -56,6 +58,9 @@ func _ready() -> void:
 	_name.max_length = 16
 	name_row.add_child(_name)
 	col.add_child(name_row)
+	_level_button = UiTheme.button("", _on_level_toggle)
+	_refresh_level_button()
+	col.add_child(_level_button)
 	col.add_child(UiTheme.button("PLAY SOLO", _on_solo))
 	col.add_child(UiTheme.button("HOST CO-OP", _on_host))
 	col.add_child(UiTheme.button("JOIN CO-OP", _on_join_toggle))
@@ -94,11 +99,31 @@ func _process(delta: float) -> void:
 	# The sign is on the same dodgy circuit as everything else.
 	var f := sin(_t * 17.0) * sin(_t * 5.3)
 	_title.modulate.a = 0.35 if f > 0.93 else 1.0
-	_footer.text = "Level 1 of 5: The Yellow Rooms   |   Remote Controls: %s (Settings)   |   Esc pauses in game   |   build %s" % ["ON" if Settings.remote_mode else "OFF", Net.get_build_id()]
+	var where := "Level 3 of 5 straight in: the roof lot" if _arena else "Levels 1-3 of 5: The Yellow Rooms, the Night Shift, the roof lot"
+	_footer.text = "%s   |   Remote Controls: %s (Settings)   |   Esc pauses in game   |   build %s" % [where, "ON" if Settings.remote_mode else "OFF", Net.get_build_id()]
 
 
 func show_status(text: String) -> void:
 	_status.text = text
+
+
+## Which world PLAY SOLO and HOST build: the building (a new layout every run) or the Lot.
+func arena_selected() -> bool:
+	return _arena
+
+
+func set_arena(on: bool) -> void:
+	_arena = on
+	_refresh_level_button()
+
+
+func _on_level_toggle() -> void:
+	set_arena(not _arena)
+
+
+func _refresh_level_button() -> void:
+	if _level_button != null:
+		_level_button.text = "START:  THE ROOF, LEVEL 3  (the Loading Lot, straight in)" if _arena else "START:  THE BUILDING, B4  (a new layout every run)"
 
 
 func player_name() -> String:

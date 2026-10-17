@@ -10,6 +10,14 @@ extends Node
 ##   --smoke [--smoke-players=N] / --smoke-client             run tests/smoke_test.gd
 ##   --smoke-only=NAME             run just _test_NAME (e.g. crouch, p_lift) after the setup checks
 ##   --shots=DIR                                              save screenshots (tests/screenshots.gd)
+##   --arena [--horde=N]           the Loading Lot: the Level 3 horde test block instead of the building
+##   --seed=N                      build the building from this seed (the title picks a random one;
+##                                 command-line runs default to the fixed test seed)
+##   --bench=SECONDS               print the frame rate after that long, then quit
+##   --bots=N                      host N extra players nobody controls (load tests: a six-body Line)
+##
+## The host's world config (seed, lot or building, crowd size) travels in the join handshake: a
+## joiner who built something else is sent the host's config, rebuilds, and joins again.
 
 var title: TitleMenu
 var settings_panel: SettingsPanel
@@ -20,7 +28,16 @@ var screen_fx: ScreenFx
 var world: Node3D
 var backdrop: MenuBackdrop
 var in_game: bool = false
+var bots: int = 0
 var _settings_from_pause: bool = false
+var _join_ip: String = ""
+var _join_port: int = Net.DEFAULT_PORT
+var _join_name: String = ""
+var _rejoined: bool = false  # this join already rebuilt the world once for the host's config
+var _bench_t: float = -1.0
+var _bench_frames: int = 0
+var _bench_sample_t: float = 1.0
+var _bench_samples: Array[int] = []
 
 
 func _ready() -> void:
@@ -43,9 +60,9 @@ func _ready() -> void:
 	add_child(ui)
 	title = TitleMenu.new()
 	ui.add_child(title)
-	title.solo_requested.connect(func(n: String) -> void: _start("solo", n, "", 0))
-	title.host_requested.connect(func(n: String, port: int) -> void: _start("host", n, "", port))
-	title.join_requested.connect(func(n: String, ip: String, port: int) -> void: _start("join", n, ip, port))
+	title.solo_requested.connect(func(n: String) -> void: _start("solo", n, "", 0, true))
+	title.host_requested.connect(func(n: String, port: int) -> void: _start("host", n, "", port, true))
+	title.join_requested.connect(func(n: String, ip: String, port: int) -> void: _start("join", n, ip, port, true))
 	title.settings_requested.connect(func() -> void: _open_settings(false))
 	pause_menu = PauseMenu.new()
 	pause_menu.visible = false
@@ -66,6 +83,7 @@ func _ready() -> void:
 	settings_panel.closed.connect(_on_settings_closed)
 	Net.disconnected_from_game.connect(_leave_to_title)
 	Net.connection_failed.connect(_leave_to_title)
+	Net.world_mismatch.connect(_on_world_mismatch)
 	GameState.escaped_changed.connect(_on_escaped)
 	_show_title("")
 	if Settings.remote_autodetected:
@@ -81,6 +99,8 @@ func _exit_tree() -> void:
 	Sfx._cache.clear()
 	Sfx._one_shots.clear()
 	LevelKit._mats.clear()
+	HordeMesh._meshes.clear()
+	HordeMesh._materials.clear()
 	ItemRegistry._by_id.clear()
 	UiTheme._theme = null
 	UiTheme._title = null
@@ -96,6 +116,7 @@ func _handle_cmdline(args: PackedStringArray) -> void:
 	var smoke_only := ""
 	var shots := ""
 	var port := Net.DEFAULT_PORT
+	var cfg := Net.default_world_config()
 	for a in args:
 		if a.begins_with("--port="):
 			port = clampi(a.trim_prefix("--port=").to_int(), 1, 65535)
@@ -123,20 +144,38 @@ func _handle_cmdline(args: PackedStringArray) -> void:
 			smoke_only = a.trim_prefix("--smoke-only=")
 		elif a.begins_with("--shots="):
 			shots = a.trim_prefix("--shots=")
-			mode = "solo"
+			if mode == "":
+				mode = "solo"
+		elif a == "--arena":
+			cfg["arena"] = true
+		elif a.begins_with("--horde="):
+			cfg["horde"] = clampi(a.trim_prefix("--horde=").to_int(), 0, Horde.MAX_AGENTS)
+		elif a.begins_with("--seed="):
+			cfg["seed"] = a.trim_prefix("--seed=").to_int()
+		elif a.begins_with("--bench="):
+			_bench_t = maxf(1.0, a.trim_prefix("--bench=").to_float())
+		elif a.begins_with("--bots="):
+			bots = clampi(a.trim_prefix("--bots=").to_int(), 0, Net.MAX_PLAYERS - 1)
 		elif a.begins_with("--title-shot="):
+			title.set_arena(bool(cfg["arena"]))
 			var cam_title: Node = load("res://tests/screenshots.gd").new()
 			cam_title.set("out_dir", a.trim_prefix("--title-shot="))
 			cam_title.set("title_only", true)
 			add_child(cam_title)
 			return
+	title.set_arena(bool(cfg["arena"]))
 	if mode == "":
 		return
 	if player_name == "":
 		player_name = title.player_name()
-	_start(mode, player_name, ip, port)
+	Net.world_config = cfg
+	_start(mode, player_name, ip, port, false)
 	if world == null:
 		return
+	if bots > 0 and multiplayer.is_server():
+		# Extra bodies on the Line with nobody behind them: they stand where they spawn.
+		for k in bots:
+			Net.call("_spawn_player_for", 1000 + k, "Bot %d" % (k + 1))
 	if smoke != "":
 		var test: Node = load("res://tests/smoke_test.gd").new()
 		test.name = "SmokeTest"
@@ -153,7 +192,15 @@ func _handle_cmdline(args: PackedStringArray) -> void:
 
 # --- Flow ------------------------------------------------------------------------------------
 
-func _start(mode: String, player_name: String, ip: String, port: int) -> void:
+## from_title: a fresh random building (or the Lot the title has selected); a joiner starts with
+## the default building and is handed the host's config if it differs.
+func _start(mode: String, player_name: String, ip: String, port: int, from_title: bool) -> void:
+	if from_title:
+		Net.world_config = Net.random_world_config(title.arena_selected()) if mode != "join" else Net.default_world_config()
+	_rejoined = false
+	_join_ip = ip
+	_join_port = port
+	_join_name = player_name
 	_build_world()
 	var err := OK
 	match mode:
@@ -169,8 +216,8 @@ func _start(mode: String, player_name: String, ip: String, port: int) -> void:
 		return
 	_enter_game(mode.to_upper(), player_name)
 	if multiplayer.is_server():
-		var level := world.get_node("Level") as LevelStack
-		level.server_populate()
+		var level := world.get_node("Level")
+		level.call("server_populate")
 		ScareDirector.reset_director()
 		if mode == "host":
 			GameState.post_message("You're hosting. Press Esc to copy the invite code for your friends.", 6.0)
@@ -215,6 +262,23 @@ func _leave_to_title(reason: String) -> void:
 	_show_title(reason)
 
 
+## The host builds another world than ours (its own seed, or the Loading Lot): hang up, build
+## theirs, and join again. Once; a second mismatch means something is really wrong.
+func _on_world_mismatch(config: Dictionary) -> void:
+	if _rejoined or not in_game:
+		_leave_to_title("Couldn't build the host's world. Try joining again.")
+		return
+	_rejoined = true
+	Net.leave()
+	_teardown_world()
+	Net.world_config = config
+	_build_world()
+	GameState.post_message_local("Building the host's %s ..." % ("Loading Lot" if bool(config.get("arena", false)) else "building"), 4.0)
+	var err := Net.join(_join_ip, _join_port, _join_name)
+	if err != OK:
+		_leave_to_title("Couldn't reconnect to the host (error %d)." % err)
+
+
 func _set_ui_blocking(blocking: bool) -> void:
 	GameState.ui_blocking = blocking
 	if blocking:
@@ -226,6 +290,38 @@ func _set_ui_blocking(blocking: bool) -> void:
 			Input.warp_mouse(get_viewport().get_visible_rect().size * 0.5)  # not against an edge (that turns)
 	else:
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+
+## --bench=N: the frame rate sampled once a second for N seconds, with the Line parked where the
+## crowd will reach it, then printed and the game quits. The worst second is the number to watch.
+func _process(delta: float) -> void:
+	if _bench_t <= 0.0 or not in_game:
+		return
+	if _bench_frames == 0:
+		var me := Net.get_local_player()
+		var level := get_tree().get_first_node_in_group("level")
+		if me != null and level != null and level is HordeArena:
+			me.bot_controlled = true
+			(level as HordeArena).debug_spawn_all_rounds()
+			for b in Net.get_chain_bodies():
+				b.teleport_to((level as HordeArena).test_points["north"] + Vector3(1.2 * float(b.join_index % 6), 0.0, 1.0), 0.0)
+	_bench_frames += 1
+	_bench_t -= delta
+	_bench_sample_t -= delta
+	if _bench_sample_t <= 0.0:
+		_bench_sample_t = 1.0
+		_bench_samples.append(Engine.get_frames_per_second())
+	if _bench_t <= 0.0:
+		var horde := get_tree().get_first_node_in_group("horde")
+		var worst := 100000
+		var sum := 0
+		for s in _bench_samples:
+			worst = mini(worst, s)
+			sum += s
+		print("[bench] fps per second: %s" % [_bench_samples])
+		print("[bench] worst %d FPS, mean %d FPS, %s" % [worst, sum / maxi(1, _bench_samples.size()), String(horde.call("stats_text")) if horde != null else "no horde"])
+		print("[bench] quality %d, window %s, %d bodies on the Line" % [Settings.quality, get_window().size, Net.get_chain_bodies().size()])
+		get_tree().quit()
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -280,7 +376,17 @@ func _build_world() -> void:
 	world = Node3D.new()
 	world.name = "World"
 	add_child(world)
-	var level := LevelStack.new()  # the whole building: the Yellow Rooms with the pizzeria on top
+	var cfg := Net.world_config
+	var level: Node3D
+	if bool(cfg.get("arena", false)):
+		var arena := HordeArena.new()  # the Level 3 test block: a lot, a fence, a thousand infected
+		arena.horde_count = int(cfg.get("horde", HordeArena.HORDE_COUNT))
+		arena.seed_value = int(cfg.get("seed", YellowRooms.DEFAULT_SEED))
+		level = arena
+	else:
+		var stack := LevelStack.new()  # the whole building: the Yellow Rooms with the pizzeria on top
+		stack.seed_value = int(cfg.get("seed", YellowRooms.DEFAULT_SEED))
+		level = stack
 	level.name = "Level"
 	world.add_child(level)
 	_add_spawned_root("Players", "PlayerSpawner", Net.spawn_player_node)
@@ -296,7 +402,7 @@ func _build_world() -> void:
 	chain.name = "Chain"
 	world.add_child(chain)  # last, so it runs after every body has moved this tick
 	Net.bind_world(world)
-	GameState.reset_run(level.spawn_position, level.spawn_facing, YellowRooms.OBJECTIVES[0])
+	GameState.reset_run(level.get("spawn_position"), level.get("spawn_facing"), String(level.call("first_objective")))
 
 
 func _add_spawned_root(root_name: String, spawner_name: String, fn: Callable) -> void:

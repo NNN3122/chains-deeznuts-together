@@ -7,12 +7,14 @@ const HELP_TEXT: String = """CONTROLS  (H hides this)
 Move: WASD, or Up/Down arrows to walk and Left/Right or Q/E to turn
 Run: Shift     Jump: Space (jump into a ledge to climb it)
 Brace / sneak: hold Ctrl or C (anchor the chain, move quietly)
+Slide: run with Shift, then tap Ctrl (fits under low things; dodges a lunge; yanks the chain)
 Look: move the mouse (push it against the side of the window to keep turning)
 Use item: F or left click     Drop: G     Camera: V     Reload: T
 Items: 1 / 2 / 3 or the mouse wheel picks which of your three you hold
 Auto-walk: R     Pause and settings: Esc     Voice: just talk (proximity: close friends hear you)
 
-The thing in the ceiling hunts by sound. Running, shooting, falling and a rattling chain are loud. If it grabs someone, stand next to them and BRACE.
+The Hollow Hires walk the route and stop to look round. If one SEES you it screams, the others answer and come running: run, or fight. A flashlight in its face stuns it, two Snubby rounds drop it. Crouching makes you harder to spot (pass behind them); loud noises bring them to look. Throw Squeaky Dennis and they go to him instead. If one grabs someone, stand next to them and BRACE. Break Rooms are safe.
+The route is loud: jammed doors open to a sprint, the fire alarm releases B3's lift, the hatch over B2's shaft stays open 25 s. When the power stutters out, that's what the flashlight is for.
 Upstairs in the pizzeria: Pappy only moves while nobody looks at him and no camera shows him. Stand at a security desk for cameras (F flips them), hold Ctrl at a shutter to keep it down."""
 
 var screen_fx: ScreenFx
@@ -55,14 +57,22 @@ var _voice_label: Label
 
 ## One-time tips the first time you reach each climb: [test point, co-op text, solo text].
 const HINTS: Array = [
-	["spawn", "YOU'RE CHAINED TOGETHER (%.0f m of slack). Follow the green THIS WAY signs up through the building. Ctrl crouches and braces the chain; Shift runs, loudly." % 4.3,
-		"YOU'RE CHAINED TO THE BALLAST (%.0f m of slack). Follow the green THIS WAY signs up through the building. Ctrl crouches and braces; Shift runs, loudly." % 4.3],
+	["spawn", "YOU'RE CHAINED TOGETHER (%.0f m of slack). Follow the green THIS WAY signs up. Things in vests walk the route and stop to look round: if one SEES you it calls the others. Run, or fight (light in its face, two shots)." % 4.3,
+		"YOU'RE CHAINED TO THE BALLAST (%.0f m of slack). Follow the green THIS WAY signs up. Things in vests walk the route and stop to look round: if one SEES you it calls the others. Run, or fight (light in its face, two shots)." % 4.3],
+	["door0", "JAMMED DOOR: sprint into it and it bangs open. Everything on the floor will come to look. Be through and gone, or ready.",
+		"JAMMED DOOR: sprint into it and it bangs open. Everything on the floor will come to look. Your Ballast gets dragged through after you."],
 	["crates_start", "CLIMB: walk into the crate and tap Space. Do the same at each ledge.",
 		"CLIMB: walk into the crate and tap Space. Your Ballast follows on the chain."],
+	["alarm", "FIRE ALARM: hold Ctrl here. It releases the lift's lock-out and wakes the floor for 40 seconds. Then one on the plate, the rest on the lift, and hoist.",
+		"FIRE ALARM: hold Ctrl here. It releases the lift's lock-out and wakes the floor for 40 seconds. Then the plate, then the lift. Don't dawdle."],
 	["plate", "THE LIFT: one of you stands on the yellow plate; the lift rises a moment later. Then hoist that person up with the chain.",
 		"THE LIFT: step on the yellow plate (it locks), then hop onto the lift."],
+	["hatch_switch", "HATCH RELEASE: hold Ctrl here. The hatch over the shelf shaft opens for 25 seconds. Then RUN, everyone, and get up through it before it slams.",
+		"HATCH RELEASE: hold Ctrl here. The hatch over the shelf shaft opens for 25 seconds. Then RUN for the shaft with the jetpack and go up."],
 	["boost_shelf", "TOO TALL: from the shelf, climb onto a teammate's head. Or use the jetpack in this room.",
 		"TOO TALL: grab the jetpack in this room, stand under the hole and hold F."],
+	["door3", "JAMMED DOOR: sprint into it. The elevator is past it. When something screams behind you, don't stop.",
+		"JAMMED DOOR: sprint into it. The elevator is past it. When something screams behind you, don't stop."],
 	["exit", "THE WAY UP: everyone into the freight elevator. It goes up to the pizzeria.",
 		"THE WAY UP: step into the freight elevator with your Ballast. It goes up to the pizzeria."],
 	["p_arrive", "NIGHT SHIFT: he only moves while nobody is looking at him and no camera shows him. Keep eyes on him. Split up: cameras, shutter, climbers.",
@@ -81,6 +91,12 @@ const HINTS: Array = [
 		"CABLE TRAY: a narrow ledge with a stash at the end. Your Ballast drags on you if you dawdle."],
 	["p_rail_start", "FLY RAIL: planks over the band, a stash at the end. Jump one plank at a time; a slip yanks your partner off theirs.",
 		"FLY RAIL: planks over the band, a stash at the end. One plank at a time."],
+	["l_spawn", "THE ROOF: they came out of the walls. Keep moving; three on your chain stops you (shoot, bomb, horn, or a teammate sprints). Over the fence, through the gap, up the fire escape to the helicopter.",
+		"THE ROOF: they came out of the walls. Keep moving; three on your chain stops you (shoot, bomb, or horn). Over the fence by the dumpster, through the gap, up the fire escape to the helicopter."],
+	["l_fence_dumpster", "THE FENCE: climb the dumpster, or a teammate's head. The swarm has to go the long way round.",
+		"THE FENCE: climb the dumpster. The swarm has to go the long way round."],
+	["l_escape_foot", "THE FIRE ESCAPE: ledge by ledge, walk into each one and tap Space. Nothing with legs follows you up; the bats do. Whoever's below braces if someone slips.",
+		"THE FIRE ESCAPE: ledge by ledge, walk into each one and tap Space. Your Ballast comes up on the chain. The bats come too."],
 ]
 
 
@@ -208,7 +224,7 @@ func _ready() -> void:
 	_crosshair.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	root.add_child(_crosshair)
 
-	_grab_label = UiTheme.heading("IT HAS YOU\nshine a light at it, shoot it, or get your team to BRACE beside you", 30, UiTheme.DANGER)
+	_grab_label = UiTheme.heading("IT HAS YOU\na light in its face, a shot, or your team BRACING beside you", 30, UiTheme.DANGER)
 	_grab_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_grab_label.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM, Control.PRESET_MODE_MINSIZE, 150)
 	_grab_label.grow_horizontal = Control.GROW_DIRECTION_BOTH
@@ -355,9 +371,12 @@ func _tick_captions(delta: float) -> void:
 func _check_hints(me: Player, level: Node) -> void:
 	var tp: Dictionary = level.get("test_points")
 	var solo := Net.get_players().size() == 1
+	var lot_only := level is HordeArena  # the lot on its own: only its own hints apply
 	for h in HINTS:
 		var key: String = h[0]
 		if _hints_shown.has(key) or not tp.has(key) or not (tp[key] is Vector3):
+			continue
+		if lot_only and not key.begins_with("l_"):
 			continue
 		var p: Vector3 = tp[key]
 		var d := Vector2(p.x - me.global_position.x, p.z - me.global_position.z).length()
@@ -409,8 +428,12 @@ func _process(delta: float) -> void:
 	_fps_t -= delta
 	if _fps_t <= 0.0:
 		_fps_t = 0.5
-		_fps_label.visible = Settings.show_fps
+		var horde := get_tree().get_first_node_in_group("horde")
+		var crowd_awake := horde != null and bool(horde.get("enabled"))
+		_fps_label.visible = Settings.show_fps or crowd_awake
 		_fps_label.text = "%d FPS" % Engine.get_frames_per_second()
+		if crowd_awake:
+			_fps_label.text += "\n" + String(horde.call("stats_text"))
 		_update_invite_label()
 	if me == null:
 		return
@@ -470,7 +493,7 @@ func _process(delta: float) -> void:
 			hunted = true
 			by_pappy = c is PappyPepperoni
 	if hunted:
-		_noise_label.text = "HE'S COMING FOR YOU" if by_pappy else "IT HEARS YOU"
+		_noise_label.text = "HE'S COMING FOR YOU" if by_pappy else "IT SEES YOU"
 		_noise_label.add_theme_color_override("font_color", UiTheme.DANGER if fmod(_t, 0.5) < 0.3 else UiTheme.PAPER)
 	else:
 		_noise_label.text = "NOISE"

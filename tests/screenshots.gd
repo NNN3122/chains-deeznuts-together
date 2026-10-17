@@ -20,14 +20,19 @@ func _ready() -> void:
 		return
 	await _wait(3.0)
 	_host = Net.find_player(1)
-	_stack = get_tree().get_first_node_in_group("level") as LevelStack
+	var level_node := get_tree().get_first_node_in_group("level")
+	if _host != null and level_node is HordeArena:
+		await _tour_arena(level_node as HordeArena)
+		get_tree().quit()
+		return
+	_stack = level_node as LevelStack
 	if _host == null or _stack == null:
 		get_tree().quit(1)
 		return
 	_level = _stack.yellow
 	_host.bot_controlled = true
-	for c in get_tree().get_nodes_in_group("custodian"):
-		(c as Custodian).debug_frozen = true
+	for c in get_tree().get_nodes_in_group("hire"):
+		(c as HollowHire).debug_frozen = true
 	var hud := get_tree().current_scene.get("hud") as Hud
 	if hud != null:
 		hud.set_help_visible(false)
@@ -54,21 +59,30 @@ func _ready() -> void:
 		_use()
 		await _shot("06_dark_room_flashlight", _level.cell_center(0, dark) + Vector3(0.0, 0.1, 2.0), 0.0, -0.1, true)
 		_host.server_drop_item(false)
-	# The Custodian hunting overhead, then grabbing.
-	var c0: Custodian = null
-	for c in get_tree().get_nodes_in_group("custodian"):
-		if (c as Custodian).floor_index == 0:
-			c0 = c
+	# A Hollow Hire down the hall, then running at you, then on top of you.
+	var h0: HollowHire = _level.hires_on(0)[0]
 	var path: Array[Vector2i] = f0["path"]
-	var spot := _level.cell_center(0, path[mini(2, path.size() - 1)]) + Vector3(0.0, 0.1, 0.0)
-	c0.debug_reset(spot + Vector3(0.0, 0.0, -3.0))
-	c0.cstate = Custodian.CState.HUNT
-	await _shot("07_stain_overhead", spot, 0.0, 0.75, true)
-	c0.debug_reset(spot)
-	c0.call("_start_grab", _host)
-	await _wait(0.9)
-	await _shot_here("08_grabbed_first_person", 0.0, 1.1, true)
-	c0.release(false)
+	var cell := _level.cell_center(0, path[mini(2, path.size() - 1)])
+	var spot := cell + Vector3(0.0, 0.1, 2.2)  # same room, it at the far side, facing you
+	h0.debug_reset(cell + Vector3(0.0, 0.0, -2.2), PI)
+	await _shot("07_hollow_hire_seen", spot, 0.0, 0.0, true)
+	h0.debug_frozen = false
+	await _wait(0.3)
+	h0.debug_frozen = true
+	await _shot_here("07b_hollow_hire_chasing", 0.0, 0.0, true)
+	for b in Net.get_chain_bodies():
+		if b != _host:
+			b.teleport_to(spot + Vector3(3.5, 0.0, 0.0), 0.0)  # out of rescue range for the shot
+	h0.debug_reset(spot + Vector3(0.0, 0.0, -1.0), 0.0)
+	h0.call("_start_grab", _host)
+	await _wait(0.4)
+	await _shot_here("08_grabbed_first_person", 0.0, 0.2, true)
+	_host.camera_mode = Player.CameraMode.THIRD_PERSON
+	_host._apply_camera_mode()
+	await _wait(0.3)
+	await _capture_to(out_dir.path_join("08b_grabbed_third_person.png"))
+	h0.release(false)
+	h0.debug_frozen = true
 	await _wait(0.5)
 	_host.camera_mode = Player.CameraMode.THIRD_PERSON
 	_host._apply_camera_mode()
@@ -76,6 +90,32 @@ func _ready() -> void:
 	var lift_cell := _level.cell_center(1, _level.floors[1]["ascent"])
 	await _shot("10_lift_room", lift_cell + Vector3(2.0, 0.1, 2.3), PI * 0.25, 0.1, false)
 	await _shot("11_elevator", _level.test_points["exit"] + Vector3(0.0, 0.0, -2.6), 0.0, 0.0, false)
+	# The forced route: the jammed door, the alarm station, the hatch and its release, a sweep,
+	# and the floor with its power out (the Break Room behind you keeps its lights).
+	if _level.test_points.has("door0"):
+		var out: Vector3 = _level.test_points["door0_axis"]
+		await _shot("11b_jammed_door", _level.test_points["door0"] - out * 1.0, atan2(-out.x, -out.z), 0.0, true)
+	var alarm_n: Vector3 = _level.alarm().global_transform.basis.z
+	await _shot("11c_fire_alarm_pull", _level.test_points["alarm"] + alarm_n * 0.8, atan2(alarm_n.x, alarm_n.z), 0.05, true)
+	var sw_n: Vector3 = _level.hatch().switch_normal
+	await _shot("11d_hatch_release", _level.test_points["hatch_switch"] + sw_n * 0.8, atan2(sw_n.x, sw_n.z), 0.05, true)
+	await _shot("11e_hatch_over_the_shaft", _level.test_points["hatch"] + Vector3(0.0, 0.0, 2.2), 0.0, 0.9, true)  # yaw 0 looks toward -z: back at the hole
+	if hall != Vector2i(-1, -1):
+		var hc := _level.cell_center(0, hall)
+		h0.debug_reset(hc + Vector3(0.0, 0.0, -1.5), PI)
+		h0.debug_frozen = false
+		h0.debug_sweep()
+		await _wait(0.9)
+		h0.debug_frozen = true
+		await _shot("11f_hire_sweeping", hc + Vector3(0.0, 0.1, 2.4), 0.0, 0.0, false)
+		_level.lights().floor_stutter(0, 0.0, 40.0)
+		await _shot("11g_power_out_no_light", hc + Vector3(0.0, 0.1, 2.4), 0.0, 0.0, true)
+		_give("flashlight")
+		_use()
+		await _shot("11h_power_out_flashlight", hc + Vector3(0.0, 0.1, 2.4), 0.0, 0.0, true)
+		_host.server_drop_all()
+		_level.lights().floor_stutter(0, 0.0, 0.0)
+		h0.debug_reset(hc + Vector3(12.0, 0.0, 0.0), 0.0)
 	# The body in motion, seen side-on: walk, run, brace.
 	if hall != Vector2i(-1, -1):
 		var start := _level.cell_center(0, hall) + Vector3(-2.2, 0.1, 0.8)
@@ -175,8 +215,102 @@ func _tour_pizzeria() -> void:
 	await _capture_to(out_dir.path_join("42_pappy_rush.png"))
 	pz.pappy.debug_frozen = true
 	pz.pappy.debug_reset(0, 0)
-	# Last: the loft, because everyone standing on it ends the shift.
 	await _shot("40_prop_loft_exit", loft + Vector3(-2.0, 0.0, 0.0), -PI * 0.5, 0.3, false)
+	# Last: out of the hatch onto the roof, the Loading Lot, the crowd at the far end.
+	var lot := _stack.lot
+	lot.horde.debug_frozen = true
+	for l in lot.launchers:
+		l.debug_frozen = true
+	await _shot("43_roof_lot", lot.spawn_position, 0.0, -0.05, false)
+	await _shot("44_roof_lot_first_person", lot.spawn_position + Vector3(0.0, 0.0, -6.0), 0.0, 0.0, true)
+
+
+## The Loading Lot (--arena --shots=DIR): the lot, the fence, the crowd at the gap, a Launcher
+## mid-crouch and on top of someone, the slide, hands on the chain.
+func _tour_arena(arena: HordeArena) -> void:
+	_host.bot_controlled = true
+	var hud := get_tree().current_scene.get("hud") as Hud
+	if hud != null:
+		hud.set_help_visible(false)
+	var horde := arena.horde
+	for l in arena.launchers:
+		l.debug_frozen = true
+	var spawn: Vector3 = arena.test_points["spawn"]
+	await _shot("50_lot_spawn", spawn, 0.0, -0.05, false)
+	await _shot("51_fence_and_dumpster", arena.test_points["fence_dumpster"] + Vector3(3.0, 0.0, 2.5), 0.5, 0.15, true)
+	# Let the crowd walk a while, then look at it from the gap and from inside it.
+	_place_all(arena.test_points["north"], 0.0)
+	await _wait(6.0)
+	await _shot("52_horde_from_the_gap", arena.test_points["gap"], 0.0, 0.0, true)
+	await _shot("53_horde_third_person", arena.test_points["north"] + Vector3(0.0, 0.0, -4.0), 0.0, -0.2, false)
+	var i := horde.nearest_agent(arena.test_points["north"])
+	if i >= 0:
+		var inside := horde.agent_position(i) + Vector3(0.0, 0.0, -5.0)
+		await _shot("54_inside_the_crowd", inside, PI, 0.0, true)
+	# A Launcher: the crouch (the tell), then on top of someone.
+	horde.debug_frozen = true
+	var l := arena.launchers[0]
+	_place_all(spawn, 0.0)
+	await _wait(0.3)
+	l.debug_reset(spawn + Vector3(0.0, 0.0, -5.0))
+	l.debug_frozen = false
+	for k in 30:
+		await _wait(0.05)
+		if l.lstate == Launcher.LState.WINDUP:
+			break
+	l.debug_frozen = true
+	_host._yaw = 0.0
+	_host._pitch = 0.0
+	_host.camera_mode = Player.CameraMode.FIRST_PERSON
+	_host._apply_camera_mode()
+	await _wait(0.4)
+	await _capture_to(out_dir.path_join("55_launcher_crouch.png"))
+	l.debug_reset(spawn + Vector3(0.0, 0.0, -1.5))
+	l.call("_start_grab", _host)
+	await _wait(0.6)
+	await _shot_here("56_launcher_pinned_first_person", 0.0, 0.3, true)
+	_host.camera_mode = Player.CameraMode.THIRD_PERSON
+	_host._apply_camera_mode()
+	await _wait(0.3)
+	await _capture_to(out_dir.path_join("57_launcher_pinned_third_person.png"))
+	l.release(false)
+	l.debug_reset(spawn + Vector3(0.0, 0.0, -40.0))
+	await _wait(0.6)
+	# The slide, side on.
+	_place_all(spawn + Vector3(-4.0, 0.0, -6.0), -PI * 0.5)
+	await _wait(0.4)
+	_host._yaw = 0.0
+	_host._pitch = -0.15
+	_host.camera_mode = Player.CameraMode.THIRD_PERSON
+	_host._apply_camera_mode()
+	_host._apply_input(Vector2(1.0, 0.0), 0.0, -0.15, Player.FLAG_RUN)
+	await _wait(0.6)
+	_host._apply_input(Vector2(1.0, 0.0), 0.0, -0.15, Player.FLAG_RUN | Player.FLAG_BRACE)
+	await _wait(0.3)
+	await _capture_to(out_dir.path_join("58_slide.png"))
+	_host._apply_input(Vector2.ZERO, 0.0, -0.15, 0)
+	await _wait(1.2)
+	# Hands on the chain.
+	_place_all(spawn, 0.0)
+	var bodies := Net.get_chain_bodies()
+	if bodies.size() > 1:
+		bodies[1].teleport_to(spawn + Vector3(0.0, 0.0, 3.2), 0.0)
+	await _wait(0.3)
+	for k in 3:
+		horde.place(k, spawn + Vector3(-0.4 + 0.4 * float(k), 0.0, 1.6))
+	horde.debug_frozen = false
+	await _wait(1.0)
+	await _shot_here("59_hands_on_the_chain", PI, -0.35, false)
+	horde.debug_frozen = true
+	# The way out: the fire escape, the helipad with the helicopter, and the bats overhead.
+	arena.debug_spawn_all_rounds()
+	await _shot("60_fire_escape", arena.test_points["escape_foot"] + Vector3(2.0, 0.0, 4.0), -0.4, 0.35, false)
+	await _shot("61_helipad", arena.test_points["helipad"] + Vector3(-5.0, 0.0, 6.0), -0.7, -0.1, false)
+	horde.debug_frozen = false
+	_place_all(arena.test_points["helipad"] + Vector3(0.0, 0.0, 5.0), 0.0)
+	await _wait(2.5)
+	await _shot_here("62_flitters_over_the_pad", 0.0, 0.45, true)
+	horde.debug_frozen = true
 
 
 func _place_all(pos: Vector3, yaw: float) -> void:

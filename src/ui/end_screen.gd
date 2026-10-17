@@ -38,6 +38,8 @@ func show_results() -> void:
 	var level := get_tree().get_first_node_in_group("level")
 	if level != null and level.get("pizzeria") != null:
 		clock = "\nClocked out of the pizzeria at   %s" % (level.get("pizzeria") as Pizzeria).clock_text()
+	if GameState.escape_line != "":
+		clock += "\n%s" % GameState.escape_line
 	_stats.text = "Time on shift   %d:%02d%s\nLayoffs   %d\nTimes someone yanked the chain   %d\nPerformance review   %s" % [
 		t / 60, t % 60, clock, GameState.wipes, GameState.final_jerks, rating]
 	visible = true

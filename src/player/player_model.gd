@@ -61,6 +61,7 @@ var _walk: float = 0.0
 
 
 var _was_grabbed: bool = false
+var _sliding: bool = false
 var _hat_back_t: float = 0.0
 var _talking: bool = false
 var _talk_glyph: Label3D
@@ -70,6 +71,10 @@ const HAT_OFF_SECONDS: float = 6.0
 ## (gait phase, walk amount 0..1) for camera bob that matches the steps.
 func gait() -> Vector2:
 	return Vector2(_phase, _walk)
+
+
+func is_sliding() -> bool:
+	return _sliding
 
 
 ## "Hats are physics." Knocks the hard hat off as a tumbling rigid body; it reappears on your
@@ -301,8 +306,9 @@ func held_root() -> Node3D:
 
 ## facing: yaw the body should face. vel: world velocity. aim_pitch: where the head looks.
 func animate(delta: float, vel: Vector3, facing: float, grounded: bool, bracing: bool, grabbed: bool,
-		mantling: bool, aiming: bool, aim_pitch: float) -> void:
+		mantling: bool, aiming: bool, aim_pitch: float, sliding: bool = false) -> void:
 	_t += delta
+	_sliding = sliding
 	# Facing: ease toward the target, remember how fast we're turning (for leaning into turns).
 	var prev_yaw := _yaw
 	_yaw = lerp_angle(_yaw, facing, 1.0 - exp(-11.0 * delta))
@@ -418,6 +424,22 @@ func animate(delta: float, vel: Vector3, facing: float, grounded: bool, bracing:
 			knee_l_t = -0.7
 			knee_r_t = -0.7
 			head_pitch = -0.3
+	elif sliding:
+		# Lying back on one hip, the lead leg straight out ahead, the trail leg tucked under, one
+		# hand on the floor behind: a baseball slide in a hi-vis vest.
+		pelvis_pos.y -= 0.6
+		pelvis_pos.z += 0.05
+		pelvis_rot = Vector3(0.0, 0.0, 0.12)
+		hip_l = 1.45  # forward and straight
+		knee_l_t = -0.15
+		hip_r = 0.35
+		knee_r_t = -2.1  # tucked
+		spine_rot = Vector3(0.62, 0.0, -0.1)  # leaning back
+		sh_l = Vector3(-2.3, 0.0, -0.5)  # arm back, hand on the floor
+		el_l = 0.3
+		sh_r = Vector3(0.9, 0.0, 0.7)  # the other out for balance
+		el_r = 0.5
+		head_pitch = -0.35  # chin up, eyes on where you're going
 	elif bracing:
 		# A real crouch: hips low, knees deep, chest forward, head still level. The legs keep a
 		# short creeping gait so a crouch-walk reads as one.

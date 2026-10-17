@@ -15,6 +15,7 @@ static var fullscreen: bool = false
 static var quality: int = 2  # 0 low, 1 medium, 2 high
 static var brightness: float = 1.0  # post-process brightness; dark scenes turn to mud over a video stream
 static var show_fps: bool = false
+static var first_person: bool = false  # the camera you start with; V still flips it in play
 static var captions: bool = true  # on-screen captions for important sounds, with direction
 static var player_name: String = ""
 static var open_router_port: bool = true  # UPnP while hosting, so friends join with an invite code
@@ -43,6 +44,7 @@ static func load_settings() -> void:
 	quality = int(cfg.get_value("video", "quality", quality))
 	brightness = float(cfg.get_value("video", "brightness", brightness))
 	show_fps = bool(cfg.get_value("video", "show_fps", show_fps))
+	first_person = bool(cfg.get_value("video", "first_person", first_person))
 	captions = bool(cfg.get_value("audio", "captions", captions))
 	volume = float(cfg.get_value("audio", "volume", volume))
 	player_name = String(cfg.get_value("player", "name", player_name))
@@ -63,6 +65,7 @@ static func save_settings() -> void:
 	cfg.set_value("video", "quality", quality)
 	cfg.set_value("video", "brightness", brightness)
 	cfg.set_value("video", "show_fps", show_fps)
+	cfg.set_value("video", "first_person", first_person)
 	cfg.set_value("audio", "captions", captions)
 	cfg.set_value("audio", "volume", volume)
 	cfg.set_value("player", "name", player_name)

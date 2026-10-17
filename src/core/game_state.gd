@@ -27,6 +27,7 @@ var wipes: int = 0
 var run_seconds: float = 0.0
 var final_time: float = 0.0
 var final_jerks: int = 0
+var escape_line: String = ""  # the end screen's line about how the run ended
 var ui_blocking: bool = false  # local: a menu is open, so the game ignores your input
 
 
@@ -51,6 +52,7 @@ func reset_run(spawn: Vector3, facing: float, first_objective: String) -> void:
 	run_seconds = 0.0
 	final_time = 0.0
 	final_jerks = 0
+	escape_line = ""
 	tasks = []
 	objective_changed.emit(objective)
 	tasks_changed.emit()
@@ -180,19 +182,21 @@ func _do_regroup(requester: String) -> void:
 
 
 ## Server only. Everyone made it into the elevator.
-func set_escaped() -> void:
+## line: what the end screen says about how you got out.
+func set_escaped(line: String = "") -> void:
 	if not multiplayer.is_server() or escaped:
 		return
 	var chain := get_tree().get_first_node_in_group("chain")
 	var jerks: int = chain.get("jerks") if chain != null else 0
-	_rpc_escaped.rpc(run_seconds, jerks)
+	_rpc_escaped.rpc(run_seconds, jerks, line)
 
 
 @rpc("authority", "call_local", "reliable")
-func _rpc_escaped(time: float, jerks: int) -> void:
+func _rpc_escaped(time: float, jerks: int, line: String) -> void:
 	escaped = true
 	final_time = time
 	final_jerks = jerks
+	escape_line = line
 	escaped_changed.emit(true)
 
 
