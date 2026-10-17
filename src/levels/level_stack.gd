@@ -71,7 +71,7 @@ func first_objective() -> String:
 
 ## Which level a world position is in: 0 The Yellow Rooms, 1 the pizzeria, 2 the roof lot.
 func level_index_at(p: Vector3) -> int:
-	if p.y > lot.origin.y - 1.0:
+	if p.y > lot.origin.y - 1.0 or lot.in_district(p):
 		return 2
 	return 1 if p.y > pizzeria.base_y() - 1.0 else 0
 

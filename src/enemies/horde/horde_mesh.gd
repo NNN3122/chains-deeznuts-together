@@ -3,7 +3,7 @@ extends RefCounted
 ## Builds the swarm's bodies: one mesh per kind, every vertex tagged with the limb it belongs to
 ## (UV2.x), a flag for lower limb segments (UV2.y), and the two pivots that limb swings about
 ## (CUSTOM0 = the leg root, CUSTOM1 = the knee). The vertex shader then scuttles, flaps, rears up,
-## hangs on the chain and dies per instance from four floats of INSTANCE_CUSTOM: x gait phase,
+## hangs on the chain, swings a gap on a thread, climbs and dies per instance from four floats of INSTANCE_CUSTOM: x gait phase,
 ## y a per-body seed, z chitin tint (+2 when rearing at someone), w the state.
 ## Three kinds, all original mutations of what lived in the walls of Carrow Heights:
 ##   the Roach (a knee-high cockroach, six legs, swarms and climbs the pile),
@@ -54,6 +54,8 @@ void vertex() {
 	float grab = step(0.5, state) * (1.0 - step(1.5, state));  // state 1
 	float flinch = step(3.5, state) * (1.0 - step(4.5, state)); // state 4
 	float lunge = step(4.5, state) * (1.0 - step(5.5, state));  // state 5
+	float swing = step(5.5, state) * (1.0 - step(6.5, state));  // state 6: hanging under a thread
+	float climbing = step(6.5, state) * (1.0 - step(7.5, state)); // state 7: up a wall (the pitch is in the transform)
 	bool leg = part >= 20.0 && part < 28.0;
 	bool wing = part == 28.0 || part == 29.0;
 	float li = part - 20.0;                 // leg index: 0,1 front pair, left even
@@ -91,6 +93,9 @@ void vertex() {
 		lift = mix(lift, 1.1 + 0.2 * sin(tnow * 9.0 + side), reach_on * front);
 		lift = mix(lift, 0.9, lunge * front);
 		lift = mix(lift, 0.5 + 0.3 * sin(tnow * 15.0 + li), grab);
+		// On the thread: legs spread wide and feeling the air.
+		lift = mix(lift, 1.05 + 0.08 * sin(tnow * 6.0 + li), swing);
+		sweep = mix(sweep, 0.15 * sin(tnow * 4.0 + li), swing);
 		// Dead: legs curled in and up.
 		sweep = mix(sweep, 0.3 * side, dead);
 		lift = mix(lift, 1.6, dead);
@@ -120,14 +125,14 @@ void vertex() {
 	// The whole body: a scuttle wobble, a pulse, rearing up at someone, a shudder when hit.
 	float lurch = (0.05 + 0.08 * fract(seed * 7.3)) * sin(ph * 0.8 + seed * 11.0) + 0.03 * sin(tnow * 1.7);
 	float bob = 0.02 * abs(cos(ph * 1.6)) * (1.0 - flying) + 0.01 * sin(tnow * 2.3);
-	float rear = (0.6 + 0.1 * sin(tnow * 6.0)) * reach_on + 0.5 * lunge + 0.25 * grab;
+	float rear = ((0.6 + 0.1 * sin(tnow * 6.0)) * reach_on + 0.5 * lunge + 0.25 * grab) * (1.0 - max(swing, climbing));
 	mat3 body = rot_z(lurch * (1.0 - dead)) * rot_x(-(hunch + rear) * (1.0 - dead));
 	if (flying > 0.5) {
 		body = rot_x(-0.25 * lunge + 0.08 * sin(tnow * 2.0)) * rot_z(0.15 * sin(tnow * 1.3));
 	}
 	p = body * p;
 	n = body * n;
-	p.y += bob * (1.0 - dead);
+	p.y += bob * (1.0 - dead) * (1.0 - swing);
 	// Dead on the ground: on its back, legs in the air (a bat just drops in a heap).
 	if (dead > 0.5) {
 		mat3 d = rot_z(3.1416) * rot_y(0.5 * sin(seed * 9.0));

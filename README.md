@@ -2,7 +2,7 @@
 
 1–6 player co-op horror-comedy. You are chained to your friends. Climb out of the building. Don't let them see you.
 
-This build is **Levels 1 and 2 of 5 and the first block of Level 3: The Yellow Rooms, then Pappy Pepperoni's Night Shift**, a haunted family pizzeria stacked on top of the office, **then the roof**, where a thousand infected are waiting. Play it solo (you're chained to the Ballast, a 35 kg iron nut with a smiley face) or with up to 5 friends online.
+This build is **Levels 1, 2 and 3 of 5: The Yellow Rooms, then Pappy Pepperoni's Night Shift**, a haunted family pizzeria stacked on top of the office, **then the rooftops of Carrow Heights**, where the swarm is waiting between you and a helicopter. Play it solo (you're chained to the Ballast, a 35 kg iron nut with a smiley face) or with up to 5 friends online.
 
 ## Download and play (Windows)
 
@@ -77,21 +77,28 @@ While you host, the game asks your router (UPnP) to let friends in, and closes i
 
 The office maze is laid out from a random seed every time you press PLAY SOLO or HOST: different rooms, different route, the pizzeria dressed differently. Friends who join are handed the host's layout automatically (they reconnect once while it builds, a second or two).
 
-### The roof: Carrow Heights (Level 3, first block)
+### The roof: Carrow Heights (Level 3)
 
-Level 3 is the infected city, and its first block is the roof of the building: when everyone is on the pizzeria's prop loft, the hatch opens and the whole Line climbs out onto a loading lot in the sky, with the city all round it and a long way down over the parapet. The top-right corner shows the swarm count. To start there straight away, click the START button on the title screen until it says THE ROOF, then PLAY SOLO or HOST (`PLAY THE LOT (horde test).bat` opens the title with it selected). Friends join the usual way and get whatever the host chose.
+Level 3 is the infected city under a night sky. When everyone is on the pizzeria's prop loft, the hatch opens and the whole Line climbs out onto a loading lot on the roof of the building. From there it's a run across the rooftops of Carrow Heights to a helicopter. The top-right corner shows the swarm count. To start on the roof straight away, click the START button on the title screen until it says THE ROOF, then PLAY SOLO or HOST (`PLAY THE LOT (horde test).bat` opens the title with it selected). Friends join the usual way and get whatever the host chose.
 
-**The way out is a helicopter.** Over the fence (the dumpster, or a teammate's head), through the gap in the wall, then up the fire escape on the tower in the corner: ledge by ledge, walk into each one and tap Space. On the helipad, someone has to stand on the pad for thirty seconds while the pilot spins her up, then everyone aboard. That's the end of this build: next stop Level 4.
+**The way out is twelve buildings away.** Over the fence on the lot (the dumpster, or a teammate's head), through the gap in the wall, then north out of the gap in the parapet and across eleven rooftops to the tower with the red light. Every run lays the rooftops out differently. Green signs at each edge say what's next:
 
-**What came out of the walls**, in rounds:
+- **A jump:** sprint and jump at the edge. Go one at a time with the chain slack. Miss, and you hang off the edge on the chain while your team braces (Ctrl) and walks back to hoist you.
+- **A plank or a duct:** walk it, one at a time, no sprinting. A slip yanks whoever you're chained to.
+- **A drop:** the next roof is a storey down. Go together, or the first one over pulls the rest off after them.
+- **A climb:** walk into the unit against the wall and tap Space, then again onto the roof. The last one up gets hoisted on the chain.
 
-- **Roaches**, knee-high and hundreds of them, as fast as you walk. They bunch at the gap and climb each other into a wall. Stand in the swarm and three sets of mandibles pull you down in a few seconds. Walk, don't stand; sprint when it's close.
-- **Weavers**, spiders the size of dogs, faster than you. They come when you reach the gap. They hang on the chain: one on your chain and you can still sprint, and the sprint flings it off; three on one length and that pair is stopped until you shoot them off, bomb them, hit the air horn, or a teammate on another length sprints away so the chain snaps taut. A slide throws them off too.
-- **Flitters**, bats with a two-metre span, come when the first of you reaches the helipad. Walls mean nothing to them; they circle overhead and dive. Only a gun stops them. Hold the pad anyway.
-- **The Jumper**, a spider the size of a sofa, screeches and coils, then jumps five or six metres at wherever you were standing. Sprint or slide out of that line and it lands on nothing. If it pins someone: everyone beside them holds Ctrl, or a flashlight in its eyes, the air horn, or two shots. Three shots or a bomb kill it.
-- **Distractions work:** the squeaky decoy pulls the swarm to it, the air horn scatters whatever is near.
+The checklist counts the roofs (3 of 11), and roofs 4 and 8 are checkpoints. At the tower, the fire escape is a staircase of landings: walk into the side of each one and tap Space. On the helipad, someone has to stand on the pad for thirty seconds while the pilot spins her up, then everyone climbs aboard. That's the end of this build: next stop Level 4.
 
-**Mind the edge.** The roof has a knee-high parapet and the street is a long way down. Going over it is a layoff, unless whoever you're chained to braces in time.
+**What comes out of the walls:**
+
+- **Roaches**, knee-high and hundreds of them, as fast as you walk. A swarm pours out of every roof's vents as you land on it. They bunch at walls and climb each other into a pile, but they can't jump a gap. Stand in the swarm and three sets of mandibles pull you down in a few seconds. Walk, don't stand. Sprint when it's close.
+- **Weavers**, spiders the size of dogs, faster than you. They wait on the roof ahead, swing across the gaps between buildings on a thread, and climb walls, the fire escape and the tower after you. They hang on the chain: one on your chain and you can still sprint, and the sprint flings it off. Three on one length stop that pair until you shoot them off, bomb them, hit the air horn, or a teammate on another length sprints away so the chain snaps taut. A slide throws them off too.
+- **Flitters**, bats with a two-metre span, circle over the far roofs and come down in force at the helipad. Walls mean nothing to them. They circle overhead and dive, and only a gun stops them. Hold the pad anyway.
+- **The Jumper**, a spider the size of a sofa, waits on a few of the roofs. It screeches and coils, then jumps five or six metres at wherever you were standing. Sprint or slide out of that line and it lands on nothing. It swings across gaps and climbs walls like the smaller ones. If it pins someone, everyone beside them holds Ctrl, or put a flashlight in its eyes, use the air horn, or shoot it twice. Three shots or a bomb kill it.
+- **Distractions work:** the squeaky decoy pulls the swarm to it, and the air horn scatters whatever is near. There's ammo along the way, a bomb, an energy drink and another horn.
+
+**Mind the edge.** The street is thirty-eight metres down and nobody walks away from it. Falling is a layoff unless whoever you're chained to braces in time to hold you.
 
 ## Tests
 

@@ -123,7 +123,7 @@ func _on_level_toggle() -> void:
 
 func _refresh_level_button() -> void:
 	if _level_button != null:
-		_level_button.text = "START:  THE ROOF, LEVEL 3  (the Loading Lot, straight in)" if _arena else "START:  THE BUILDING, B4  (a new layout every run)"
+		_level_button.text = "START:  THE ROOF, LEVEL 3  (Carrow Heights, straight in)" if _arena else "START:  THE BUILDING, B4  (a new layout every run)"
 
 
 func player_name() -> String:

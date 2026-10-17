@@ -311,6 +311,58 @@ func _tour_arena(arena: HordeArena) -> void:
 	await _wait(2.5)
 	await _shot_here("62_flitters_over_the_pad", 0.0, 0.45, true)
 	horde.debug_frozen = true
+	# The district: the sky, the route from the lot's edge, a plank, a spider swinging a gap on
+	# a thread, the Jumper crossing, the tower with its fire escape from a few roofs back.
+	await _shot("63_night_sky", spawn + Vector3(0.0, 0.0, -10.0), 0.4, 0.75, true)
+	await _shot("64_route_from_the_lot_edge", arena.test_points["lot_edge"] + Vector3(0.0, 0.0, 3.0), 0.0, -0.08, false)
+	if arena.test_points.has("plank"):
+		await _shot("65_plank", arena.test_points["plank"], 0.0, -0.35, true)
+	if arena.test_points.has("climb"):
+		await _shot("66_climb", arena.test_points["climb"] + Vector3(1.2, 0.0, 1.5), 0.3, 0.2, false)
+	# A Weaver swinging the gap between roof 1 and roof 2, seen from roof 2.
+	var r1: HordeArena.Roof = arena.roofs[1]
+	var r2: HordeArena.Roof = arena.roofs[2]
+	_place_all(arena.origin + r2.enter + Vector3(-1.5, 0.0, -2.5), PI)
+	var weaver := -1
+	for k in horde.count:
+		if horde.kind[k] == Horde.KIND_WEAVER and horde.state[k] != Horde.AState.DEAD and horde.state[k] != Horde.AState.GONE and horde.state[k] != Horde.AState.GRAB:
+			weaver = k
+			break
+	if weaver >= 0:
+		horde.place(weaver, arena.origin + r1.exit + Vector3(0.0, 0.0, 0.8))
+		_host._yaw = PI
+		_host._pitch = 0.05
+		_host.camera_mode = Player.CameraMode.FIRST_PERSON
+		_host._apply_camera_mode()
+		horde.debug_frozen = false
+		for k in 60:
+			await _wait(0.05)
+			if horde.state[weaver] == Horde.AState.SWING and horde.timer[weaver] < horde.sw_dur[weaver] * 0.55:
+				break
+		horde.debug_frozen = true
+		await _capture_to(out_dir.path_join("67_weaver_swinging_the_gap.png"))
+	# A Jumper on a thread.
+	var jumper := arena.launchers[4]
+	var r3: HordeArena.Roof = arena.roofs[3]
+	var r4: HordeArena.Roof = arena.roofs[4]
+	_place_all(arena.origin + r4.enter + Vector3(-2.0, 0.0, -7.0), PI)
+	await _wait(0.4)
+	jumper.debug_reset(arena.origin + r3.exit + Vector3(0.0, 0.0, 2.0))
+	jumper.debug_frozen = false
+	_host._yaw = PI
+	_host._pitch = 0.1
+	_host.camera_mode = Player.CameraMode.THIRD_PERSON
+	_host._apply_camera_mode()
+	for k in 120:
+		await _wait(0.05)
+		if jumper.lstate == Launcher.LState.SWING or jumper.lstate == Launcher.LState.CLIMB:
+			await _wait(0.25)
+			break
+	jumper.debug_frozen = true
+	await _capture_to(out_dir.path_join("68_jumper_crossing.png"))
+	jumper.debug_reset(arena.launcher_homes[4])
+	var back := arena.roofs[maxi(1, arena.roofs.size() - 4)]
+	await _shot("69_the_tower_from_three_roofs_back", arena.origin + back.center() + Vector3(0.0, 0.1, 0.0), 0.0, 0.12, false)
 
 
 func _place_all(pos: Vector3, yaw: float) -> void:

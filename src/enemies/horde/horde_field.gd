@@ -9,14 +9,24 @@ extends RefCounted
 ##            flow is smooth instead of staircased
 ## The finished arrays are swapped in at once, so agents always read a complete field.
 ## Blocked cells come from the level (walls, fences); diagonals never cut a blocked corner.
+## Terrain: every cell is FLOOR (walkable, with a ground height), WALL (a thing in the way) or
+## VOID (the street between rooftops: blocked for anything that walks, but a climber can look
+## across it for the next roof and swing). Heights let a swarm live on rooftops at different
+## levels: a walker reads the ground under it from its cell.
 
 const UNREACHED: int = 0x3FFFFFFF
+const FLOOR: int = 0
+const WALL: int = 1
+const VOID: int = 2
 
 var cell: float = 1.0  # meters
 var origin: Vector2 = Vector2.ZERO  # world (x, z) of the corner of cell (0, 0)
 var w: int = 0
 var h: int = 0
 var blocked: PackedByteArray = PackedByteArray()
+var terrain: PackedByteArray = PackedByteArray()  # FLOOR / WALL / VOID per cell
+var height: PackedFloat32Array = PackedFloat32Array()  # ground y per cell (world)
+var base_y: float = 0.0  # the ground where nothing else is said
 var cost: PackedInt32Array = PackedInt32Array()  # steps to the nearest goal, UNREACHED beyond walls
 var dir_x: PackedFloat32Array = PackedFloat32Array()
 var dir_z: PackedFloat32Array = PackedFloat32Array()
@@ -32,7 +42,8 @@ var _phase: int = 0  # 0 idle, 1 flooding, 2 directions
 var _dir_i: int = 0
 
 
-func setup(world_origin: Vector2, width_m: float, depth_m: float, cell_size: float = 1.0) -> void:
+func setup(world_origin: Vector2, width_m: float, depth_m: float, cell_size: float = 1.0, ground_y: float = 0.0) -> void:
+	base_y = ground_y
 	cell = cell_size
 	origin = world_origin
 	w = maxi(1, int(ceil(width_m / cell)))
@@ -41,6 +52,12 @@ func setup(world_origin: Vector2, width_m: float, depth_m: float, cell_size: flo
 	blocked = PackedByteArray()
 	blocked.resize(n)
 	blocked.fill(0)
+	terrain = PackedByteArray()
+	terrain.resize(n)
+	terrain.fill(FLOOR)
+	height = PackedFloat32Array()
+	height.resize(n)
+	height.fill(base_y)
 	cost = PackedInt32Array()
 	cost.resize(n)
 	cost.fill(UNREACHED)
@@ -87,12 +104,78 @@ func block_rect(r: Rect2) -> void:
 	for z in range(z0, z1 + 1):
 		for x in range(x0, x1 + 1):
 			blocked[z * w + x] = 1
+			terrain[z * w + x] = WALL
 
 
 ## A box footprint centred at (cx, cz) with size (sx, sz), padded so bodies don't clip the wall.
 func block_box(cx: float, cz: float, sx: float, sz: float, pad: float = 0.3) -> void:
 	block_rect(Rect2(cx - sx * 0.5 - pad, cz - sz * 0.5 - pad, sx + pad * 2.0, sz + pad * 2.0))
 
+
+
+## Every cell becomes the street: nothing walks until a roof is laid over it.
+func fill_void() -> void:
+	blocked.fill(1)
+	terrain.fill(VOID)
+	height.fill(base_y)
+
+
+## A rooftop (or any floor) over a world-space rectangle at a height: walkable again.
+func set_floor_rect(r: Rect2, y: float) -> void:
+	var x0 := cell_x(r.position.x + 0.001)
+	var x1 := cell_x(r.end.x - 0.001)
+	var z0 := cell_z(r.position.y + 0.001)
+	var z1 := cell_z(r.end.y - 0.001)
+	for z in range(z0, z1 + 1):
+		for x in range(x0, x1 + 1):
+			var i := z * w + x
+			blocked[i] = 0
+			terrain[i] = FLOOR
+			height[i] = y
+
+
+func height_at(x: float, z: float) -> float:
+	if not in_bounds(x, z):
+		return base_y
+	return height[index_at(x, z)]
+
+
+func terrain_at(x: float, z: float) -> int:
+	if not in_bounds(x, z):
+		return VOID
+	return terrain[index_at(x, z)]
+
+
+func is_void(x: float, z: float) -> bool:
+	return terrain_at(x, z) == VOID
+
+
+## For a climber at a roof's edge: the first FLOOR cell along a direction within `range_m`, as
+## (world x, world z, ground y), or an empty array when there's nothing to swing to. Cells of
+## WALL on the way don't stop the look (a parapet on the far roof is fine to land behind).
+func floor_ahead(x: float, z: float, dx: float, dz: float, range_m: float) -> PackedFloat32Array:
+	var out := PackedFloat32Array()
+	var steps := int(range_m / cell)
+	var sx := x
+	var sz := z
+	var seen_void := false
+	for k in steps:
+		sx += dx * cell
+		sz += dz * cell
+		if not in_bounds(sx, sz):
+			return out
+		var i := index_at(sx, sz)
+		var t := terrain[i]
+		if t == VOID:
+			seen_void = true
+		elif t == FLOOR and seen_void:
+			var cx := origin.x + (floorf((sx - origin.x) / cell) + 0.5) * cell
+			var cz := origin.y + (floorf((sz - origin.y) / cell) + 0.5) * cell
+			out.append(cx)
+			out.append(cz)
+			out.append(height[i])
+			return out
+	return out
 
 func is_blocked(x: float, z: float) -> bool:
 	if not in_bounds(x, z):

@@ -72,6 +72,21 @@ func complete_task(i: int) -> void:
 	_rpc_task_done.rpc(i)
 
 
+
+## Server only. Rewords a task (a running count) without touching its done flag.
+func set_task_text(i: int, text: String) -> void:
+	if not multiplayer.is_server() or i < 0 or i >= tasks.size():
+		return
+	_rpc_task_text.rpc(i, text)
+
+
+@rpc("authority", "call_local", "reliable")
+func _rpc_task_text(i: int, text: String) -> void:
+	if i < 0 or i >= tasks.size():
+		return
+	tasks[i][0] = text
+	tasks_changed.emit()
+
 func task_done(i: int) -> bool:
 	return i >= 0 and i < tasks.size() and bool(tasks[i][1])
 

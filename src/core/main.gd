@@ -99,6 +99,7 @@ func _exit_tree() -> void:
 	Sfx._cache.clear()
 	Sfx._one_shots.clear()
 	LevelKit._mats.clear()
+	LevelKit._sky = null
 	HordeMesh._meshes.clear()
 	HordeMesh._materials.clear()
 	ItemRegistry._by_id.clear()

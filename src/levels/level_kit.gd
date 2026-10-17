@@ -311,7 +311,122 @@ void fragment() {
 }
 """
 
+## The night over Carrow Heights: a sky shader instead of a flat colour. A gradient from the
+## city's sodium glow at the horizon up to near-black, a field of stars that twinkle, a half
+## moon with a halo, and two layers of value-noise cloud drifting with TIME, lit from below by
+## the city where they're low. Stars hide behind the cloud.
+const NIGHT_SKY_SHADER: String = """
+shader_type sky;
+uniform vec3 horizon_col : source_color = vec3(0.19, 0.08, 0.07);
+uniform vec3 zenith_col : source_color = vec3(0.012, 0.013, 0.035);
+uniform vec3 moon_dir = vec3(0.35, 0.42, -0.84);
+uniform float cloud_cover = 0.5;
+uniform float cloud_speed = 0.006;
+uniform float star_density = 0.988;
+
+// No sin() in the hash: at large inputs sin rounds differently for the same corner seen from two
+// cells, and every cell edge becomes a hard seam. Cells wrap at 256 so the inputs stay exact.
+float hash2(vec2 p) {
+	vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+	p3 += dot(p3, p3.yzx + 33.33);
+	return fract((p3.x + p3.y) * p3.z);
+}
+float hash3(vec3 p) {
+	p = fract(p * 0.1031);
+	p += dot(p, p.zyx + 31.32);
+	return fract((p.x + p.y) * p.z);
+}
+
+float vnoise(vec2 p) {
+	vec2 i = mod(floor(p), 256.0);
+	vec2 f = fract(p);
+	vec2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);  // quintic: no creases at the cell edges
+	float a = hash2(i);
+	float b = hash2(mod(i + vec2(1.0, 0.0), 256.0));
+	float c = hash2(mod(i + vec2(0.0, 1.0), 256.0));
+	float d = hash2(mod(i + vec2(1.0, 1.0), 256.0));
+	return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+float fbm(vec2 p) {
+	// Each octave rotated and shifted so the noise grid never lines up into squares.
+	mat2 rot = mat2(vec2(0.8, 0.6), vec2(-0.6, 0.8));
+	float v = 0.0;
+	float a = 0.5;
+	for (int k = 0; k < 6; k++) {
+		v += a * vnoise(p);
+		p = rot * p * 2.02 + vec2(17.3, 9.1);
+		a *= 0.5;
+	}
+	return v;
+}
+
+void sky() {
+	vec3 d = normalize(EYEDIR);
+	float h = d.y;
+	float up = clamp(h, 0.0, 1.0);
+	// The gradient, with the city's glow bleeding up from the horizon.
+	vec3 col = mix(horizon_col, zenith_col, pow(up, 0.4));
+	col += vec3(0.3, 0.14, 0.06) * exp(-abs(h) * 7.0) * 0.9;
+	// Clouds on a plane overhead; a second, slower layer underneath for depth.
+	float cov = 0.0;
+	vec3 cloud_col = vec3(0.0);
+	if (h > 0.01) {
+		vec2 uv = d.xz / (h + 0.12);
+		float c1 = fbm(uv * 1.3 + TIME * cloud_speed * vec2(1.0, 0.35));
+		float c2 = fbm(uv * 2.9 - TIME * cloud_speed * 1.7 * vec2(0.6, 1.0) + 40.0);
+		float c = c1 * 0.7 + c2 * 0.3;
+		cov = smoothstep(1.0 - cloud_cover - 0.1, 1.0 - cloud_cover + 0.45, c + 0.12) * 0.92;
+		cov *= smoothstep(0.0, 0.12, h);
+		// Lit from below near the horizon (the streets), grey-blue above (the moon).
+		float low = exp(-up * 3.5);
+		cloud_col = mix(vec3(0.06, 0.06, 0.08), vec3(0.3, 0.17, 0.11), low);
+		cloud_col += vec3(0.08, 0.09, 0.12) * (0.4 + 0.6 * c);
+	}
+	// Stars: one per cell of a quantised direction, most cells empty; they twinkle.
+	if (h > 0.0) {
+		vec3 sd = d * 220.0;
+		vec3 cell = floor(sd);
+		vec3 f = fract(sd) - 0.5;
+		float r = hash3(cell);
+		float on = step(star_density, r);
+		float pt = smoothstep(0.22, 0.02, length(f));
+		float tw = 0.55 + 0.45 * sin(TIME * (1.5 + 4.0 * fract(r * 31.0)) + r * 60.0);
+		float bright = 0.6 + 1.4 * fract(r * 13.0);
+		col += vec3(0.9, 0.92, 1.0) * on * pt * tw * bright * pow(up, 0.6) * (1.0 - cov);
+	}
+	// The moon: a disc, a soft halo, and its light on the cloud.
+	vec3 md = normalize(moon_dir);
+	float m = dot(d, md);
+	float disc = smoothstep(0.99905, 0.99935, m);
+	float crater = 0.85 + 0.15 * vnoise(d.xz * 900.0);
+	float halo = pow(max(m, 0.0), 160.0) * 0.35 + pow(max(m, 0.0), 24.0) * 0.06;
+	vec3 moon = vec3(0.95, 0.93, 0.82) * disc * crater * 2.6 + vec3(0.35, 0.36, 0.42) * halo;
+	cloud_col += vec3(0.12, 0.12, 0.14) * pow(max(m, 0.0), 12.0);
+	col = mix(col, cloud_col, cov);
+	col += moon * (1.0 - cov * 0.85);
+	COLOR = col;
+}
+"""
+
 static var _mats: Dictionary = {}
+static var _sky: Sky = null
+
+
+## The roof's sky: built once and shared (the shader animates itself with TIME).
+static func make_night_sky() -> Sky:
+	if _sky != null:
+		return _sky
+	var sh := Shader.new()
+	sh.code = NIGHT_SKY_SHADER
+	var m := ShaderMaterial.new()
+	m.shader = sh
+	var sky := Sky.new()
+	sky.sky_material = m
+	sky.process_mode = Sky.PROCESS_MODE_INCREMENTAL  # the clouds drift slowly: reflections can catch up over a few frames
+	sky.radiance_size = Sky.RADIANCE_SIZE_64
+	_sky = sky
+	return sky
 
 
 ## Shared material by key. Unknown keys fall back to a plain grey so a typo is visible, not fatal.
@@ -488,8 +603,11 @@ static func _make(key: String) -> Material:
 static func make_environment(quality: int, level: int = 0) -> Environment:
 	var env := Environment.new()
 	var pizzeria := level == 1
-	var outdoors := level == 2  # the Loading Lot: a sodium dusk, no bounce light to speak of
-	env.background_mode = Environment.BG_COLOR
+	var outdoors := level == 2  # the roof: a night sky over the city, no bounce light to speak of
+	env.background_mode = Environment.BG_SKY if outdoors else Environment.BG_COLOR
+	if outdoors:
+		env.sky = make_night_sky()
+		env.reflected_light_source = Environment.REFLECTION_SOURCE_SKY
 	env.background_color = Color(0.07, 0.035, 0.03) if outdoors else Color(0.008, 0.008, 0.01)
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	env.ambient_light_color = Color(0.55, 0.42, 0.42) if pizzeria else Color(0.62, 0.55, 0.4)
@@ -506,7 +624,7 @@ static func make_environment(quality: int, level: int = 0) -> Environment:
 		env.fog_enabled = true
 		env.fog_light_color = Color(0.18, 0.1, 0.08)
 		env.fog_density = 0.012
-		env.fog_sky_affect = 0.6
+		env.fog_sky_affect = 0.25
 		env.adjustment_enabled = true
 		env.adjustment_contrast = 1.06
 		env.adjustment_saturation = 0.85

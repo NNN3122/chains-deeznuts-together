@@ -9,7 +9,7 @@ extends Node3D
 ## seconds and the Line is laid off. Three Snubby hits or a bomb kill it.
 ## Host-authoritative like the Custodian; position, state and grab are replicated.
 
-enum LState { SHAMBLE, WINDUP, LUNGE, RECOVER, GRAB, STUNNED, DEAD }
+enum LState { SHAMBLE, WINDUP, LUNGE, RECOVER, GRAB, STUNNED, DEAD, SWING, CLIMB }
 
 const SHAMBLE_SPEED: float = 1.3  # m/s
 const SIGHT_RANGE: float = 42.0
@@ -35,6 +35,14 @@ const DEAD_LINGER: float = 25.0
 const NOISE_DRAW: float = 30.0  # unseen players this loud draw it over
 const TURN_SPEED: float = 5.0  # rad/s
 const BODY_H: float = 1.0  # m: the body hangs this high on its legs
+const CLIMB_SPEED: float = 3.0  # m/s up a wall face
+const CLIMB_MAX: float = 45.0  # m: higher than that and it gives up
+const SWING_RANGE: float = 14.0  # m it looks across a gap for the next roof
+const SWING_SPEED: float = 8.0  # m/s along the thread
+const SWING_SAG: float = 2.2  # m the swing dips under the straight line
+const WEB_ANCHOR_H: float = 8.0  # m over the gap the thread hangs from
+const DROP_PROBE: float = 16.0  # m it looks down for a floor before calling a step a gap
+const STREET_FALL: float = 30.0  # m below its post: it has gone over the edge
 
 var floor_y: float = 0.0  # fallback when no floor is under it
 var asleep: bool = false  # the level's call: nobody is on this level yet
@@ -49,6 +57,9 @@ var grab_peer: int = 0
 var burn_fraction: float = 0.0
 var hits: int = 0
 var lunges: int = 0  # stat, replicated so clients can react too
+var swing_from: Vector3 = Vector3.ZERO  # the thread: where the swing left from...
+var swing_to: Vector3 = Vector3.ZERO  # ...and where it lands (the anchor is over the middle)
+var swings: int = 0  # stat
 
 # Server.
 var _target: Player = null
@@ -79,6 +90,10 @@ var _last_pos: Vector3 = Vector3.ZERO
 var _vis_speed: float = 0.0
 var _caption_t: float = 0.0
 var _crouch: float = 0.0  # 0 standing, 1 coiled
+var _swing_dur: float = 1.0
+var _climb_from_y: float = 0.0
+var _thread: MeshInstance3D
+var _thread_mesh: ImmediateMesh
 
 
 func _enter_tree() -> void:
@@ -87,7 +102,7 @@ func _enter_tree() -> void:
 	var sync := MultiplayerSynchronizer.new()
 	sync.name = "Sync"
 	var cfg := SceneReplicationConfig.new()
-	for prop in ["synced_position", "synced_yaw", "lstate", "hunt_peer", "grab_peer", "burn_fraction", "hits", "lunges"]:
+	for prop in ["synced_position", "synced_yaw", "lstate", "hunt_peer", "grab_peer", "burn_fraction", "hits", "lunges", "swing_from", "swing_to", "swings"]:
 		var path := NodePath(".:" + prop)
 		cfg.add_property(path)
 		cfg.property_set_replication_mode(path, SceneReplicationConfig.REPLICATION_MODE_ALWAYS)
@@ -174,6 +189,18 @@ func _build_visuals() -> void:
 	hs.rotation.x = PI * 0.5  # lying along its body
 	_hitbox.add_child(hs)
 	add_child(_hitbox)
+	# The thread it swings on, drawn while it swings (every peer).
+	_thread_mesh = ImmediateMesh.new()
+	_thread = MeshInstance3D.new()
+	_thread.name = "Thread"
+	_thread.mesh = _thread_mesh
+	_thread.top_level = true
+	var tm := StandardMaterial3D.new()
+	tm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	tm.albedo_color = Color(0.85, 0.85, 0.8, 0.75)
+	tm.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	_thread.material_override = tm
+	add_child(_thread)
 
 
 func _box(parent: Node3D, size: Vector3, at: Vector3, m: Material) -> void:
@@ -222,7 +249,7 @@ func head_point() -> Vector3:
 
 
 func is_hunting() -> bool:
-	return lstate == LState.WINDUP or lstate == LState.LUNGE or lstate == LState.GRAB
+	return lstate == LState.WINDUP or lstate == LState.LUNGE or lstate == LState.GRAB or lstate == LState.SWING
 
 
 func is_dead() -> bool:
@@ -257,8 +284,7 @@ func _server_tick(delta: float) -> void:
 			_tick_lunge(delta)
 		LState.RECOVER:
 			_t -= delta
-			_settle_floor()
-			if _t <= 0.0:
+			if _settle_or_fall(delta) and _t <= 0.0:
 				lstate = LState.SHAMBLE
 		LState.GRAB:
 			_tick_grab(delta)
@@ -267,6 +293,10 @@ func _server_tick(delta: float) -> void:
 			_settle_floor()
 			if _t <= 0.0:
 				lstate = LState.SHAMBLE
+		LState.SWING:
+			_tick_swing(delta)
+		LState.CLIMB:
+			_tick_climb(delta)
 		LState.DEAD:
 			_dead_t += delta
 	if lstate != LState.GRAB:
@@ -288,7 +318,8 @@ func _tick_shamble(delta: float) -> void:
 	var to := p.global_position - global_position
 	to.y = 0.0
 	var d := to.length()
-	if d <= LUNGE_MAX and d >= LUNGE_MIN and p.state == Player.State.NORMAL:
+	var level := absf(p.global_position.y - global_position.y) < 2.2  # the same roof, near enough
+	if d <= LUNGE_MAX and d >= LUNGE_MIN and p.state == Player.State.NORMAL and level:
 		_start_windup(p)
 		return
 	if d < LUNGE_MIN and p.state == Player.State.NORMAL and absf(p.global_position.y - global_position.y) < 1.6:
@@ -307,20 +338,149 @@ func _walk_toward(target: Vector3, delta: float) -> void:
 	var step := dir * minf(SHAMBLE_SPEED * delta, to.length())
 	var space := get_world_3d().direct_space_state
 	var q := PhysicsRayQueryParameters3D.create(chest_point(), chest_point() + step.normalized() * 0.6, ChainBody.LAYER_WORLD)
-	if space.intersect_ray(q).is_empty():
-		global_position += step
+	if not space.intersect_ray(q).is_empty():
+		# A wall in the way. If whoever it wants is up there, it goes up the face.
+		if target.y - global_position.y > 1.0:
+			_start_climb()
+		return
+	# Nothing under the next step: the edge of the roof. Look across for the next one.
+	var ahead := global_position + dir * 1.1
+	var ground := _ground_under(ahead)
+	if ground < -1.0e8:
+		var land := _find_landing(dir, target)
+		if land.y > -1.0e8:
+			_start_swing(land)
+		return
+	global_position += step
 	_settle_floor()
 
 
-## Stands on whatever is under it (a lunge can end on a crate or a car roof).
+## Stands on whatever is under it (a lunge can end on a crate or a car roof; a step off a
+## higher roof is a drop). Nothing under it for a long way: it keeps its height.
 func _settle_floor() -> void:
+	var y := _ground_under(global_position)
+	if y > -1.0e8:
+		global_position.y = y
+
+
+## After a jump or a swing that ended over nothing: it falls, and far enough down it's gone.
+## Returns false while it is still falling.
+func _settle_or_fall(delta: float) -> bool:
+	var y := _ground_under(global_position)
+	if y > -1.0e8:
+		global_position.y = y
+		return true
+	global_position.y -= 12.0 * delta
+	if global_position.y < floor_y - STREET_FALL:
+		die()
+		GameState.post_message("The Jumper went over the edge.", 2.5)
+	return false
+
+
+## The floor under a point, within DROP_PROBE metres below (and a little above), or -1e9.
+func _ground_under(at: Vector3) -> float:
 	var space := get_world_3d().direct_space_state
-	var q := PhysicsRayQueryParameters3D.create(global_position + Vector3(0.0, 1.2, 0.0), global_position - Vector3(0.0, 3.0, 0.0), ChainBody.LAYER_WORLD)
+	var q := PhysicsRayQueryParameters3D.create(at + Vector3(0.0, 1.2, 0.0), at - Vector3(0.0, DROP_PROBE, 0.0), ChainBody.LAYER_WORLD)
 	var hit := space.intersect_ray(q)
 	if hit.is_empty():
-		global_position.y = floor_y
-	else:
-		global_position.y = (hit["position"] as Vector3).y
+		return -1.0e9
+	return (hit["position"] as Vector3).y
+
+
+## Somewhere to land across the gap: the first roof along the way it was going, else along the
+## straight line to its target, within SWING_RANGE. A roof is a floor found from well above.
+func _find_landing(dir: Vector3, target: Vector3) -> Vector3:
+	var space := get_world_3d().direct_space_state
+	var dirs: Array[Vector3] = [dir]
+	var to := target - global_position
+	to.y = 0.0
+	if to.length() > 0.5:
+		dirs.append(to.normalized())
+	for d in dirs:
+		var seen_gap := false
+		var k := 2.0
+		while k <= SWING_RANGE:
+			var p := global_position + d * k
+			var q := PhysicsRayQueryParameters3D.create(p + Vector3(0.0, 9.0, 0.0), p - Vector3(0.0, DROP_PROBE, 0.0), ChainBody.LAYER_WORLD)
+			var hit := space.intersect_ray(q)
+			if hit.is_empty():
+				seen_gap = true
+			elif seen_gap and (hit["normal"] as Vector3).y > 0.7:
+				var y := (hit["position"] as Vector3).y
+				if absf(y - global_position.y) < 12.0:
+					return Vector3(p.x, y, p.z)
+			k += 1.0
+	return Vector3(0.0, -1.0e9, 0.0)
+
+
+func _start_swing(land: Vector3) -> void:
+	lstate = LState.SWING
+	swings += 1
+	swing_from = global_position
+	swing_to = land
+	_swing_dur = clampf(swing_from.distance_to(swing_to) / SWING_SPEED, 0.5, 2.4)
+	_t = 0.0
+	var to := land - global_position
+	to.y = 0.0
+	if to.length() > 0.05:
+		_face_dir(to.normalized())
+	_fx("click", -2.0, 0.5)
+	_fx("scrape", -8.0, 2.2)
+
+
+func _tick_swing(delta: float) -> void:
+	_t += delta
+	var u := clampf(_t / _swing_dur, 0.0, 1.0)
+	var ue := u * u * (3.0 - 2.0 * u)
+	var p := swing_from.lerp(swing_to, ue)
+	p.y -= SWING_SAG * sin(u * PI) * minf(1.0, _swing_dur / 1.2)
+	global_position = p
+	# Whoever is under the swing gets knocked flat, not taken: the landing is where it bites.
+	for pl in Net.get_players():
+		if pl.state != Player.State.NORMAL:
+			continue
+		var d := Vector2(pl.global_position.x - global_position.x, pl.global_position.z - global_position.z).length()
+		if d < HIT_RADIUS and absf(pl.global_position.y - global_position.y) < 1.5:
+			var away := (pl.global_position - global_position)
+			away.y = 0.0
+			pl.apply_knockback(away.normalized() * 3.0 + Vector3.UP * 2.0)
+	if u >= 1.0:
+		global_position = swing_to
+		_settle_floor()
+		lstate = LState.RECOVER
+		_t = RECOVER_TIME * 0.4
+		_fx("thump", -4.0, 0.9)
+
+
+func _start_climb() -> void:
+	lstate = LState.CLIMB
+	_climb_from_y = global_position.y
+	_t = 0.0
+	_fx("scrape", -6.0, 1.6)
+
+
+## Up the face while there is one in front of it; over the top, a step forward onto the roof.
+func _tick_climb(delta: float) -> void:
+	global_position.y += CLIMB_SPEED * delta
+	var fwd := Vector3(-sin(_model.rotation.y), 0.0, -cos(_model.rotation.y))
+	var space := get_world_3d().direct_space_state
+	var q := PhysicsRayQueryParameters3D.create(global_position + Vector3(0.0, 0.3, 0.0), global_position + Vector3(0.0, 0.3, 0.0) + fwd * 1.2, ChainBody.LAYER_WORLD)
+	if space.intersect_ray(q).is_empty():
+		# Over the edge: onto the roof.
+		global_position += fwd * 1.6 + Vector3(0.0, 0.2, 0.0)
+		_settle_floor()
+		lstate = LState.RECOVER
+		_t = RECOVER_TIME * 0.5
+		_fx("thump", -6.0, 1.1)
+	elif global_position.y - _climb_from_y > CLIMB_MAX:
+		global_position.y = _climb_from_y
+		_settle_floor()
+		lstate = LState.SHAMBLE
+
+
+## Where the thread hangs from while it swings.
+func thread_anchor() -> Vector3:
+	return (swing_from + swing_to) * 0.5 + Vector3(0.0, maxf(swing_from.y, swing_to.y) - (swing_from.y + swing_to.y) * 0.5 + WEB_ANCHOR_H, 0.0)
 
 
 func _start_windup(p: Player) -> void:
@@ -614,8 +774,15 @@ func _update_visuals(delta: float) -> void:
 	_model.visible = lstate != LState.DEAD or _dead_t < DEAD_LINGER
 	_hitbox.collision_layer = 0 if lstate == LState.DEAD else ChainBody.LAYER_MONSTER
 	var t := Time.get_ticks_msec() * 0.001
-	var walking := lstate == LState.SHAMBLE and _vis_speed > 0.2
+	var walking := (lstate == LState.SHAMBLE and _vis_speed > 0.2) or lstate == LState.CLIMB
 	_phase += delta * (_vis_speed * 4.0 + 0.6)
+	# The thread: a line from the anchor over the gap down to its body while it swings.
+	_thread_mesh.clear_surfaces()
+	if lstate == LState.SWING:
+		_thread_mesh.surface_begin(Mesh.PRIMITIVE_LINES)
+		_thread_mesh.surface_add_vertex(thread_anchor())
+		_thread_mesh.surface_add_vertex(chest_point())
+		_thread_mesh.surface_end()
 	var crouch_want := 1.0 if lstate == LState.WINDUP else 0.0
 	_crouch = lerpf(_crouch, crouch_want, 1.0 - exp(-14.0 * delta))
 	# Body height and pitch by state: low and coiled before the jump, flat in flight, over the
@@ -635,6 +802,12 @@ func _update_visuals(delta: float) -> void:
 		LState.STUNNED:
 			body_y = BODY_H * 0.8
 			pitch = 0.2 * sin(t * 23.0)
+		LState.SWING:
+			body_y = BODY_H * 1.1
+			pitch = -0.3 + 0.2 * sin(t * 3.0)
+		LState.CLIMB:
+			body_y = BODY_H * 0.8
+			pitch = 1.45  # nose up the wall
 		LState.RECOVER:
 			body_y = BODY_H * 0.7
 	var k := 1.0 - exp(-14.0 * delta)
@@ -673,6 +846,13 @@ func _update_visuals(delta: float) -> void:
 			LState.STUNNED:
 				lift = 0.9 + 0.3 * sin(t * 27.0 + float(i) * 1.7)
 				sweep = 0.3 * sin(t * 31.0 + float(i))
+			LState.SWING:
+				lift = 1.0 + 0.1 * sin(t * 5.0 + float(i))
+				bend = 1.2
+				sweep = 0.15 * sin(t * 4.0 + float(i))
+			LState.CLIMB:
+				sweep = sin(_phase * 1.5 + set_off) * 0.35
+				lift = 0.5 + maxf(0.0, cos(_phase * 1.5 + set_off)) * 0.3
 			LState.DEAD:
 				lift = 1.2
 				bend = 2.3
