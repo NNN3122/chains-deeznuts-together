@@ -65,7 +65,7 @@ const TASKS: Array = [
 	["Throw the HATCH RELEASE (hold Ctrl at it): 25 seconds", "Run to the SHELF SHAFT: jetpack, or stack up on a teammate", "Everyone up through the hatch before it slams"],
 	["Find the FREIGHT ELEVATOR", "Shoulder the jammed door open (sprint into it)", "Everyone inside before they catch you: it rides up to the pizzeria"],
 ]
-const HIRES_PER_FLOOR: Array[int] = [1, 3, 3, 3]  # one Hire on B4; the floors above still answer a scream together
+const HIRES_PER_FLOOR: Array[int] = [1, 1, 3, 3]  # B3 mixes one runner with the original ceiling hunter
 const RESPAWN_SECONDS: float = 45.0  # a dead Hire is replaced after this, out of sight
 const DOOR_FLOORS: Array[int] = [0, 3]  # floors with a jammed door on the route
 const ALARM_FLOOR: int = 1  # the lift floor: locked out until the fire alarm is pulled
@@ -931,6 +931,13 @@ func _build_hires(i: int) -> void:
 		h.position = cell_center(i, c) + Vector3(rng.randf_range(-1.0, 1.0), 0.0, rng.randf_range(-1.0, 1.0))
 		h.rotation.y = rng.randf() * TAU
 		add_child(h)
+	if i == ALARM_FLOOR:
+		var custodian := Custodian.new()
+		custodian.name = "CustodianB3"
+		custodian.floor_index = i
+		custodian.floor_y = global_position.y + float(i) * FLOOR_H
+		custodian.bounds = Rect2(global_position.x, global_position.z, GRID * CELL, GRID * CELL)
+		add_child(custodian)
 
 
 ## Cells a Hire can start in: not the Break Room, not the climb, at least three rooms from the
@@ -1401,6 +1408,8 @@ func _anyone_near(key: String, players: Array[Player], radius: float) -> bool:
 
 ## Server: the Line was sent back to a checkpoint. Still in the Yellow Rooms: the car comes back down.
 func server_on_respawn() -> void:
+	for c in get_tree().get_nodes_in_group("custodian"):
+		c.release(false)
 	if _car != null and GameState.checkpoint_index < FLOORS:
 		_car.server_reset()
 	_ambush_armed = true

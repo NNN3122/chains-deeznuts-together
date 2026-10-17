@@ -614,7 +614,7 @@ static func make_environment(quality: int, level: int = 0) -> Environment:
 	env.ambient_light_energy = 0.11 if pizzeria else 0.045  # rooms are lit by their own tubes, or not at all; the office is pools of light
 	if outdoors:
 		env.ambient_light_color = Color(0.5, 0.42, 0.5)
-		env.ambient_light_energy = 0.3
+		env.ambient_light_energy = 0.18
 		env.tonemap_mode = Environment.TONE_MAPPER_AGX
 		env.tonemap_exposure = 1.0
 		env.glow_enabled = true
@@ -622,8 +622,8 @@ static func make_environment(quality: int, level: int = 0) -> Environment:
 		env.glow_hdr_threshold = 1.2
 		env.ssao_enabled = quality >= 1
 		env.fog_enabled = true
-		env.fog_light_color = Color(0.18, 0.1, 0.08)
-		env.fog_density = 0.012
+		env.fog_light_color = Color(0.08, 0.11, 0.14)
+		env.fog_density = 0.018
 		env.fog_sky_affect = 0.25
 		env.adjustment_enabled = true
 		env.adjustment_contrast = 1.06

@@ -9,12 +9,13 @@ extends Node
 const RATE: int = 16000  # Hz on the wire
 const FRAME_SECONDS: float = 0.05  # one packet per 50 ms while talking
 const MAX_DISTANCE: float = 22.0  # m: inaudible beyond this
-const UNIT_SIZE: float = 3.5  # m: full volume inside this
+const UNIT_SIZE: float = 5.0  # keep chained teammates intelligible
+const PLAYBACK_BOOST_DB: float = 6.0
 const VAD_THRESHOLD: float = 0.012  # RMS below this is silence
 const VAD_HOLD: float = 0.45  # s of quiet still sent after speech (word tails)
 const TALK_TIMEOUT_MS: int = 350
-const WALL_CUTOFF_HZ: float = 900.0
-const WALL_VOLUME_DB: float = -10.0
+const WALL_CUTOFF_HZ: float = 1600.0
+const WALL_VOLUME_DB: float = -5.0
 const BUFFER_SECONDS: float = 0.4
 
 var _mic: AudioStreamPlayer
@@ -201,8 +202,9 @@ func _voice_for(peer: int) -> Dictionary:
 	player.max_distance = MAX_DISTANCE
 	player.unit_size = UNIT_SIZE
 	player.attenuation_model = AudioStreamPlayer3D.ATTENUATION_INVERSE_DISTANCE
+	player.max_db = 24.0  # the default 3 dB ceiling would defeat the volume boost
 	player.bus = AudioServer.get_bus_name(bus_index)
-	player.volume_db = linear_to_db(maxf(Settings.voice_volume, 0.001))
+	player.volume_db = playback_volume_db(false)
 	add_child(player)
 	player.global_position = p.global_position + Vector3(0.0, 1.5, 0.0)
 	player.play()
@@ -213,11 +215,17 @@ func _voice_for(peer: int) -> Dictionary:
 
 
 func _take_bus(peer: int) -> int:
+	if AudioServer.get_bus_index("VoicePlayback") < 0:
+		AudioServer.add_bus()
+		var mix := AudioServer.bus_count - 1
+		AudioServer.set_bus_name(mix, "VoicePlayback")
+		AudioServer.add_bus_effect(mix, AudioEffectLimiter.new())
 	if not _bus_pool.is_empty():
 		return _bus_pool.pop_back()
 	AudioServer.add_bus()
 	var idx := AudioServer.bus_count - 1
 	AudioServer.set_bus_name(idx, "Voice_%d" % peer)
+	AudioServer.set_bus_send(idx, "VoicePlayback")
 	var lp := AudioEffectLowPassFilter.new()
 	lp.cutoff_hz = 20000.0
 	AudioServer.add_bus_effect(idx, lp)
@@ -248,8 +256,14 @@ func _position_voices() -> void:
 		var lp: AudioEffectLowPassFilter = v["low_pass"]
 		if lp != null:
 			lp.cutoff_hz = WALL_CUTOFF_HZ if muffled else 20000.0
-		player.volume_db = linear_to_db(maxf(Settings.voice_volume, 0.001)) + (WALL_VOLUME_DB if muffled else 0.0)
+		player.volume_db = playback_volume_db(muffled)
 		player.max_distance = MAX_DISTANCE * (0.6 if muffled else 1.0)
+
+
+func playback_volume_db(muffled: bool) -> float:
+	if Settings.voice_volume <= 0.0:
+		return -80.0
+	return PLAYBACK_BOOST_DB + linear_to_db(clampf(Settings.voice_volume, 0.001, Settings.MAX_VOICE_VOLUME)) + (WALL_VOLUME_DB if muffled else 0.0)
 
 
 func _drop_voice(peer: int) -> void:

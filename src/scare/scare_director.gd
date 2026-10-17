@@ -159,7 +159,7 @@ func trigger_for(kind: String, p: Player) -> void:
 				p.apply_knockback(fwd * 2.5 + Vector3.UP * 1.5)  # the flinch jerks the Line
 		"vent_patter":
 			pos = feet + fwd * 1.5
-		"breath", "stalker":
+		"breath", "stalker", "roof_swarm":
 			pos = feet - fwd * 1.6  # right behind you
 		"footsteps":
 			pos = feet - fwd * 6.0

@@ -5,6 +5,7 @@ extends RefCounted
 ## because TeamViewer turns held keys into a stream of taps and breaks captured mouse look.
 
 const PATH: String = "user://settings.cfg"
+const MAX_VOICE_VOLUME: float = 8.0
 
 static var mouse_sensitivity: float = 1.0
 static var invert_y: bool = false
@@ -52,7 +53,7 @@ static func load_settings() -> void:
 	last_join = String(cfg.get_value("network", "last_join", last_join))
 	remote_key_gap_ms = int(cfg.get_value("input", "remote_key_gap_ms", remote_key_gap_ms))
 	voice_enabled = bool(cfg.get_value("audio", "voice_enabled", voice_enabled))
-	voice_volume = float(cfg.get_value("audio", "voice_volume", voice_volume))
+	voice_volume = clampf(float(cfg.get_value("audio", "voice_volume", voice_volume)), 0.0, MAX_VOICE_VOLUME)
 
 
 static func save_settings() -> void:

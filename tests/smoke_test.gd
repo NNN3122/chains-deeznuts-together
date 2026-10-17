@@ -79,6 +79,7 @@ func _run_host() -> void:
 	await _test_hang()
 	await _test_items()
 	await _test_hires()
+	await _test_playtest()
 	await _test_forced()
 	await _test_scares()
 	await _test_crouch()
@@ -412,12 +413,53 @@ func _test_items() -> void:
 	_host.buff_state = 0
 
 
+func _test_playtest() -> void:
+	var monsters := get_tree().get_nodes_in_group("custodian")
+	_check("first floor unchanged; second floor has one runner and the original Custodian", _level.hires_on(0).size() == 1 and _level.hires_on(1).size() == 1 and monsters.size() == 1 and monsters[0].floor_index == 1, "custodians %d" % monsters.size())
+	if not monsters.is_empty():
+		var c := monsters[0] as Custodian
+		var at: Vector3 = _level.test_points["plate"]
+		_place(at, 0.0)
+		await _wait(0.2)
+		c.debug_reset(at + Vector3(0.0, 0.0, 4.0))
+		_host.add_noise(100.0)
+		c.debug_frozen = false
+		await _wait(0.2)
+		_check("the restored ceiling hunter follows loud noise", c.is_hunting() and c.hunt_peer == 1, "state %d" % c.cstate)
+		c.take_hit()
+		c.take_hit()
+		_check("two shots drive the Custodian back", c.cstate == Custodian.CState.RETREAT, "state %d" % c.cstate)
+		var safe := _level.cell_center(1, _level.floors[1]["arrive"])
+		_place(safe, 0.0)
+		_host.add_noise(100.0)
+		_check("the Custodian respects break rooms", c._effective(_host) == 0.0 and not c._ceiling_above(safe), "")
+		c.debug_frozen = true
+		c.release(false)
+	var saved_volume := Settings.voice_volume
+	Settings.voice_volume = 1.0
+	var baseline := Voice.playback_volume_db(false)
+	Settings.voice_volume = Settings.MAX_VOICE_VOLUME
+	var boosted := Voice.playback_volume_db(false)
+	_check("voice boosts existing settings and provides eightfold extra gain", baseline == 6.0 and boosted - baseline > 18.0 and Voice.playback_volume_db(true) > baseline, "base %.1f dB, max %.1f dB" % [baseline, boosted])
+	var voice: Dictionary = Voice._voice_for(1)
+	var playback := voice["player"] as AudioStreamPlayer3D
+	var limiter_bus := AudioServer.get_bus_index("VoicePlayback")
+	_check("voice playback permits boosted gain and routes through a shared limiter", playback.max_db >= 24.0 and AudioServer.get_bus_send(int(voice["bus_index"])) == "VoicePlayback" and AudioServer.get_bus_effect(limiter_bus, 0) is AudioEffectLimiter, "")
+	Voice._drop_voice(1)
+	Settings.voice_volume = 0.0
+	_check("voice volume zero remains silent", Voice.playback_volume_db(false) <= -80.0, "")
+	Settings.voice_volume = saved_volume
+	_place(_level.test_points["spawn"], 0.0)
+
+
 func _rel(cell: Vector3) -> String:
 	var r := _host.global_position - cell
 	return "(%.2f, %.2f, %.2f)" % [r.x, r.y, r.z]
 
 
 func _freeze_hires(on: bool) -> void:
+	for node in get_tree().get_nodes_in_group("custodian"):
+		(node as Custodian).debug_frozen = on
 	for node in get_tree().get_nodes_in_group("hire"):
 		(node as HollowHire).debug_frozen = on
 
@@ -449,9 +491,9 @@ func _test_hires() -> void:
 			break
 	_check("a Hire that sees you chases, grabs, and (nobody helping) takes you: a layoff", saw_chase and grabbed and GameState.wipes > wipes0, "chase %s, grabbed %s, wipes %d -> %d, state %d" % [saw_chase, grabbed, wipes0, GameState.wipes, h.hstate])
 	await _wait(1.6)
-	# The call-out: B4 has one Hire, so this is B3, where a scream still brings the others.
-	var upstairs := _level.hires_on(1)
-	var plate: Vector3 = _level.test_points["plate"]
+	# B3 has the mixed encounter; B2 still has runners that answer a call-out.
+	var upstairs := _level.hires_on(2)
+	var plate: Vector3 = _level.test_points["boost_shelf"]
 	_place(plate, PI)
 	_park_mate(plate + Vector3(8.0, 0.0, 0.0))
 	await _wait(0.3)
@@ -463,6 +505,7 @@ func _test_hires() -> void:
 	h2.debug_frozen = false
 	caller.debug_reset(plate + Vector3(0.0, 0.0, 3.2), 0.0)
 	caller.debug_frozen = false
+	caller._start_chase(_host)  # trigger a sighting explicitly: B2's shelves block this test's sightline
 	var answered := false
 	for i in 12:
 		await _wait(0.1)
@@ -1302,12 +1345,15 @@ func _test_p_exit() -> void:
 ## Level 3 on the roof: the whole escape from inside the Stack, the same as the lot on its own.
 func _test_roof() -> void:
 	var lot := _stack.lot
+	if only == "roof":
+		_place(lot.spawn_position, 0.0)
+		lot.server_arrive()
 	_check("the roof is its own level for names, scares and the sky", _stack.floor_name(_host.global_position.y) == HordeArena.FLOOR_NAME and _stack.level_index_at(_host.global_position) == 2 and _stack.scare_pool(_host.global_position) == HordeArena.SCARE_POOL and not _stack.is_safe_spot(_host.global_position), _stack.floor_name(_host.global_position.y))
 	await _escape_by_helicopter(lot, _stack.test_points, "l_")
 
 
 ## The whole way out: fence, gap (wave two, the spiders), the last roof (every roof's wave), the
-## helipad (the last wave, the bats, and its checkpoint), hold the pad, aboard.
+## helipad (the last wave, the bats, and its checkpoint), jetpack into the flyby.
 func _escape_by_helicopter(lot: HordeArena, tp: Dictionary, prefix: String) -> void:
 	lot.horde.debug_frozen = true
 	for l in lot.launchers:
@@ -1335,22 +1381,49 @@ func _escape_by_helicopter(lot: HordeArena, tp: Dictionary, prefix: String) -> v
 	var cp_ok := GameState.checkpoint_index == lot.helipad_checkpoint_index()
 	_check("the gap brings wave two (spiders), the helipad the last wave (bats) and the helipad checkpoint", two_done and round2 and climbed and round3 and cp_ok,
 		"tasks %s, waves %d, weavers %d, flitters %d, checkpoint %d (want %d)" % [str(GameState.tasks), lot.rounds_spawned, lot.horde.alive_of(Horde.KIND_WEAVER), lot.horde.alive_of(Horde.KIND_FLITTER), GameState.checkpoint_index, lot.helipad_checkpoint_index()])
-	# Hold the pad: the pilot spins up while someone stands there (sped up for the test).
-	await _wait(1.0)
-	var spinning := lot.heli_fraction > 0.0 and not GameState.task_done(HordeArena.TASK_PAD)
-	lot.debug_pad_ready()
-	await _wait(0.8)
-	var ready := GameState.task_done(HordeArena.TASK_PAD) and lot.heli_fraction >= 1.0
-	var heli: Vector3 = lot.heli_position()
-	for i in bodies.size():
-		bodies[i].teleport_to(heli + Vector3(-1.5 + 1.0 * float(i), 0.1, 2.0), 0.0)
-	for i in 30:
-		await _wait(0.1)
+	# Standing below a passing aircraft must never count as boarding.
+	var airborne: bool = lot.heli_position().y - tp[prefix + "helipad"].y > 3.8
+	var initial := lot.heli_position()
+	await _wait(2.0)
+	_check("helicopter flies past immediately; waiting on the pad cannot win", airborne and initial.distance_to(lot.heli_position()) > 2.0 and not GameState.escaped and GameState.task_done(HordeArena.TASK_PAD), "moved %.1f m" % initial.distance_to(lot.heli_position()))
+	var supply := 0
+	for p in Net.get_players():
+		if p.has_item("jetpack"):
+			supply += 1
+	for pickup in get_tree().get_nodes_in_group("pickups"):
+		if pickup.get("item_id") == "jetpack" and pickup.global_position.distance_to(tp[prefix + "helipad"]) < 10.0:
+			supply += 1
+	_check("helipad provides fresh jetpacks for the team", supply >= 1, "%d packs" % supply)
+	lot.server_on_respawn()
+	await _wait(0.7)
+	_check("respawn restarts flybys even with the helipad task already complete", lot.heli_fraction == 1.0 and lot.heli_elapsed > 0.0, "clock %.2f" % lot.heli_elapsed)
+	# Real controls, fuel and chain physics: launch from the pad into the moving cabin.
+	for p in Net.get_players():
+		p.server_drop_all(false)
+		p.server_give_item(ItemRegistry.get_data("jetpack").create_logic())
+	_place(tp[prefix + "helipad"] + Vector3(0.0, 0.0, 6.5), 0.0)
+	for wait_tick in 160:
+		if lot.heli_elapsed >= HordeArena.FLYBY_SECONDS * 0.25 - 1.5:
+			break
+		await _wait(0.05)
+	var highest := _host.global_position.y
+	for tick in 70:
+		var phase := (lot.heli_elapsed + 0.25) / HordeArena.FLYBY_SECONDS * TAU
+		var aim := lot.origin + lot.tower_top + Vector3(-cos(phase) * HordeArena.FLYBY_WIDTH, HordeArena.FLYBY_HEIGHT + 0.7, sin(phase) * 1.5)
+		for p in Net.get_players():
+			var direction := Vector2(aim.x - p.global_position.x, aim.z - p.global_position.z).limit_length(1.0)
+			if p.global_position.y < aim.y - 0.1:
+				direction.y = clampf((lot.origin.z + lot.tower_top.z + 6.5 - p.global_position.z) * 2.0, -1.0, 1.0)
+			var flags := Player.FLAG_RUN | (Player.FLAG_USE if p.global_position.y < aim.y + 0.25 else 0)
+			p._apply_input(direction, 0.0, 0.0, flags)
+		await _wait(0.05)
+		highest = maxf(highest, _host.global_position.y)
 		if GameState.escaped:
 			break
-	_check("holding the pad spins the pilot up, and everyone aboard is ESCAPED to Level 4", spinning and ready and GameState.escaped and GameState.escape_line.begins_with("Airlifted"),
-		"spinning %s, ready %s, escaped %s, line '%s'" % [spinning, ready, GameState.escaped, GameState.escape_line])
-	await _wait(2.0)
+	_check("jetpack flight with the chain reaches the moving cabin and escapes", GameState.escaped and GameState.escape_line.begins_with("Airlifted"), "rose %.2f m; host %s, heli %s" % [highest - tp[prefix + "helipad"].y, _host.global_position, lot.heli_position()])
+	for p in Net.get_players():
+		p._apply_input(Vector2.ZERO, 0.0, 0.0, 0)
+	await _wait(0.3)
 
 
 ## Playable end to end: the bot crosses every link of the route the way a player would (a run
@@ -1644,7 +1717,23 @@ func _run_arena(arena: HordeArena) -> void:
 
 ## Clearing the lot: the three tasks done, then everyone back on the pad clocks out.
 func _test_lot_clear() -> void:
+	await _test_roof_scares()
 	await _escape_by_helicopter(_arena, _arena.test_points, "")
+
+
+func _test_roof_scares() -> void:
+	var lot := _arena if _arena != null else _stack.lot
+	lot.horde.debug_frozen = true
+	for l in lot.launchers:
+		l.debug_frozen = true
+	_place(lot.test_points["spawn"], 0.0)
+	var before := ScareDirector.scares_played
+	for kind: String in ["roof_scrape", "roof_shadow", "roof_swarm"]:
+		ScareDirector.trigger_for(kind, _host)
+		await _wait(0.1)
+	var shown := lot.find_children("RoofScare*", "MeshInstance3D", true, false).size()
+	await _wait(2.0)
+	_check("roof scares play and their temporary silhouettes clean up", ScareDirector.scares_played >= before + 3 and shown >= 6 and lot.find_children("RoofScare*", "MeshInstance3D", true, false).is_empty(), "scares %d, silhouettes %d" % [ScareDirector.scares_played - before, shown])
 
 
 func _test_horde_field() -> void:
@@ -1979,6 +2068,18 @@ func _run_client() -> void:
 func _run_client_arena(arena: HordeArena) -> void:
 	var main := get_tree().current_scene
 	_check("client: the host's world config arrived and the Lot was rebuilt (joined with no --arena)", bool(Net.world_config.get("arena", false)) and arena.horde.count >= 400 and bool(main.get("_rejoined")), "config %s, rejoined %s" % [Net.world_config, main.get("_rejoined")])
+	if only == "lot_clear":
+		var moving := false
+		var previous := arena.heli_position()
+		for i in 180:
+			await _wait(0.25)
+			moving = moving or (arena.heli_fraction == 1.0 and arena.heli_position().distance_to(previous) > 0.1)
+			previous = arena.heli_position()
+			if GameState.escaped:
+				break
+		_check("client: moving helicopter clock and escape replicate", moving and GameState.escaped and arena.heli_elapsed > 0.0, "moving %s, escaped %s, clock %.2f" % [moving, GameState.escaped, arena.heli_elapsed])
+		_finish()
+		return
 	var horde := arena.horde
 	var z0 := _mean_z_of(horde)
 	var saw_launcher := false

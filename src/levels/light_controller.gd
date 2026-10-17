@@ -81,6 +81,7 @@ func _process(delta: float) -> void:
 	var cam_pos := cam.global_position if cam != null else Vector3.ZERO
 	var cam_floor := int(floor(cam_pos.y / FLOOR_HEIGHT + 0.1))
 	var hires := get_tree().get_nodes_in_group("hire")
+	var custodians := get_tree().get_nodes_in_group("custodian")
 	var pappies := get_tree().get_nodes_in_group("pappy")
 	var now := Time.get_ticks_msec()
 	var scare_flicker := ScareDirector.flicker_active()
@@ -96,6 +97,11 @@ func _process(delta: float) -> void:
 		if not near_floor:
 			continue
 		var e := _pattern(tube)
+		for c in custodians:
+			if not tube.safe and c.floor_index == tube.floor_index:
+				var distance: float = c.stain_point().distance_to(tube.light.global_position)
+				if distance < CUSTODIAN_DIM_RADIUS:
+					e *= lerpf(0.25, 1.0, distance / CUSTODIAN_DIM_RADIUS)
 		# The Hires carry a static with them: tubes gutter as one walks under, and strobe while
 		# one is running at you.
 		for c in hires:

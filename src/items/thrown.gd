@@ -113,6 +113,8 @@ func _explode() -> void:
 		body.apply_knockback(away * 9.0 * k + Vector3.UP * (5.0 + 6.0 * k))
 	for c in get_tree().get_nodes_in_group("monster"):
 		var cp := (c as Node3D).global_position
+		if c.has_method("stain_point"):
+			cp = c.call("stain_point")
 		# Same floor only: a blast doesn't kill through a 5 m concrete slab.
 		if c.has_method("blast") and cp.distance_to(pos) < BLAST_RADIUS + 3.0 and absf(cp.y - pos.y) < 3.5:
 			c.call("blast")

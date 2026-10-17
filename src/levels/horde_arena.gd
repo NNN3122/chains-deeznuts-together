@@ -6,8 +6,7 @@ extends Node3D
 ## eleven rooftops north of it, each a jump, a plank, a drop or a climb from the last, laid out
 ## from the run's seed, with the swarm boiling out of every roof's vents as you land on it and
 ## the Weavers swinging after you on threads. The twelfth roof is a tower with a fire escape up
-## to a helipad, where the helicopter waits: hold the pad while the pilot spins her up, then
-## everyone aboard.
+## to a helipad: jetpack into the open cabin of a helicopter making repeated flybys.
 ## Two ways to exist:
 ##   - on the roof of the building (LevelStack sets `embedded`, `origin` and `checkpoint_index`:
 ##     the pizzeria's prop-loft hatch climbs out onto the pad, the crowd sleeps until then);
@@ -29,14 +28,15 @@ const PAD_RADIUS: float = 6.0
 const LAYOFF_DELAY: float = 1.1
 const REGROUP_COOLDOWN_MS: int = 15000
 const FLOOR_NAME: String = "THE ROOF: CARROW HEIGHTS"
-const SCARE_POOL: Array = [["footsteps", 2], ["breath", 2], ["whisper", 1], ["stalker", 1]]
+const SCARE_POOL: Array = [["roof_scrape", 3], ["roof_shadow", 3], ["roof_swarm", 2], ["breath", 1]]
 const PAD_LOCAL: Vector3 = Vector3(0.0, 0.2, 34.0)
 const ROOF_COUNT: int = 11  # rooftops between the lot and the tower
 const TOWER_W: float = 18.0
 const TOWER_RISE: float = 10.5  # m the tower's helipad stands over the last roof (6 ledges)
 const STEP_H: float = 1.75  # m up per fire-escape ledge (a standing mantle reaches 2.1)
-const HELI_READY: float = 30.0  # s the pilot needs with someone on the pad
-const ABOARD_RADIUS: float = 4.5
+const FLYBY_SECONDS: float = 22.0  # repeat pass: a miss never strands the team
+const FLYBY_HEIGHT: float = 4.2  # above the pad, beyond a normal jump
+const FLYBY_WIDTH: float = 12.0
 const JUMPER_ROOFS: Array[int] = [3, 6, 9]  # a Jumper waits on each of these roofs
 const CHECKPOINT_ROOFS: Array[int] = [4, 8]  # a checkpoint on each of these, then the helipad
 const WAKE_RANGE: float = 55.0  # m: a Jumper further than this from everyone sleeps
@@ -46,8 +46,8 @@ const TASKS: Array[String] = [
 	"Reach the gap in the wall",
 	"Cross the rooftops to the tower (0 of 11)",
 	"Climb the fire escape to the helipad",
-	"Hold the pad while the pilot spins her up",
-	"Everyone aboard",
+	"Reach the jetpack supply: the helicopter is making passes",
+	"Jetpack into the open cabin together (hold F / left click)",
 ]
 const TASK_ROOFS: int = 2
 const TASK_ESCAPE: int = 3
@@ -96,7 +96,8 @@ var escape_steps: Array[Vector3] = []  # local: the top centre of each landing, 
 var root: Node3D
 var furthest_roof: int = 0  # replicated: how far the Line has got (for the HUD and the waves)
 var rounds_spawned: int = 0  # replicated: every peer spawns waves up to this
-var heli_fraction: float = 0.0  # replicated: 0..1 of the pilot's spin-up
+var heli_fraction: float = 0.0  # replicated: 1 once the helicopter starts its passes
+var heli_elapsed: float = 0.0  # replicated flight clock; clients extrapolate between snapshots
 var _waves: Array = []  # [[count, weights, local rect, kinds...], ...] per wave, in order
 var _we: WorldEnvironment
 var _layoff_pending: bool = false
@@ -111,7 +112,9 @@ var _tail_rotor: Node3D
 var _heli_light: OmniLight3D
 var _heli_sound: AudioStreamPlayer3D
 var _pad_told: bool = false
-var _pad_t: float = 0.0
+var _supply_t: float = 0.0
+var _roof_scare_t: float = 9.0
+var _roof_lamps: Array[OmniLight3D] = []
 var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
 var _route_bounds: Rect2  # local x, z of every route roof and the tower, for the city round them
 var _been_up: Dictionary = {}  # instance id -> true for every chain body that has stood up here
@@ -123,7 +126,7 @@ func _enter_tree() -> void:
 	var sync := MultiplayerSynchronizer.new()
 	sync.name = "Sync"
 	var cfg := SceneReplicationConfig.new()
-	for prop in ["rounds_spawned", "heli_fraction", "furthest_roof"]:
+	for prop in ["rounds_spawned", "heli_fraction", "heli_elapsed", "furthest_roof"]:
 		var path := NodePath(".:" + prop)
 		cfg.add_property(path)
 		cfg.property_set_replication_mode(path, SceneReplicationConfig.REPLICATION_MODE_ALWAYS)
@@ -220,7 +223,7 @@ func _ready() -> void:
 		var c := roofs[k].center()
 		add_child(Checkpoint.create("Checkpoint%d" % cp, cp, origin + c + Vector3(0.0, 0.1, 0.0), 0.0, "Roof %d of %d. Keep going north: the tower with the red light is the way out." % [k, ROOF_COUNT]))
 	cp += 1
-	add_child(Checkpoint.create("Checkpoint%d" % cp, cp, origin + tower_top + Vector3(-5.0, 0.1, 5.0), 0.0, "The helipad. Hold it while the pilot spins her up, then everyone aboard."))
+	add_child(Checkpoint.create("Checkpoint%d" % cp, cp, origin + tower_top + Vector3(-5.0, 0.1, 5.0), 0.0, "Take a jetpack. Hold F / left click and steer into the helicopter's open cabin. Missed it? Land, refuel, try the next pass."))
 
 
 func helipad_checkpoint_index() -> int:
@@ -468,6 +471,8 @@ func _lamp_post(p: Vector3, energy: float, range_m: float) -> void:
 	lamp.shadow_enabled = false
 	lamp.position = p
 	root.add_child(lamp)
+	_roof_lamps.append(lamp)
+	lamp.set_meta("base_energy", energy)
 	var post := MeshInstance3D.new()
 	var pm := CylinderMesh.new()
 	pm.top_radius = 0.08
@@ -655,6 +660,8 @@ func _build_tower(batch: LevelKit.BoxBatch) -> void:
 	for s: float in [-1.0, 1.0]:
 		batch.add(top + Vector3(s * 1.8, 0.02, 0.0), Vector3(0.5, 0.02, 5.0), "paint", false)
 	batch.add(top + Vector3(0.0, 0.02, 0.0), Vector3(3.6, 0.02, 0.5), "paint", false)
+	for side: float in [-1.0, 1.0]:
+		batch.add(top + Vector3(0.0, 0.025, side * 6.5), Vector3(7.0, 0.03, 0.5), "hazard", false)
 	for k in 12:
 		var a := float(k) / 12.0 * TAU
 		batch.add(top + Vector3(cos(a) * 6.5, 0.1, sin(a) * 6.5), Vector3(0.3, 0.2, 0.3), "street_lamp", false)
@@ -695,27 +702,48 @@ func _build_tower(batch: LevelKit.BoxBatch) -> void:
 	_route_sign(Vector3(tower.cross_x - escape_dir * 2.6, last.y + 2.4, south + 0.05), "FIRE ESCAPE  ->  HELIPAD")
 	_lamp_post(Vector3(tower.cross_x + 4.0, last.y + 5.0, south + 3.0), 2.4, 18.0)
 	_build_helicopter(top)
+	_route_sign(top + Vector3(-4.0, 2.0, 4.0), "JETPACK SUPPLY\nG: MAKE ROOM  /  F: FLY\nRISE AT THE STRIP, THEN STEER IN")
 
 
 func _build_helicopter(top: Vector3) -> void:
-	_heli = Node3D.new()
+	var aircraft := AnimatableBody3D.new()
+	aircraft.sync_to_physics = false  # moved in the physics tick, including on clients
+	aircraft.collision_layer = ChainBody.LAYER_WORLD
+	_heli = aircraft
 	_heli.name = "Helicopter"
-	_heli.position = top
+	_heli.position = top + Vector3(-FLYBY_WIDTH, FLYBY_HEIGHT, 0.0)
 	root.add_child(_heli)
 	var body := LevelKit.mat("heli_body")
 	var glass := LevelKit.mat("heli_glass")
 	var dark := LevelKit.mat("rotor")
-	_hbox(_heli, Vector3(2.0, 1.7, 4.2), Vector3(0.0, 1.55, 0.3), body)
-	_hbox(_heli, Vector3(1.8, 1.2, 1.4), Vector3(0.0, 1.7, -2.2), glass)  # the nose
+	# Open rescue cabin: a real moving deck carries the whole Line between passes.
+	_hbox(_heli, Vector3(6.0, 0.3, 5.0), Vector3(0.0, 0.55, 0.0), body)
+	_hbox(_heli, Vector3(6.0, 0.18, 5.0), Vector3(0.0, 3.0, 0.0), body)
+	_hbox(_heli, Vector3(2.8, 1.5, 1.4), Vector3(0.0, 1.7, -3.0), glass)
+	var deck := CollisionShape3D.new()
+	var deck_shape := BoxShape3D.new()
+	deck_shape.size = Vector3(6.0, 0.3, 5.0)
+	deck.shape = deck_shape
+	deck.position.y = 0.55
+	_heli.add_child(deck)
+	for side: float in [-1.0, 1.0]:
+		_hbox(_heli, Vector3(0.12, 2.3, 0.12), Vector3(side * 2.85, 1.85, 2.3), dark)
+		_hbox(_heli, Vector3(0.12, 2.3, 0.12), Vector3(side * 2.85, 1.85, -2.3), dark)
+	var cabin := OmniLight3D.new()
+	cabin.light_color = Color(0.25, 1.0, 0.45)
+	cabin.light_energy = 3.0
+	cabin.omni_range = 9.0
+	cabin.position.y = 2.0
+	_heli.add_child(cabin)
 	_hbox(_heli, Vector3(0.5, 0.5, 5.0), Vector3(0.0, 1.9, 4.8), body)  # tail boom
 	_hbox(_heli, Vector3(0.1, 1.4, 0.8), Vector3(0.0, 2.6, 7.2), body)  # fin
 	for s: float in [-1.0, 1.0]:
 		_hbox(_heli, Vector3(0.15, 0.15, 3.6), Vector3(s * 1.2, 0.1, 0.3), dark)  # skids
 		_hbox(_heli, Vector3(0.12, 0.6, 0.12), Vector3(s * 1.2, 0.4, -0.8), dark)
 		_hbox(_heli, Vector3(0.12, 0.6, 0.12), Vector3(s * 1.2, 0.4, 1.4), dark)
-	_hbox(_heli, Vector3(0.6, 0.5, 0.6), Vector3(0.0, 2.6, 0.3), dark)  # the mast
+	_hbox(_heli, Vector3(0.6, 0.5, 0.6), Vector3(0.0, 3.25, 0.3), dark)  # above the cabin canopy
 	_rotor = Node3D.new()
-	_rotor.position = Vector3(0.0, 2.9, 0.3)
+	_rotor.position = Vector3(0.0, 3.55, 0.3)
 	_heli.add_child(_rotor)
 	for k in 4:
 		var blade := MeshInstance3D.new()
@@ -928,7 +956,7 @@ func _block(cx: float, cz: float, sx: float, sz: float) -> void:
 
 
 func first_objective() -> String:
-	return "The roof: over the fence, through the gap, then north across the rooftops to the tower with the red light. Up its fire escape to the helipad; hold the pad, then everyone aboard."
+	return "The roof: north across the rooftops to the tower with the red light. Climb its fire escape, take a jetpack, and fly into the passing helicopter's green cabin together."
 
 
 ## Anyone on the Line up here? (Embedded, the crowd sleeps until then.)
@@ -994,7 +1022,7 @@ func _start_round(k: int) -> void:
 	if k == 2:
 		GameState.post_message("MORE OF THEM. The spiders are faster than you: shoot, or keep moving.", 4.0)
 	elif k == _waves.size():
-		GameState.post_message("WINGS. They come down from above; only a gun stops them. Hold the pad.", 4.0)
+		GameState.post_message("WINGS. They come down from above. Get your jetpacks ready for the flyby.", 4.0)
 
 
 ## Tests and the bench: everything at once.
@@ -1003,9 +1031,10 @@ func debug_spawn_all_rounds() -> void:
 	_tick_rounds()
 
 
-## Tests: the pilot is ready now.
+## Screenshot tours: show the helicopter directly over the pad.
 func debug_pad_ready() -> void:
-	_pad_t = HELI_READY
+	heli_fraction = 1.0
+	heli_elapsed = FLYBY_SECONDS * 0.25
 
 
 func heli_position() -> Vector3:
@@ -1042,8 +1071,73 @@ func scare_pool(_p: Vector3) -> Array:
 	return SCARE_POOL
 
 
-func play_scare(_kind: String, _pos: Vector3, _targeted: bool) -> void:
-	pass
+func play_scare(kind: String, pos: Vector3, _targeted: bool) -> void:
+	var me := Net.get_local_player()
+	if me == null or me.global_position.distance_to(pos) > 35.0:
+		return
+	match kind:
+		"roof_scrape":
+			Sfx.caption(self, "claws dragging beneath the roof", pos)
+			for i in 5:
+				var at := pos + Vector3(-4.0 + float(i) * 2.0, -0.8, 2.0)
+				get_tree().create_timer(float(i) * 0.35).timeout.connect(func() -> void:
+					if is_inside_tree():
+						Sfx.play_at(self, "scrape", at, -1.0, 0.65, 24.0))
+		"roof_shadow":
+			ScareDirector.flicker(pos, 24.0, 2200)
+			Sfx.caption(self, "something enormous overhead", pos + Vector3.UP * 5.0)
+			Sfx.play_at(self, "creak", pos + Vector3.UP * 5.0, 1.0, 0.5, 30.0)
+			_spawn_roof_shadow(pos, Horde.KIND_WEAVER, 3.0)
+		"roof_swarm":
+			Sfx.caption(self, "wings bursting out behind you", pos)
+			Sfx.play_at(self, "growl", pos, 0.0, 1.5, 30.0)
+			me.add_shake(0.25)
+			for i in 5:
+				_spawn_roof_shadow(pos + Vector3(float(i) - 2.0, float(i) * 0.4, 1.0), Horde.KIND_FLITTER, 1.3)
+
+
+func _spawn_roof_shadow(pos: Vector3, kind: int, size: float) -> void:
+	var shape := MeshInstance3D.new()
+	shape.name = "RoofScare"
+	shape.mesh = HordeMesh.mesh_for(kind)
+	shape.material_override = HordeMesh.material_for(kind)
+	shape.scale = Vector3.ONE * size
+	add_child(shape, true)
+	shape.global_position = pos + Vector3(-6.0, 6.0, -3.0)
+	var tw := shape.create_tween()
+	tw.tween_property(shape, "global_position", pos + Vector3(0.0, 2.5, -3.0), 0.45)
+	tw.tween_interval(0.35)
+	tw.tween_property(shape, "global_position", pos + Vector3(9.0, 9.0, -6.0), 0.7)
+	tw.tween_callback(shape.queue_free)
+
+
+func _tick_roof_lights() -> void:
+	for lamp in _roof_lamps:
+		var energy := float(lamp.get_meta("base_energy"))
+		if ScareDirector.flicker_active() and lamp.global_position.distance_to(ScareDirector.flicker_center) < ScareDirector.flicker_radius:
+			energy *= 0.2 if sin(Time.get_ticks_msec() * 0.027) > 0.0 else 0.8
+		lamp.light_energy = energy
+
+
+## Grounded targets only: scares build dread between jumps, never knock someone off a plank.
+func _tick_roof_scares(delta: float, players: Array[Player]) -> void:
+	_roof_scare_t -= delta
+	if _roof_scare_t > 0.0 or not _tasks_set:
+		return
+	for p in players:
+		if not p.is_on_floor() or p.state != Player.State.NORMAL or roof_at(p.global_position) < 0:
+			continue
+		var hunted := false
+		for l in launchers:
+			if l.is_hunting() and l.global_position.distance_to(p.global_position) < 12.0:
+				hunted = true
+		if hunted:
+			continue
+		var kind := String(SCARE_POOL[_rng.randi_range(0, 2)][0])
+		ScareDirector.trigger_for(kind, p)
+		_roof_scare_t = _rng.randf_range(14.0, 24.0)
+		return
+	_roof_scare_t = 3.0
 
 
 func refresh_environment() -> void:
@@ -1102,6 +1196,8 @@ func server_arrive() -> void:
 	_tasks_set = true
 	_pad_told = false
 	heli_fraction = 0.0
+	heli_elapsed = 0.0
+	_roof_scare_t = 9.0
 	if rounds_spawned < 1:
 		rounds_spawned = 1
 	GameState.post_message("THE ROOF. They came up out of the walls. Keep moving: north, roof to roof, to the tower with the red light.", 6.0)
@@ -1110,6 +1206,7 @@ func server_arrive() -> void:
 func _physics_process(delta: float) -> void:
 	_tick_rounds()
 	_tick_helicopter(delta)
+	_tick_roof_lights()
 	# The swarm wakes when anyone is up here, on every peer (clients run the mass); a Jumper
 	# wakes when someone is within range of it.
 	var here := anyone_here()
@@ -1125,6 +1222,13 @@ func _physics_process(delta: float) -> void:
 		l.asleep = not near
 	if not multiplayer.is_server() or GameState.escaped:
 		return
+	if here:
+		_tick_roof_scares(delta, players)
+		_tick_boarding(players)
+		_supply_t -= delta
+		if _supply_t <= 0.0:
+			_supply_t = 2.0
+			_ensure_escape_jetpacks(players)
 	# Over the edge is a long way down: the street (which has no floor to stand on; nobody is
 	# meant to). Only bodies that have been up here count, so nobody in the building below does.
 	for b in Net.get_chain_bodies():
@@ -1139,7 +1243,6 @@ func _physics_process(delta: float) -> void:
 	if _task_t > 0.0 or not _tasks_set or not here:
 		return
 	_task_t = 0.5
-	var on_pad := 0
 	for p in players:
 		var l := p.global_position - origin
 		if l.z < FENCE_Z - 0.5 and l.y > -1.0 and l.y < 3.0:
@@ -1160,32 +1263,47 @@ func _physics_process(delta: float) -> void:
 					GameState.post_message("THE LAST ROOF. The fire escape goes up the tower from here; the bats will follow you up.", 4.0)
 					GameState.complete_task(TASK_ROOFS)
 		if _on_helipad(p.global_position):
-			on_pad += 1
 			if not GameState.task_done(TASK_ESCAPE):
 				GameState.complete_task(TASK_ROOFS)
 				GameState.complete_task(TASK_ESCAPE)
 				_start_round(_waves.size())
-	# The pad: someone on it spins the pilot up; everyone off it and she winds down.
-	if GameState.task_done(TASK_ESCAPE) and not GameState.task_done(TASK_PAD):
-		if on_pad > 0:
-			if not _pad_told:
-				_pad_told = true
-				GameState.post_message("The pilot's spinning her up. HOLD THE PAD: %d seconds. Everything with wings is coming." % int(HELI_READY), 5.0)
-			_pad_t += 0.5
-		else:
-			_pad_t = maxf(0.0, _pad_t - 0.5)
-		heli_fraction = clampf(_pad_t / HELI_READY, 0.0, 1.0)
-		if heli_fraction >= 1.0:
-			GameState.complete_task(TASK_PAD)
-			GameState.post_message("SHE'S READY. EVERYONE ABOARD.", 4.0)
-	# Everyone aboard: all players at the helicopter, and off we go.
-	if not GameState.task_done(TASK_PAD) or players.is_empty():
+	if GameState.task_done(TASK_ESCAPE) and not _pad_told:
+		_pad_told = true
+		heli_fraction = 1.0
+		heli_elapsed = 0.0
+		GameState.complete_task(TASK_PAD)
+		_ensure_escape_jetpacks(players)
+		GameState.post_message("I CAN'T LAND. Jetpack up from a striped launch line, then steer into the GREEN CABIN. Hold F / left click. I'll circle back!", 8.0)
+
+
+func _ensure_escape_jetpacks(players: Array[Player]) -> void:
+	if not GameState.task_done(TASK_ESCAPE) or not _tasks_set:
+		return
+	var needed := 0
+	for p in players:
+		if not p.has_item("jetpack"):
+			needed += 1
+	var supply := origin + tower_top + Vector3(-4.0, 0.1, 3.0)
+	var waiting := 0
+	for pickup in get_tree().get_nodes_in_group("pickups"):
+		if pickup.get("item_id") == "jetpack" and not pickup.is_queued_for_deletion() and pickup.global_position.distance_to(supply) < 8.0:
+			waiting += 1
+	for i in maxi(0, needed - waiting):
+		Net.spawn_pickup("jetpack", supply + Vector3(float((waiting + i) % 3) * 1.8, 0.0, -float((waiting + i) / 3) * 1.8), 0)
+
+
+func is_aboard(p: Vector3) -> bool:
+	var local := _heli.to_local(p)
+	return absf(local.x) < 2.9 and absf(local.z) < 2.4 and local.y >= 0.55 and local.y < 2.2
+
+
+func _tick_boarding(players: Array[Player]) -> void:
+	if heli_fraction < 1.0 or not _tasks_set or players.is_empty() or not GameState.task_done(TASK_ESCAPE):
 		return
 	if _layoff_pending or Time.get_ticks_msec() - last_layoff_msec() < 3000:
 		return
-	var heli := heli_position()
 	for p in players:
-		if p.global_position.distance_to(heli) > ABOARD_RADIUS:
+		if p.state != Player.State.NORMAL or not is_aboard(p.global_position):
 			return
 	GameState.complete_task(TASK_ABOARD)
 	GameState.set_escaped("Airlifted off Carrow Heights. Next stop: Level 4, the Hotel Velluto.")
@@ -1196,7 +1314,7 @@ func _on_helipad(p: Vector3) -> bool:
 	return l.y > -1.0 and l.y < 6.0 and absf(l.x) < TOWER_W * 0.5 and absf(l.z) < TOWER_W * 0.5
 
 
-## Every peer: the rotor follows the pilot's spin-up; the strobe blinks; the sound rises.
+## Every peer follows the host's flight clock. The deck is also the boarding volume's frame.
 func _tick_helicopter(delta: float) -> void:
 	if _rotor == null:
 		return
@@ -1205,13 +1323,19 @@ func _tick_helicopter(delta: float) -> void:
 		spin = 40.0
 		_heli.position.y += 3.0 * delta  # up and away
 		_heli.rotation.x = lerpf(_heli.rotation.x, -0.12, delta)
+	elif heli_fraction > 0.0:
+		heli_elapsed += delta
+		var phase := heli_elapsed / FLYBY_SECONDS * TAU
+		_heli.position = tower_top + Vector3(-cos(phase) * FLYBY_WIDTH, FLYBY_HEIGHT + 0.35 * sin(phase * 2.0), sin(phase) * 1.5)
+	else:
+		_heli.position = tower_top + Vector3(-FLYBY_WIDTH, FLYBY_HEIGHT, 0.0)
 	_rotor.rotation.y += spin * delta
 	_tail_rotor.rotation.x += spin * 3.0 * delta
 	_heli_light.visible = fmod(Time.get_ticks_msec() * 0.001, 1.0) < 0.15
 	if heli_fraction > 0.02 and not Sfx.is_silent():
 		Sfx.start_loop(_heli_sound)
 		_heli_sound.pitch_scale = 0.6 + 0.9 * heli_fraction
-		_heli_sound.volume_db = -14.0 + 12.0 * heli_fraction
+		_heli_sound.volume_db = -12.0  # rotor should leave room for proximity voices
 	elif _heli_sound.playing:
 		_heli_sound.stop()
 
@@ -1272,9 +1396,10 @@ func server_on_respawn() -> void:
 	for i in launchers.size():
 		if not launchers[i].is_dead():
 			launchers[i].debug_reset(launcher_homes[i])
-	_pad_t = 0.0
+	heli_elapsed = 0.0
 	heli_fraction = 0.0
 	_pad_told = false
+	_roof_scare_t = 12.0
 
 
 ## The Stack asks: is this position in the district (over the route, whatever its height)?

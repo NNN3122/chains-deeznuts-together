@@ -22,6 +22,14 @@ A 1–6 player online co-op horror-comedy. Players are physically chained togeth
 
 The full game design document is `design/GAME_DESIGN_DOCUMENT.md`. Treat it as the reference for names and numbers; this file is the short version.
 
+## Current playtest changes (October 2026)
+
+- B4 (Level 1 floor 1) stays unchanged. B3 now has **one Hollow Hire plus the restored original Custodian**, not three runners. `custodian.gd` comes from the earlier ceiling-hunter implementation, with explicit break-room immunity and checkpoint retreat. B2 and B1 still have three Hires. The old milestone notes below describe earlier builds.
+- Level 3 ends with **jetpack boarding during repeated helicopter flybys**, replacing the 30-second pad hold. `HordeArena.heli_elapsed` is host-replicated; an `AnimatableBody3D` cabin deck carries riders. Rise beside the deck and steer inside. All players must be inside the cabin to escape; a player below the helicopter cannot count. The pad replenishes missing jetpacks. Flybys restart after regroup/wipes even if the pad task was already completed.
+- Roof horror: level-specific scrape, giant spider shadow, and wing-burst scares every 14–24 seconds when a player is grounded, plus colder fog and lower outdoor ambient light. `LevelStack.play_scare` forwards roof effects to the arena. Lamps flicker while route signs stay readable; effects do not apply knockback.
+- Voice playback adds 6 dB at the existing saved volume; the settings multiplier now reaches 8x. Positional player `max_db` allows the boost, wall attenuation is milder, and all voice buses feed a shared limiter bus. Microphone transmission and network format are unchanged.
+- Regression checks: `--smoke-only=playtest` covers the mixed encounter and voice gain; `--arena --smoke-only=lot_clear` uses actual jetpack input and chain physics for the moving cabin, supply, and checkpoint retry. Add `--bots=5 --smoke-players=6` to cover six players. A client with `--smoke-client --smoke-only=lot_clear` checks replicated flight/escape. Screenshot tour includes the flying helicopter and rooftop shadow.
+
 ## Engine and architecture rules
 
 - **Godot 4.3+ with GDScript** (developed and tested on 4.7.2). Static typing everywhere. Tabs for indentation.

@@ -160,7 +160,10 @@ func scare_pool(p: Vector3) -> Array:
 
 ## A level's own scare visuals (the pizzeria's); the office has none of its own.
 func play_scare(kind: String, pos: Vector3, targeted: bool) -> void:
-	pizzeria.play_scare(kind, pos, targeted)
+	if kind.begins_with("roof_"):
+		lot.play_scare(kind, pos, targeted)
+	else:
+		pizzeria.play_scare(kind, pos, targeted)
 
 
 ## Rebuilds the lighting look for the level the local camera is in (Settings changes quality).

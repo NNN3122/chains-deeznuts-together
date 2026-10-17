@@ -33,6 +33,8 @@ func _ready() -> void:
 	_host.bot_controlled = true
 	for c in get_tree().get_nodes_in_group("hire"):
 		(c as HollowHire).debug_frozen = true
+	for c in get_tree().get_nodes_in_group("custodian"):
+		(c as Custodian).debug_frozen = true
 	var hud := get_tree().current_scene.get("hud") as Hud
 	if hud != null:
 		hud.set_help_visible(false)
@@ -305,7 +307,10 @@ func _tour_arena(arena: HordeArena) -> void:
 	# The way out: the fire escape, the helipad with the helicopter, and the bats overhead.
 	arena.debug_spawn_all_rounds()
 	await _shot("60_fire_escape", arena.test_points["escape_foot"] + Vector3(2.0, 0.0, 4.0), -0.4, 0.35, false)
-	await _shot("61_helipad", arena.test_points["helipad"] + Vector3(-5.0, 0.0, 6.0), -0.7, -0.1, false)
+	_place_all(arena.test_points["helipad"] + Vector3(-5.0, 0.0, 6.0), -0.7)
+	await _wait(0.7)
+	arena.debug_pad_ready()
+	await _shot_here("61_helipad", -0.7, 0.35, false)
 	horde.debug_frozen = false
 	_place_all(arena.test_points["helipad"] + Vector3(0.0, 0.0, 5.0), 0.0)
 	await _wait(2.5)
@@ -363,6 +368,9 @@ func _tour_arena(arena: HordeArena) -> void:
 	jumper.debug_reset(arena.launcher_homes[4])
 	var back := arena.roofs[maxi(1, arena.roofs.size() - 4)]
 	await _shot("69_the_tower_from_three_roofs_back", arena.origin + back.center() + Vector3(0.0, 0.1, 0.0), 0.0, 0.12, false)
+	arena.play_scare("roof_shadow", _host.global_position + Vector3(0.0, 0.0, -4.0), true)
+	await _wait(0.5)
+	await _capture_to(out_dir.path_join("70_roof_shadow.png"))
 
 
 func _place_all(pos: Vector3, yaw: float) -> void:
