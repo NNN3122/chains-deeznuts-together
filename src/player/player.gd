@@ -225,6 +225,8 @@ func _ready() -> void:
 		input.name = "Input"
 		add_child(input)
 		_setup_cameras()
+	if multiplayer.is_server():
+		_grant_starting_flashlight()
 
 
 func _build_flashlight() -> void:
@@ -959,6 +961,20 @@ func free_slot() -> int:
 		if slots[i] == null:
 			return i
 	return -1
+
+
+## The office run hands every player a flashlight. The Break Room used to have one pickup
+## between the whole Line; a late joiner gets one too. The Loading Lot keeps its own stash.
+func _grant_starting_flashlight() -> void:
+	if has_item("flashlight"):
+		return
+	var level := get_tree().get_first_node_in_group("level")
+	if not (level is LevelStack):
+		return
+	var data := ItemRegistry.get_data("flashlight")
+	if data == null:
+		return
+	server_give_item(data.create_logic())
 
 
 ## Puts an item in the first free slot and selects it. False when every slot is full.

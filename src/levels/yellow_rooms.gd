@@ -36,13 +36,13 @@ enum Conn { NONE, DOOR, OPEN }
 const ASCENTS: Array = [Ascent.CRATES, Ascent.LIFT, Ascent.BOOST, Ascent.ELEVATOR]
 const FLOOR_NAMES: Array[String] = ["B4", "B3", "B2", "B1"]
 const OBJECTIVES: Array[String] = [
-	"B4 Orientation: find the maintenance hole in the ceiling and climb to B3. The Hollow Hires walk the route: one that sees you calls the others.",
+	"B4 Orientation: find the maintenance hole in the ceiling and climb to B3. One Hollow Hire walks this floor. If it sees you, run.",
 	"B3: the service lift is locked out until the fire alarm is pulled. Then one holds the plate, the lift carries the rest, and the floor is awake.",
 	"B2: the shelf shaft is under a hatch. Its release gives you 25 seconds. Stand on a teammate's head, or find the jetpack.",
 	"B1: find the freight elevator. Everyone inside to ride it up out of the Yellow Rooms. Don't stop.",
 ]
 const FLOOR_LOOT: Array = [
-	["flashlight", "decoy"],
+	["decoy"],  # everyone already clocks in with a flashlight; B4's spare is the decoy
 	["pistol", "drink", "decoy"],
 	["flashlight", "bomb", "drink"],
 	["bomb", "decoy", "ammo"],
@@ -65,7 +65,7 @@ const TASKS: Array = [
 	["Throw the HATCH RELEASE (hold Ctrl at it): 25 seconds", "Run to the SHELF SHAFT: jetpack, or stack up on a teammate", "Everyone up through the hatch before it slams"],
 	["Find the FREIGHT ELEVATOR", "Shoulder the jammed door open (sprint into it)", "Everyone inside before they catch you: it rides up to the pizzeria"],
 ]
-const HIRES_PER_FLOOR: Array[int] = [2, 3, 3, 3]  # Hollow Hires walking each floor
+const HIRES_PER_FLOOR: Array[int] = [1, 3, 3, 3]  # one Hire on B4; the floors above still answer a scream together
 const RESPAWN_SECONDS: float = 45.0  # a dead Hire is replaced after this, out of sight
 const DOOR_FLOORS: Array[int] = [0, 3]  # floors with a jammed door on the route
 const ALARM_FLOOR: int = 1  # the lift floor: locked out until the fire alarm is pulled
@@ -1190,6 +1190,19 @@ func _tick_ambush() -> void:
 	GameState.post_message("BEHIND YOU. Everyone in the elevator. NOW.", 3.0)
 
 
+## The opening between two neighbouring cells (the middle of the shared wall), or y < 0 when
+## those cells don't share a door. Hires aim at this on the way through, so a body standing
+## off to one side of a room doesn't cut the corner and walk through the wall.
+func doorway_between(i: int, a: Vector2i, b: Vector2i) -> Vector3:
+	if i < 0 or i >= floors.size() or absi(a.x - b.x) + absi(a.y - b.y) != 1:
+		return Vector3(0.0, -1.0, 0.0)
+	if not (floors[i]["conn"] as Dictionary).has(_edge_key(a, b)):
+		return Vector3(0.0, -1.0, 0.0)
+	var mid := (cell_center(i, a) + cell_center(i, b)) * 0.5
+	mid.y = float(i) * FLOOR_H
+	return mid
+
+
 ## The route between two cells through the doorways (the maze), for the Hires.
 func route(i: int, from: Vector2i, to: Vector2i) -> Array[Vector2i]:
 	if i < 0 or i >= floors.size():
@@ -1328,14 +1341,9 @@ func server_populate() -> void:
 		var path: Array[Vector2i] = f["path"]
 		var loot: Array = FLOOR_LOOT[i]
 		for k in loot.size():
-			var c: Vector2i
-			if i == 0 and k == 0:
-				c = f["arrive"]  # the first flashlight waits in the Break Room
-			else:
-				var idx := clampi(1 + int(float(k + 1) * float(path.size() - 2) / float(loot.size() + 1)), 1, maxi(1, path.size() - 2))
-				c = path[idx]
-			var off := Vector3(0.0, 0.1, 1.0) if c != f["arrive"] else Vector3(1.0, 0.1, -1.6)
-			Net.spawn_pickup(loot[k], cell_center(i, c) + off, 0)
+			var idx := clampi(1 + int(float(k + 1) * float(path.size() - 2) / float(loot.size() + 1)), 1, maxi(1, path.size() - 2))
+			var c: Vector2i = path[idx]
+			Net.spawn_pickup(loot[k], cell_center(i, c) + Vector3(0.0, 0.1, 1.0), 0)
 	if _boost_jetpack_pos != Vector3.ZERO:
 		Net.spawn_pickup("jetpack", _boost_jetpack_pos, 0)
 	if test_points.has("tray_end"):
