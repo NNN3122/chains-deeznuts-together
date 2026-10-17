@@ -75,16 +75,6 @@ func _ready() -> void:
 		stripe.position = Vector3(0.0, 0.005, s * (hole * 0.5 - 0.1))
 		stripe.material_override = LevelKit.mat("hazard")
 		_plate.add_child(stripe)
-	var tag := Label3D.new()
-	tag.text = "HATCH\nRELEASE IS\nTWO ROOMS BACK"
-	tag.font_size = 30
-	tag.pixel_size = 0.004
-	tag.modulate = Color(1.0, 0.85, 0.3)
-	tag.outline_size = 8
-	tag.double_sided = false
-	tag.position = Vector3(0.0, -0.01, 0.0)
-	tag.rotation = Vector3(PI * 0.5, 0.0, 0.0)  # reads from below
-	_plate.add_child(tag)
 	var body := StaticBody3D.new()
 	body.collision_layer = ChainBody.LAYER_WORLD
 	body.collision_mask = 0
@@ -123,18 +113,10 @@ func _ready() -> void:
 	face.pixel_size = 0.0032
 	face.modulate = Color(1.0, 1.0, 1.0)
 	face.outline_size = 0
+	face.shaded = true
 	face.double_sided = false
 	face.position = Vector3(0.0, 1.16, 0.122)
 	sw.add_child(face)
-	var hint := Label3D.new()
-	hint.text = "HATCH RELEASE\nHOLD CTRL HERE\nTHEN RUN"
-	hint.font_size = 26
-	hint.pixel_size = 0.004
-	hint.modulate = Color(1.0, 0.85, 0.3)
-	hint.outline_size = 8
-	hint.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	hint.position = Vector3(0.0, 2.0, 0.5)
-	sw.add_child(hint)
 
 
 func switch_point() -> Vector3:

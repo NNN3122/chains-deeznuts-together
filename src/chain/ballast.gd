@@ -102,15 +102,6 @@ func _build_visual() -> void:
 		dot.position = Vector3(x, HEIGHT * 0.33 - 0.06 * sin(PI * t), face_z)
 		dot.material_override = paint
 		_mesh_root.add_child(dot)
-	var tag := Label3D.new()
-	tag.text = "BALLAST"
-	tag.font_size = 28
-	tag.pixel_size = 0.004
-	tag.position = Vector3(0.0, HEIGHT + 0.25, 0.0)
-	tag.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	tag.modulate = Color(0.95, 0.8, 0.2)
-	tag.outline_size = 6
-	_mesh_root.add_child(tag)
 
 
 func anchor_height() -> float:

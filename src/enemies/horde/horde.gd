@@ -882,7 +882,7 @@ func _server_contacts(delta: float) -> void:
 				clawed = true
 				claw += away * CLAW_PUSH
 				if fx != null and _rng.randf() < 0.5:
-					fx.fx_sound.rpc("growl", Vector3(px[i], py[i] + 1.2, pz[i]), -8.0, _rng.randf_range(1.2, 1.8))
+					fx.fx_sound.rpc("roach_chitter", Vector3(px[i], py[i] + 1.2, pz[i]), -4.0, _rng.randf_range(0.85, 1.25))
 			elif s == AState.LUNGE and p.state == Player.State.NORMAL:
 				state[i] = AState.WALK
 				cool[i] = LUNGE_COOLDOWN
@@ -1430,7 +1430,7 @@ func _process(delta: float) -> void:
 		Sfx.play_at(self, "screech", p, -18.0 + 6.0 * (1.0 - d / 35.0), _rng.randf_range(1.6, 2.2), 40.0)
 	else:
 		Sfx.play_at(self, "click", p + Vector3.UP * 0.4, -10.0 + 6.0 * (1.0 - d / 35.0), _rng.randf_range(1.4, 2.6), 30.0)
-		Sfx.play_at(self, "growl", p + Vector3.UP * 0.4, -20.0 + 6.0 * (1.0 - d / 35.0), _rng.randf_range(1.5, 2.1), 30.0)
+		Sfx.play_at(self, "roach_chitter", p + Vector3.UP * 0.4, -14.0 + 6.0 * (1.0 - d / 35.0), _rng.randf_range(0.8, 1.3), 30.0)
 	if _caption_t <= 0.0:
 		_caption_t = 7.0
 		Sfx.caption(self, "wings overhead" if FLYING[kind[i]] else "the swarm chitters", p)

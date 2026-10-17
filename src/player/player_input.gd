@@ -36,6 +36,12 @@ const REMOTE_LOOK_SCALE: float = 1.4  # cursor pixels turn a bit more than raw m
 const LOOK_JUMP_PX: float = 300.0  # one cursor jump this big is a teleport (refocus, warp), not a flick
 const EDGE_ZONE: float = 0.07  # fraction of the window width at each side that keeps turning
 const EDGE_TURN_SPEED: float = 2.6  # rad/s with the cursor right against the side of the window
+const EDGE_ZONE_Y: float = 0.08  # fraction of the window height at top and bottom that keeps tilting
+const EDGE_PITCH_SPEED: float = 1.3  # rad/s with the cursor against the top or bottom of the window
+# A hidden cursor left resting in an edge zone used to turn the view forever (the user's "drift").
+# The edge only keeps turning for this long after the cursor last moved, then fades out.
+const EDGE_HOLD_MS: int = 1800
+const EDGE_FADE_MS: int = 500
 
 var auto_run: bool = false
 var look_delta: Vector2 = Vector2.ZERO  # mouse motion since the last consume_look()
@@ -55,6 +61,16 @@ var _use_count: int = 0
 var _slot_count: int = 0
 var _slot_request: int = 0  # 1..3 the slot last asked for, 0 none; wheel: 4 next, 5 previous
 var _reload_count: int = 0
+var _cursor_moved_at: int = -100000  # msec of the last mouse motion
+
+
+func _notification(what: int) -> void:
+	# Focus lost (alt-tab, a TeamViewer reconnect): releases that happen elsewhere never reach us,
+	# so a key would stay down and walk or turn you forever.
+	if what == NOTIFICATION_APPLICATION_FOCUS_OUT or what == NOTIFICATION_WM_WINDOW_FOCUS_OUT:
+		_down.clear()
+		_confirmed.clear()
+		reset_look()
 
 
 func _input(event: InputEvent) -> void:
@@ -99,6 +115,8 @@ func _input(event: InputEvent) -> void:
 				GameState.post_message_local("Auto-walk %s (R)" % ("ON" if auto_run else "OFF"), 1.5)
 	elif event is InputEventMouseMotion:
 		var m := event as InputEventMouseMotion
+		if m.relative.length_squared() > 0.0:
+			_cursor_moved_at = Time.get_ticks_msec()
 		if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 			look_delta += m.relative
 		elif Settings.remote_mode and m.relative.length() < LOOK_JUMP_PX:
@@ -165,7 +183,11 @@ func strength(action: String) -> float:
 	if GameState.ui_blocking:
 		return 0.0
 	if bool(_down.get(action, false)):
-		return 1.0
+		if Input.is_action_pressed(action):
+			return 1.0
+		# Released while we weren't listening (a menu was up): count it as released now.
+		_down[action] = false
+		_last_release[action] = Time.get_ticks_msec()
 	if not Settings.remote_mode:
 		return 0.0
 	var since := Time.get_ticks_msec() - int(_last_press.get(action, -100000))
@@ -197,32 +219,40 @@ func move_vector() -> Vector2:
 ## Keyboard turning (arrow keys, Q/E, PageUp/PageDown) in radians for this frame. Eases in and
 ## out instead of snapping to full speed, so turning feels like a head, not a turret.
 func key_look(delta: float) -> Vector2:
-	var yaw := _axis("turn_left", "turn_right") * KEY_TURN_SPEED + edge_turn() * EDGE_TURN_SPEED
-	var want := Vector2(yaw, _axis("look_down", "look_up") * PITCH_KEY_SPEED)
+	var edge := edge_look()
+	var yaw := _axis("turn_left", "turn_right") * KEY_TURN_SPEED + edge.x * EDGE_TURN_SPEED
+	var want := Vector2(yaw, _axis("look_down", "look_up") * PITCH_KEY_SPEED + edge.y * EDGE_PITCH_SPEED)
 	_turn_v = _turn_v.lerp(want, 1.0 - exp(-KEY_TURN_EASE * delta))
 	return _turn_v * delta
 
 
-## -1..1: how hard the hidden cursor is held against the left or right side of the window.
-func edge_turn() -> float:
+## How hard the hidden cursor is held against the window's sides: x -1..1 turns left/right, y
+## -1..1 tilts down/up (a remote cursor stops at the window's bottom, and you could no longer look
+## down). It only lasts EDGE_HOLD_MS after the cursor last moved, so a forgotten cursor stops.
+func edge_look() -> Vector2:
 	if not Settings.remote_mode or GameState.ui_blocking or Input.mouse_mode != Input.MOUSE_MODE_CONFINED_HIDDEN:
-		return 0.0
+		return Vector2.ZERO
 	# Unfocused, the cursor isn't ours: it may be resting anywhere, including an edge.
 	if DisplayServer.get_name() == "headless" or not get_window().has_focus():
-		return 0.0
+		return Vector2.ZERO
 	var vp := get_viewport()
-	var w := vp.get_visible_rect().size.x
-	if w <= 1.0:
-		return 0.0
-	return edge_strength(vp.get_mouse_position().x / w)
+	var size := vp.get_visible_rect().size
+	if size.x <= 1.0 or size.y <= 1.0:
+		return Vector2.ZERO
+	var still := float(Time.get_ticks_msec() - _cursor_moved_at - EDGE_HOLD_MS)
+	var fade := 1.0 - clampf(still / float(EDGE_FADE_MS), 0.0, 1.0)
+	if fade <= 0.0:
+		return Vector2.ZERO
+	var p := vp.get_mouse_position() / size
+	return Vector2(edge_strength(p.x), -edge_strength(p.y, EDGE_ZONE_Y)) * fade
 
 
-## Turn strength for a cursor at x (0 = left side of the window, 1 = right side).
-static func edge_strength(x: float) -> float:
-	if x < EDGE_ZONE:
-		return -smoothstep(0.0, 1.0, (EDGE_ZONE - x) / EDGE_ZONE)
-	if x > 1.0 - EDGE_ZONE:
-		return smoothstep(0.0, 1.0, (x - (1.0 - EDGE_ZONE)) / EDGE_ZONE)
+## Turn strength for a cursor at x (0 = left or top of the window, 1 = right or bottom).
+static func edge_strength(x: float, zone: float = EDGE_ZONE) -> float:
+	if x < zone:
+		return -smoothstep(0.0, 1.0, (zone - x) / zone)
+	if x > 1.0 - zone:
+		return smoothstep(0.0, 1.0, (x - (1.0 - zone)) / zone)
 	return 0.0
 
 
@@ -238,6 +268,13 @@ func consume_look() -> Vector2:
 		take = _look_pending * (1.0 - exp(-REMOTE_LOOK_RATE * get_process_delta_time()))
 	_look_pending -= take
 	return take
+
+
+## Drops any look still on its way in and stops keyboard/edge turning dead.
+func reset_look() -> void:
+	look_delta = Vector2.ZERO
+	_look_pending = Vector2.ZERO
+	_turn_v = Vector2.ZERO
 
 
 func jump_count() -> int:

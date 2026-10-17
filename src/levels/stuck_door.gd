@@ -77,17 +77,6 @@ func _ready() -> void:
 		handle.position = Vector3(width - 0.22, 1.0, s * 0.045)
 		handle.material_override = LevelKit.mat("fixture")
 		_pivot.add_child(handle)
-		# A yellow notice on both faces: the building knows about it.
-		var tag := Label3D.new()
-		tag.text = "DOOR JAMMED\nSHOULDER IT\n(sprint into it)"
-		tag.font_size = 26
-		tag.pixel_size = 0.0036
-		tag.modulate = Color(1.0, 0.85, 0.3)
-		tag.outline_size = 6
-		tag.double_sided = false
-		tag.position = Vector3(width * 0.5, 1.55, s * 0.03)
-		tag.rotation = Vector3(0.0, 0.0 if s > 0.0 else PI, 0.0)
-		_pivot.add_child(tag)
 	var body := StaticBody3D.new()
 	body.collision_layer = ChainBody.LAYER_WORLD
 	body.collision_mask = 0

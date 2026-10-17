@@ -60,7 +60,7 @@ const SCARE_POOL: Array = [
 ## What to do on each floor, ticked off on the HUD. [text, ...]; completion is checked in
 ## _tick_tasks.
 const TASKS: Array = [
-	["Follow the green signs to MAINTENANCE ACCESS", "Shoulder the jammed door open (sprint into it)", "Climb the crates up through the ceiling (walk into one, tap Space)"],
+	["Find MAINTENANCE ACCESS (a stack of crates)", "Shoulder the jammed door open (sprint into it)", "Climb the crates up through the ceiling (walk into one, tap Space)"],
 	["Pull the FIRE ALARM (hold Ctrl at it): it releases the lift", "Find the SERVICE LIFT", "One of you stands on the yellow plate: the lift rises", "Hoist the plate-holder up on the chain"],
 	["Throw the HATCH RELEASE (hold Ctrl at it): 25 seconds", "Run to the SHELF SHAFT: jetpack, or stack up on a teammate", "Everyone up through the hatch before it slams"],
 	["Find the FREIGHT ELEVATOR", "Shoulder the jammed door open (sprint into it)", "Everyone inside before they catch you: it rides up to the pizzeria"],
@@ -346,7 +346,6 @@ func _build_floor(i: int) -> void:
 			if t != "ascent" and t != "breakroom" and rng.randf() < 0.35:
 				_poster(root, i, c, rng)
 	_dennis(root, batch, i, rng)
-	_wayfinding(root, batch, i)
 	batch.build(root, "F%d" % i)
 	_build_hires(i)
 	_build_events(root, i)
@@ -686,6 +685,7 @@ func _meeting(root: Node3D, batch: LevelKit.BoxBatch, center: Vector3, rng: Rand
 	board.pixel_size = 0.006
 	board.modulate = Color(0.15, 0.2, 0.55)
 	board.outline_size = 0
+	board.shaded = true  # painted on: you only read it where light falls
 	board.double_sided = false
 	board.position = center + Vector3(0.0, 1.6, -2.85)  # on the -z wall, text faces +z into the room
 	root.add_child(board)
@@ -765,6 +765,7 @@ func _breakroom(root: Node3D, batch: LevelKit.BoxBatch, i: int, c: Vector2i, cen
 	clock.pixel_size = 0.005
 	clock.modulate = Color(1.0, 0.85, 0.3)
 	clock.outline_size = 8
+	clock.shaded = true
 	clock.double_sided = false
 	clock.position = center + Vector3(2.88, 1.8, -1.9)
 	clock.rotation = Vector3(0.0, -PI * 0.5, 0.0)
@@ -778,6 +779,7 @@ func _breakroom(root: Node3D, batch: LevelKit.BoxBatch, i: int, c: Vector2i, cen
 		sign.pixel_size = 0.005
 		sign.modulate = Color(0.95, 0.8, 0.25)
 		sign.outline_size = 10
+		sign.shaded = true
 		sign.double_sided = false
 		sign.position = center + Vector3(-2.88, 2.2, -0.4)  # side wall, clear of the doorway signs
 		sign.rotation = Vector3(0.0, PI * 0.5, 0.0)
@@ -794,7 +796,6 @@ func _ascent(root: Node3D, batch: LevelKit.BoxBatch, i: int, c: Vector2i, center
 			batch.add(center + Vector3(0.6, 1.6, 0.0), Vector3(1.2, 3.2, 1.2), "metal")
 			for h: float in [0.6, 1.4, 2.2, 3.0]:
 				batch.add(center + Vector3(0.6, h, -0.61), Vector3(1.2, 0.08, 0.02), "hazard", false)
-			_sign(root, "MAINTENANCE ACCESS\nCLIMB ->", center + Vector3(-2.88, 2.0, 0.0), PI * 0.5)
 			test_points["crates_start"] = center + Vector3(-2.0, 0.1, -1.4)  # in front of the first crate, facing +z
 			test_points["crates"] = [center + Vector3(-2.0, 1.25, 0.0), center + Vector3(-0.6, 2.25, 0.0), center + Vector3(0.6, 3.25, 0.0)]
 			# The cable tray: an optional 0.5 m ledge hung from the ceiling at 1.9 m, a step from the
@@ -807,7 +808,6 @@ func _ascent(root: Node3D, batch: LevelKit.BoxBatch, i: int, c: Vector2i, center
 				var hx := -1.6 + 1.2 * float(k)
 				batch.add(center + Vector3(hx, tray_y + (CEIL_H - tray_y) * 0.5, tray_z), Vector3(0.04, CEIL_H - tray_y, 0.04), "steel_dark", false)
 			batch.add(center + Vector3(2.5, tray_y + 0.08, tray_z), Vector3(0.6, 0.1, 0.4), "cardboard", false)
-			_sign(root, "CABLE TRAY\nNOT A WALKWAY", center + Vector3(1.5, 2.65, -2.88), 0.0)
 			test_points["tray_start"] = center + Vector3(-1.9, tray_y + 0.1, tray_z)
 			test_points["tray_end"] = center + Vector3(2.4, tray_y + 0.1, tray_z)
 		Ascent.LIFT:
@@ -816,7 +816,6 @@ func _ascent(root: Node3D, batch: LevelKit.BoxBatch, i: int, c: Vector2i, center
 			root.add_child(plate)
 			var lift := LiftPlatform.create("Lift", center + Vector3(0.0, base - 0.15 + 0.01, 0.0), base - 0.15 + 0.01, base + FLOOR_H - 0.15, plate, Vector3(2.3, 0.3, 2.3))
 			root.add_child(lift)
-			_sign(root, "SERVICE LIFT\nONE ON THE PLATE" if i != ALARM_FLOOR else "SERVICE LIFT\nLOCKED OUT: PULL THE\nFIRE ALARM TO RELEASE", center + Vector3(-2.88, 2.0, -0.5), PI * 0.5)
 			test_points["plate"] = center + Vector3(-2.0, 0.1, -2.0)
 			test_points["lift"] = center + Vector3(0.0, base + 0.1, 0.0)
 			test_points["lift_top_edge"] = center + Vector3(0.0, base + FLOOR_H + 0.1, -HOLE * 0.5 - 0.45)
@@ -825,24 +824,10 @@ func _ascent(root: Node3D, batch: LevelKit.BoxBatch, i: int, c: Vector2i, center
 			batch.add(center + Vector3(0.0, 1.3, -0.6), Vector3(2.4, 2.6, 1.2), "metal")
 			for h: float in [0.9, 1.8, 2.5]:
 				batch.add(center + Vector3(0.0, h, -1.21), Vector3(2.4, 0.08, 0.02), "hazard", false)
-			_sign(root, "SHELF SHAFT\nTOO TALL? STAND ON\nA COLLEAGUE" if i != HATCH_FLOOR else "SHELF SHAFT\nHATCH ABOVE: RELEASE\nIS TWO ROOMS BACK", center + Vector3(0.0, 2.2, -2.88), 0.0)
 			_boost_jetpack_pos = center + Vector3(2.0, 0.1, 2.0)
 			test_points["boost_shelf"] = center + Vector3(0.0, 2.7, -0.6)
 		Ascent.ELEVATOR:
 			_build_elevator(root, batch, i, center)
-
-
-func _sign(root: Node3D, text: String, at: Vector3, yaw: float) -> void:
-	var l := Label3D.new()
-	l.text = text
-	l.font_size = 40
-	l.pixel_size = 0.005
-	l.modulate = Color(1.0, 0.82, 0.15)
-	l.outline_size = 10
-	l.double_sided = false
-	l.position = at
-	l.rotation = Vector3(0.0, yaw, 0.0)
-	root.add_child(l)
 
 
 func _poster(root: Node3D, _i: int, c: Vector2i, rng: RandomNumberGenerator) -> void:
@@ -875,6 +860,7 @@ func _poster(root: Node3D, _i: int, c: Vector2i, rng: RandomNumberGenerator) -> 
 	label.pixel_size = 0.0045
 	label.modulate = Color(0.08, 0.06, 0.05) if col.get_luminance() > 0.5 else Color(1.0, 0.97, 0.9)
 	label.outline_size = 0
+	label.shaded = true
 	label.double_sided = false
 	label.transform = Transform3D(basis, pos + normal * 0.012)
 	root.add_child(label)
@@ -1276,41 +1262,6 @@ func _hidden_cell(i: int) -> Vector2i:
 func debug_force_hire_respawn(i: int) -> void:
 	_hire_respawn_t[i] = 0.0
 	_tick_hires(0.0)
-
-
-## Green building signs over the doorways along the route to this floor's way up, so the maze is
-## explorable without being a guessing game. Every other room, plus always the last doorway.
-func _wayfinding(root: Node3D, batch: LevelKit.BoxBatch, i: int) -> void:
-	var names: Array[String] = ["MAINTENANCE ACCESS", "SERVICE LIFT", "SHELF SHAFT", "FREIGHT ELEVATOR"]
-	var path: Array[Vector2i] = floors[i]["path"]
-	var conn: Dictionary = floors[i]["conn"]
-	var base := float(i) * FLOOR_H
-	for k in range(path.size() - 1):
-		if k % 2 == 1 and k != path.size() - 2:
-			continue
-		var a: Vector2i = path[k]
-		var b: Vector2i = path[k + 1]
-		var out := Vector3(float(b.x - a.x), 0.0, float(b.y - a.y))  # from room a toward the doorway
-		var kind: int = conn.get(_edge_key(a, b), Conn.NONE)
-		var at := cell_center(i, a) + out * (CELL * 0.5 - WALL_T * 0.5 - 0.03)
-		at.y = base + (DOOR_H + 0.45 if kind == Conn.DOOR else CEIL_H - 0.55)
-		var yaw := atan2(-out.x, -out.z)  # face back into room a
-		var along := Vector3(out.z, 0.0, out.x)
-		var plate := Vector3(1.25, 0.36, 0.03) if absf(out.z) > 0.5 else Vector3(0.03, 0.36, 1.25)
-		batch.add(at - out * 0.01, plate, "sign_green", false)
-		if kind == Conn.OPEN:
-			batch.add(at + Vector3(0.0, 0.3, 0.0) + along * 0.3, Vector3(0.015, 0.3, 0.015), "metal", false)
-			batch.add(at + Vector3(0.0, 0.3, 0.0) - along * 0.3, Vector3(0.015, 0.3, 0.015), "metal", false)
-		var l := Label3D.new()
-		l.text = "%s\nTHIS WAY" % names[i]
-		l.font_size = 32
-		l.pixel_size = 0.0042
-		l.modulate = Color(0.95, 1.0, 0.95)
-		l.outline_size = 0
-		l.double_sided = false
-		l.position = at - out * 0.03
-		l.rotation = Vector3(0.0, yaw, 0.0)
-		root.add_child(l)
 
 
 func _build_scare_triggers(root: Node3D, i: int) -> void:

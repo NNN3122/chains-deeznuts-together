@@ -45,6 +45,8 @@ const BITE_OPEN: float = 2.15  # the jaw drops, the head draws back
 const BITE_LUNGE: float = 2.85  # the head comes for your face
 const BITE_SNAP: float = 3.3  # and closes
 const SCREAM_NEAR: float = 5.5  # m: chasing you, it screams once as it closes this near
+const IDLE_CALL_EVERY: Vector2 = Vector2(9.0, 20.0)  # s between its gurgles while it walks the floor
+const IDLE_CALL_REACH: float = 20.0  # m
 const RESCUE_NEEDED: float = 2.0  # resist-seconds from teammates beside the victim (bracing counts double)
 const RESCUE_RADIUS: float = 2.5
 const BURN_TO_STUN: float = 0.45  # s of a flashlight on its face
@@ -107,6 +109,7 @@ var _jaw: Node3D
 var _catch_t: float = 0.0  # every peer: seconds into the catch it is playing
 var _catch_prev: float = 0.0
 var _screamed_near: bool = false  # every peer: this chase has had its close-in scream
+var _idle_call_t: float = randf_range(4.0, 12.0)  # every peer: its own ambient timer
 var _hitbox: Area3D
 var _phase: float = 0.0
 var _shown_state: int = -1
@@ -226,7 +229,7 @@ func _tick_catch_events() -> void:
 	for s in SLASHES:
 		var hit := s + SLASH_WINDUP + SLASH_SWIPE * 0.5
 		if a < s and b >= s:
-			_fx_local("growl", at, -2.0, 1.3)
+			_fx_local("hire_gurgle", at, -2.0, 1.3)
 		if a < hit and b >= hit:
 			Sfx.play_at(self, "scrape", at, 2.0, 0.55, 22.0)
 			_blood(at)
@@ -419,7 +422,7 @@ func _start_chase(p: Player) -> void:
 	_safe_t = 0.0
 	_hold = null
 	if fresh:
-		_fx("growl", 4.0, _rng.randf_range(0.6, 0.75))
+		_fx("hire_gurgle", 4.0, _rng.randf_range(0.9, 1.0))
 		_rpc_seen.rpc()
 		if level != null:
 			level.hire_callout(self, p)
@@ -448,7 +451,7 @@ func join_chase(p: Player) -> void:
 	_safe_t = 0.0
 	_hold = null
 	_alert_t = maxf(_alert_t, 20.0)
-	_fx("growl", 2.0, _rng.randf_range(0.55, 0.7))
+	_fx("hire_gurgle", 2.0, _rng.randf_range(0.82, 0.92))
 	_rpc_answered.rpc()
 
 
@@ -580,7 +583,7 @@ func _start_grab(p: Player) -> void:
 	_burn = 0.0
 	_face(p.global_position, -1.0)
 	p.grab_start(self)
-	_fx("growl", 6.0, 0.5)
+	_fx("hire_gurgle", 6.0, 0.8)
 	GameState.post_message("IT HAS %s. Everyone beside them: HOLD CTRL. Or a light in its face, or shoot it." % p.display_name.to_upper(), 4.0)
 
 
@@ -638,7 +641,7 @@ func stun(seconds: float) -> void:
 	_t = maxf(left, seconds)
 	_burn = 0.0
 	burn_fraction = 0.0
-	_fx("growl", 0.0, 1.4)
+	_fx("hire_gurgle", 0.0, 1.4)
 
 
 ## Snubby hit (server): one while it holds someone frees them; two kill it.
@@ -668,7 +671,7 @@ func die() -> void:
 	hunt_peer = 0
 	grab_peer = 0
 	_dead_t = 0.0
-	_fx("growl", 2.0, 0.4)
+	_fx("hire_gurgle", 2.0, 0.6)
 	GameState.post_message("One down. The floor will send another.", 2.5)
 
 
@@ -879,6 +882,11 @@ func _fx(id: String, vol: float, pitch: float) -> void:
 # --- Visuals (every peer) --------------------------------------------------------------------------
 
 func _update_visuals(delta: float) -> void:
+	_idle_call_t -= delta
+	if _idle_call_t <= 0.0:
+		_idle_call_t = randf_range(IDLE_CALL_EVERY.x, IDLE_CALL_EVERY.y)
+		if hstate == HState.WANDER or hstate == HState.SWEEP or hstate == HState.INVESTIGATE:
+			Sfx.idle_call(self, "hire_gurgle", head_point(), -9.0, randf_range(0.75, 0.95), IDLE_CALL_REACH, "a wet gurgle, somewhere")
 	var moved := global_position.distance_to(_last_pos) / maxf(delta, 0.0001)
 	_last_pos = global_position
 	_vis_speed = lerpf(_vis_speed, moved, clampf(delta * 8.0, 0.0, 1.0))

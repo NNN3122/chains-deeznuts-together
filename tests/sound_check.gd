@@ -7,7 +7,7 @@ func _init() -> void:
 	for a in OS.get_cmdline_user_args():
 		if a.begins_with("--out="):
 			out = a.trim_prefix("--out=")
-	for id: String in ["scream", "roar", "stinger", "screech", "growl"]:
+	for id: String in ["scream", "roar", "hire_gurgle", "cust_hiss", "cust_shriek", "pappy_laugh", "pappy_scream", "spider_hiss", "spider_shriek", "roach_chitter", "chase", "stinger", "drone"]:
 		var t0 := Time.get_ticks_msec()
 		var s := Sfx.stream(id)
 		var ms := Time.get_ticks_msec() - t0

@@ -288,7 +288,7 @@ func _start_hunt(node: Node3D) -> void:
 	if cstate != CState.HUNT:
 		var fx := Effects.find(self)
 		if fx != null:
-			fx.fx_sound.rpc("growl", stain_point(), -2.0, randf_range(0.85, 1.0))
+			fx.fx_sound.rpc("cust_hiss", stain_point(), -2.0, randf_range(0.85, 1.0))
 	cstate = CState.HUNT
 	_hunt_node = node
 	_hunt_pos = node.global_position
@@ -314,7 +314,7 @@ func _tick_hunt(delta: float, loudest: Node3D, loudest_eff: float) -> void:
 	if _hunt_node is Thrown and _flat_dist(_hunt_node.global_position) < 0.8:
 		var fx := Effects.find(self)
 		if fx != null:
-			fx.fx_sound.rpc("growl", stain_point(), 0.0, 1.2)
+			fx.fx_sound.rpc("cust_hiss", stain_point(), 0.0, 1.2)
 			fx.fx_tile_drop.rpc(stain_point() + Vector3(0.0, 0.02, 0.0))
 		_hunt_node.queue_free()
 		_to_investigate(_hunt_pos)
@@ -351,7 +351,7 @@ func _start_grab(p: Player) -> void:
 	var fx := Effects.find(self)
 	if fx != null:
 		fx.fx_tile_drop.rpc(stain_point() + Vector3(0.25, 0.0, 0.2))
-		fx.fx_sound.rpc("growl", stain_point(), 4.0, 0.8)
+		fx.fx_sound.rpc("cust_hiss", stain_point(), 4.0, 0.8)
 	GameState.post_message("IT HAS %s. EVERYONE NEAR THEM: HOLD CTRL AND HOLD ON. Or shine a light on it." % p.display_name.to_upper(), 4.0)
 
 
@@ -414,7 +414,7 @@ func _start_retreat() -> void:
 	_target = _clamp_to_bounds(global_position + away * 14.0)
 	var fx := Effects.find(self)
 	if fx != null:
-		fx.fx_sound.rpc("growl", stain_point(), -4.0, 1.4)
+		fx.fx_sound.rpc("cust_hiss", stain_point(), -4.0, 1.4)
 
 
 ## Pistol hit (server).
@@ -424,7 +424,7 @@ func take_hit() -> void:
 	_hits += 1
 	var fx := Effects.find(self)
 	if fx != null:
-		fx.fx_sound.rpc("growl", stain_point(), 2.0, 1.3)
+		fx.fx_sound.rpc("cust_hiss", stain_point(), 2.0, 1.3)
 		fx.fx_dust.rpc(stain_point())
 	if _hits >= HITS_TO_RETREAT:
 		if cstate == CState.GRAB:
@@ -669,7 +669,7 @@ func _update_grab_visuals() -> void:
 	if grab_peer != _shown_grab_peer:
 		_shown_grab_peer = grab_peer
 		if show:
-			Sfx.play_at(self, "scream", stain_point(), 8.0, 0.82, 40.0)  # out of the ceiling, right over you
+			Sfx.play_at(self, "cust_shriek", stain_point(), 8.0, 1.0, 40.0)  # out of the ceiling, right over you
 		if show and victim.is_local:
 			Sfx.play(self, "stinger", 0.0)
 	_hole.visible = show

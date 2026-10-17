@@ -67,18 +67,10 @@ func _ready() -> void:
 	plate.pixel_size = 0.0032
 	plate.modulate = Color(1.0, 1.0, 1.0)
 	plate.outline_size = 0
+	plate.shaded = true
 	plate.double_sided = false
 	plate.position = Vector3(0.0, 1.4, 0.102)
 	add_child(plate)
-	var tag := Label3D.new()
-	tag.text = "LIFT LOCKED OUT\nPULL THE ALARM\nHOLD CTRL HERE"
-	tag.font_size = 26
-	tag.pixel_size = 0.004
-	tag.modulate = Color(1.0, 0.85, 0.3)
-	tag.outline_size = 8
-	tag.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	tag.position = Vector3(0.0, 2.0, 0.5)
-	add_child(tag)
 	_strobe = OmniLight3D.new()
 	_strobe.light_color = Color(1.0, 0.1, 0.05)
 	_strobe.light_energy = 0.0

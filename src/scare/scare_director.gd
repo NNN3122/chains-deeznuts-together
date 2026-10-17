@@ -221,7 +221,7 @@ func play_local(kind: String, pos: Vector3, target_peer: int = 0) -> void:
 			if targeted:
 				_spawn_face(pos)
 			else:
-				Sfx.play_at(self, "scream", pos + Vector3.UP * 1.6, 2.0, 0.8, 30.0)
+				Sfx.play_at(self, _level_scream(pos), pos + Vector3.UP * 1.6, 2.0, 0.9, 30.0)
 				Sfx.caption(self, "someone screams", pos)
 		"ceiling_drop", "crawler", "peek", "hands", "behind":
 			# Played round the target's own camera; everyone near hears something.
@@ -238,10 +238,10 @@ func play_local(kind: String, pos: Vector3, target_peer: int = 0) -> void:
 					_:
 						_spawn_behind(pos)
 			elif kind != "peek":
-				Sfx.play_at(self, "scream", pos + Vector3.UP * 1.6, -2.0, 0.85, 26.0)
+				Sfx.play_at(self, _level_scream(pos), pos + Vector3.UP * 1.6, -2.0, 0.9, 26.0)
 		"lunge":
 			Sfx.play(self, "stinger", 4.0)
-			Sfx.play_at(self, "scream", pos + Vector3.UP * 1.5, 4.0, 0.7, 25.0)
+			Sfx.play_at(self, _level_scream(pos), pos + Vector3.UP * 1.5, 4.0, 0.85, 25.0)
 			_spawn_lunger(pos)
 			_flash(0.6)
 			_shake(1.1, pos)
@@ -340,6 +340,11 @@ func _level_index(pos: Vector3) -> int:
 	return 0
 
 
+## The scream of whatever haunts the level at pos: the Hire's, Pappy's voice chip, the Jumper's mouthparts.
+func _level_scream(pos: Vector3) -> String:
+	return ["scream", "pappy_scream", "spider_shriek"][clampi(_level_index(pos), 0, 2)]
+
+
 ## The body of whatever haunts that level, built (a HireBody, a PappyBody or a JumperBody).
 func _level_body(idx: int) -> Node3D:
 	match idx:
@@ -419,7 +424,7 @@ func _spawn_face(pos: Vector3) -> void:
 	face.position = Vector3(0.35, -0.15, -4.0)
 	face.scale = Vector3.ONE * 0.7
 	Sfx.play(self, "stinger", 6.0)
-	Sfx.play(self, "scream", 3.0, 1.05)
+	Sfx.play(self, ["scream", "pappy_scream", "spider_shriek"][clampi(idx, 0, 2)], 3.0, 1.05)
 	var tw := face.create_tween()
 	tw.tween_property(face, "position", Vector3(0.0, -0.02, -0.34 if idx != 1 else -0.62), 0.16).set_trans(Tween.TRANS_EXPO).set_ease(Tween.EASE_IN)
 	tw.parallel().tween_property(face, "scale", Vector3.ONE, 0.16)
@@ -436,11 +441,11 @@ func _spawn_face(pos: Vector3) -> void:
 
 ## The big hit of a jump scare on this screen: the sting, a red flash, the picture tearing, a shake.
 func _hit(strength: float = 1.0) -> void:
+	var me := Net.get_local_player()
 	Sfx.play(self, "stinger", 4.0 * strength)
-	Sfx.play(self, "scream", 1.0 * strength, randf_range(0.9, 1.2))
+	Sfx.play(self, _level_scream(me.global_position) if me != null else "scream", 1.0 * strength, randf_range(0.92, 1.12))
 	_flash(0.55 * strength)
 	ScreenFx.jolt(0.45 * strength)
-	var me := Net.get_local_player()
 	if me != null:
 		me.add_shake(strength)
 
@@ -764,6 +769,7 @@ func build_dennis(pos: Vector3, yaw: float) -> Node3D:
 	label.font_size = 26
 	label.pixel_size = 0.004
 	label.modulate = Color(1.0, 0.85, 0.2)
+	label.shaded = true
 	label.outline_size = 6
 	label.double_sided = false
 	label.position = Vector3(0.0, 0.75, -0.03)

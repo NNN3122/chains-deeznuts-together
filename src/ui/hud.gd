@@ -64,8 +64,8 @@ var _voice_label: Label
 
 ## One-time tips the first time you reach each climb: [test point, co-op text, solo text].
 const HINTS: Array = [
-	["spawn", "YOU'RE CHAINED TOGETHER (%.0f m of slack). Follow the green THIS WAY signs up. You each have a flashlight (F). One thing in a vest walks this floor: if it SEES you, run, or fight (light in its face, two shots). Upstairs, a scream brings the others." % 4.3,
-		"YOU'RE CHAINED TO THE BALLAST (%.0f m of slack). Follow the green THIS WAY signs up. You have a flashlight (F). One thing in a vest walks this floor: if it SEES you, run, or fight (light in its face, two shots). Upstairs, a scream brings the others." % 4.3],
+	["spawn", "YOU'RE CHAINED TOGETHER (%.0f m of slack). Find the way up through the maze. You each have a flashlight (F). One thing in a vest walks this floor: if it SEES you, run, or fight (light in its face, two shots). Upstairs, a scream brings the others." % 4.3,
+		"YOU'RE CHAINED TO THE BALLAST (%.0f m of slack). Find the way up through the maze. You have a flashlight (F). One thing in a vest walks this floor: if it SEES you, run, or fight (light in its face, two shots). Upstairs, a scream brings the others." % 4.3],
 	["door0", "JAMMED DOOR: sprint into it and it bangs open. Everything on the floor will come to look. Be through and gone, or ready.",
 		"JAMMED DOOR: sprint into it and it bangs open. Everything on the floor will come to look. Your Ballast gets dragged through after you."],
 	["crates_start", "CLIMB: walk into the crate and tap Space. Do the same at each ledge.",

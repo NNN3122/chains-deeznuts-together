@@ -140,15 +140,6 @@ func _ready() -> void:
 	knob.position = Vector3(0.0, 0.2, 0.0)
 	knob.material_override = LevelKit.mat("vending")
 	_lever.add_child(knob)
-	var tag := Label3D.new()
-	tag.text = "STAGE LIFT\nHOLD CTRL HERE TO RUN IT\nMAX 3 RIDERS"
-	tag.font_size = 26
-	tag.pixel_size = 0.004
-	tag.modulate = Color(1.0, 0.85, 0.3)
-	tag.outline_size = 8
-	tag.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	tag.position = Vector3(0.0, 2.0, 0.0)
-	box_root.add_child(tag)
 
 
 func riders() -> Array[ChainBody]:

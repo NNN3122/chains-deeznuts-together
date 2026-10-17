@@ -9,7 +9,6 @@ var enabled: bool = true  # replicated
 var _latched: bool = false
 var _plate_mesh: MeshInstance3D
 var _mat: StandardMaterial3D
-var _label: Label3D
 var _was_pressed: bool = false
 
 
@@ -65,15 +64,6 @@ func _ready() -> void:
 	_mat.emission_energy_multiplier = 0.3
 	_plate_mesh.material_override = _mat
 	add_child(_plate_mesh)
-	_label = Label3D.new()
-	_label.text = "STAND HERE"
-	_label.position = Vector3(0.0, 0.9, 0.0)
-	_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	_label.font_size = 32
-	_label.pixel_size = 0.005
-	_label.outline_size = 8
-	_label.modulate = Color(1.0, 0.85, 0.3)
-	add_child(_label)
 	body_entered.connect(_on_body_entered)
 
 
@@ -87,10 +77,8 @@ func _physics_process(_delta: float) -> void:
 	_plate_mesh.position.y = 0.0 if pressed else 0.03
 	if not enabled:
 		_mat.albedo_color = Color(0.45, 0.12, 0.1)
-		_label.text = "NO POWER\nPULL THE FIRE ALARM"
 	else:
 		_mat.albedo_color = Color(0.3, 0.9, 0.3) if pressed else Color(0.85, 0.7, 0.1)
-		_label.text = "STAND HERE"
 	_mat.emission = _mat.albedo_color
 	if pressed != _was_pressed:
 		_was_pressed = pressed

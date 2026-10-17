@@ -17,7 +17,6 @@ var _spot: Vector3 = Vector3.ZERO
 var _facing: float = 0.0
 var _screen: MeshInstance3D
 var _glow: OmniLight3D
-var _label: Label3D
 var _was_use: Dictionary = {}
 var _first_clip_done: bool = false
 var _whine: AudioStreamPlayer3D
@@ -66,15 +65,6 @@ func _ready() -> void:
 	_glow.omni_range = 3.5
 	_glow.position = Vector3(0.0, 1.2, -0.5)
 	add_child(_glow)
-	_label = Label3D.new()
-	_label.text = "SECURITY DESK\nSTAND HERE: CAMERAS\nF FLIPS CAMERAS"
-	_label.font_size = 26
-	_label.pixel_size = 0.004
-	_label.modulate = Color(0.6, 0.9, 1.0)
-	_label.outline_size = 8
-	_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	_label.position = Vector3(0.0, 1.8, -0.9)
-	add_child(_label)
 	_part(Vector3(0.0, 0.0, -0.85), Vector3(1.0, 0.012, 0.8), "hazard", false)  # painted chair spot
 	_whine = Sfx.loop_player("hum", -30.0, 6.0)
 	_whine.pitch_scale = 2.6

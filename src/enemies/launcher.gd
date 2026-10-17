@@ -10,6 +10,8 @@ extends Node3D
 ## Host-authoritative like the Custodian; position, state and grab are replicated.
 
 enum LState { SHAMBLE, WINDUP, LUNGE, RECOVER, GRAB, STUNNED, DEAD, SWING, CLIMB }
+const IDLE_CALL_EVERY: Vector2 = Vector2(7.0, 14.0)  # s between its hisses while it scuttles
+const IDLE_CALL_REACH: float = 22.0  # m
 
 const SHAMBLE_SPEED: float = 1.3  # m/s
 const SIGHT_RANGE: float = 42.0
@@ -52,6 +54,7 @@ var debug_frozen: bool = false
 var synced_position: Vector3 = Vector3.ZERO
 var synced_yaw: float = 0.0
 var lstate: int = LState.SHAMBLE
+var _idle_call_t: float = randf_range(3.0, 9.0)  # every peer: its own ambient timer
 var hunt_peer: int = 0
 var grab_peer: int = 0
 var burn_fraction: float = 0.0
@@ -474,7 +477,7 @@ func _start_grab(p: Player) -> void:
 	if to.length() > 0.05:
 		_face_dir(to.normalized())
 	p.grab_start(self)
-	_fx("growl", 4.0, 0.6)
+	_fx("spider_hiss", 4.0, 0.9)
 	GameState.post_message("IT'S ON %s. Everyone beside them: HOLD CTRL. Or a light in its face, the air horn, or two shots." % p.display_name.to_upper(), 4.0)
 
 
@@ -531,7 +534,7 @@ func stun(seconds: float) -> void:
 	lstate = LState.STUNNED
 	_t = maxf(left, seconds)
 	hunt_peer = 0
-	_fx("growl", 0.0, 1.5)
+	_fx("spider_hiss", 0.0, 1.35)
 
 
 ## Snubby hit (server): two while it holds someone make it let go; three kill it.
@@ -565,7 +568,7 @@ func die() -> void:
 	hunt_peer = 0
 	grab_peer = 0
 	_dead_t = 0.0
-	_fx("growl", 2.0, 0.4)
+	_fx("spider_hiss", 2.0, 0.7)
 	GameState.post_message("Jumper down.", 2.0)
 
 
@@ -671,6 +674,11 @@ func _fx(id: String, vol: float, pitch: float) -> void:
 # --- Visuals (every peer) --------------------------------------------------------------------------
 
 func _update_visuals(delta: float) -> void:
+	_idle_call_t -= delta
+	if _idle_call_t <= 0.0:
+		_idle_call_t = randf_range(IDLE_CALL_EVERY.x, IDLE_CALL_EVERY.y)
+		if lstate == LState.SHAMBLE and not asleep:
+			Sfx.idle_call(self, "spider_hiss", head_point(), -8.0, randf_range(0.8, 1.0), IDLE_CALL_REACH, "a dry hiss", 8.0)
 	var moved := global_position.distance_to(_last_pos) / maxf(delta, 0.0001)
 	_last_pos = global_position
 	_vis_speed = lerpf(_vis_speed, moved, clampf(delta * 8.0, 0.0, 1.0))
@@ -689,7 +697,7 @@ func _update_visuals(delta: float) -> void:
 	if grab_peer != _shown_grab:
 		_shown_grab = grab_peer
 		if grab_peer != 0:
-			Sfx.play_at(self, "scream", head_point(), 8.0, 1.4, 40.0)  # a shriek no throat should make
+			Sfx.play_at(self, "spider_shriek", head_point(), 8.0, 1.0, 40.0)  # a shriek no throat should make
 		var victim := Net.find_player(grab_peer)
 		if victim != null and victim.is_local:
 			Sfx.play(self, "stinger", 0.0)
@@ -798,3 +806,8 @@ func _update_visuals(delta: float) -> void:
 		if me != null and me.global_position.distance_to(global_position) < 22.0:
 			_caption_t = 6.0
 			Sfx.caption(self, "legs on the asphalt, big ones", chest_point())
+
+
+## For the chase music: hunting, not stunned or dead.
+func is_chasing() -> bool:
+	return lstate != LState.DEAD and lstate != LState.STUNNED

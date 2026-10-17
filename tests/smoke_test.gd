@@ -129,11 +129,14 @@ func _test_seeds() -> void:
 
 
 func _test_extras() -> void:
-	var signs := 0
-	for l in _level.find_children("*", "Label3D", true, false):
-		if (l as Label3D).text.ends_with("THIS WAY"):
-			signs += 1
-	_check("wayfinding signs along every floor's route", signs >= 8, "%d signs" % signs)
+	# No glowing words in the building (the user: "way less scary"): print is shaded, so it only
+	# reads where light falls. Light fixtures (EXIT signs, neon, arcade marquees) still glow.
+	var glowing: Array[String] = []
+	for n in _level.find_children("*", "Label3D", true, false):
+		var l := n as Label3D
+		if not l.shaded and l.text != "EXIT" and not l.has_meta("light_fixture"):
+			glowing.append(l.text.replace("\n", " "))
+	_check("no glowing writing in the building", glowing.is_empty(), "%d: %s" % [glowing.size(), str(glowing.slice(0, 6))])
 	# "Stuck?" regroup: everyone back to the last Break Room, no layoff counted.
 	var wipes0 := GameState.wipes
 	_place(_level.test_points["crates_start"], PI)
@@ -228,6 +231,12 @@ func _test_keyboard() -> void:
 	await _wait(0.4)
 	var edges := [PlayerInput.edge_strength(0.0), PlayerInput.edge_strength(0.5), PlayerInput.edge_strength(1.0)]
 	_check("cursor jumps don't spin the view; the window edges keep turning", absf(_host._yaw - yaw1) < 0.05 and edges == [-1.0, 0.0, 1.0], "yaw moved %.2f, edges %s" % [_host._yaw - yaw1, edges])
+	# A release we never heard (a menu was up) must not leave the view turning for ever.
+	_host.input._down["turn_left"] = true
+	await _wait(0.5)
+	var yaw2 := _host._yaw
+	await _wait(0.4)
+	_check("a key released while we weren't listening doesn't keep turning", absf(_host._yaw - yaw2) < 0.02, "yaw moved %.2f" % (_host._yaw - yaw2))
 	Settings.remote_mode = was_remote
 	_host.bot_controlled = true
 	_bot(Vector2.ZERO, 0.0, 0)
@@ -502,7 +511,7 @@ func _test_grab_release() -> void:
 	await _wait(0.8)
 	_check("a grab the monster no longer claims lets go by itself", not _host.is_grabbed(), "state %d" % _host.state)
 	# The catch: held up by the throat, raked, then the jaw drops for the bite; the caught player
-	# sees all of it through their own eyes, locked on its face, and the camera comes back after.
+	# sees it through their own eyes, pulled back onto its face, and the camera comes back after.
 	hire.debug_reset(at + Vector3(0.0, 0.0, -3.0), PI)
 	hire.debug_frozen = true
 	var was_mode := _host.camera_mode
@@ -514,9 +523,14 @@ func _test_grab_release() -> void:
 	var floor_y := _host.global_position.y
 	hire._start_grab(_host)
 	await _wait(1.0)
-	_host._pitch = -0.6  # the mouse tries to look away
-	_host._yaw += 1.0
-	await _wait(0.4)
+	# After the swing onto its face the mouse is yours: you can look down.
+	var pitch_before := _host._pitch
+	_host.input.look_delta = Vector2(0.0, 400.0)
+	await _wait(0.2)
+	var looked_down := pitch_before - _host._pitch
+	_host._yaw += 1.0  # and away
+	await _wait(1.4)  # left alone, the view drifts back onto its face
+	_check("caught, the mouse still looks around (down too)", looked_down > 0.15, "pitch moved %.2f rad" % looked_down)
 	var cam := _host.local_camera()
 	var to_face := (hire.face_point() - cam.global_position).normalized()
 	var aim := -cam.global_transform.basis.z
@@ -1504,7 +1518,11 @@ func _escape_by_helicopter(lot: HordeArena, tp: Dictionary, prefix: String) -> v
 			var direction := Vector2(aim.x - p.global_position.x, aim.z - p.global_position.z).limit_length(1.0)
 			if p.global_position.y < aim.y - 0.1:
 				direction.y = clampf((lot.origin.z + lot.tower_top.z + 6.5 - p.global_position.z) * 2.0, -1.0, 1.0)
-			var flags := Player.FLAG_RUN | (Player.FLAG_USE if p.global_position.y < aim.y + 0.25 else 0)
+			# Ease off like a pilot would: no thrust once the climb alone carries you to the deck.
+			# Thrusting until level with it overshot onto the cabin's roof.
+			var rise := maxf(p.velocity.y, 0.0)
+			var apex := p.global_position.y + rise * rise / (2.0 * Player.GRAVITY)
+			var flags := Player.FLAG_RUN | (Player.FLAG_USE if apex < aim.y + 0.25 else 0)
 			p._apply_input(direction, 0.0, 0.0, flags)
 		await _wait(0.05)
 		highest = maxf(highest, _host.global_position.y)

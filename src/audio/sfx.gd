@@ -11,6 +11,8 @@ const IDS: Array[String] = [
 	"growl", "scrape", "click", "flashlight",
 	"jukebox", "servo", "shutter", "bell", "klaxon", "static", "popper", "airhorn", "birthday", "bang",
 	"screech", "wind", "skitter", "scream", "roar",
+	"hire_gurgle", "cust_hiss", "cust_shriek", "pappy_laugh", "pappy_scream", "spider_hiss", "spider_shriek",
+	"roach_chitter", "chase",
 ]
 
 ## Sounds that get an on-screen caption (Settings.captions), with direction worked out by the HUD.
@@ -22,6 +24,9 @@ const CAPTIONS: Dictionary = {
 	"klaxon": "overload klaxon", "popper": "party popper", "airhorn": "AIR HORN", "bang": "BANG on the shutter",
 	"birthday": "the band sings, slowly", "screech": "a SCREECH: it's about to jump",
 	"scream": "a SCREAM", "roar": "a roar, right on you",
+	"hire_gurgle": "a wet, choking gurgle", "cust_hiss": "a hiss through teeth, above", "cust_shriek": "a whistling SHRIEK",
+	"pappy_laugh": "a broken speaker laughs", "pappy_scream": "a SCREAM, all metal and static", "spider_hiss": "a dry, rattling hiss",
+	"spider_shriek": "a chattering SHRIEK", "roach_chitter": "chittering",
 }
 
 static var _cache: Dictionary = {}
@@ -99,6 +104,20 @@ static func one_shot(id: String) -> AudioStreamWAV:
 	return _one_shots[id]
 
 
+## A monster's idle noise, played only for a local player on its floor and within reach: how you
+## know where it is before you see it. Ambient, so each peer rolls its own and nothing is synced.
+static func idle_call(owner: Node3D, id: String, pos: Vector3, volume_db: float, pitch: float, reach: float, text: String, max_dy: float = 3.0) -> void:
+	if is_silent() or owner == null or not owner.is_inside_tree():
+		return
+	# Looked up by path, not the Net autoload's name, so Sfx still compiles in the bare sound check.
+	var net := owner.get_node_or_null("/root/Net")
+	var me: Node3D = net.call("get_local_player") if net != null else null
+	if me == null or absf(me.global_position.y - pos.y) > max_dy or me.global_position.distance_to(pos) > reach:
+		return
+	play_at(owner, id, pos, volume_db, pitch, reach)
+	caption(owner, text, pos)
+
+
 ## A looping positional player for the caller to parent and start with start_loop().
 static func loop_player(id: String, volume_db: float, max_distance: float = 30.0) -> AudioStreamPlayer3D:
 	var p := AudioStreamPlayer3D.new()
@@ -161,6 +180,15 @@ static func _build(id: String) -> AudioStreamWAV:
 		"skitter": return _pack(_skitter())
 		"scream": return _pack(_scream())
 		"roar": return _pack(_roar())
+		"hire_gurgle": return _pack(_hire_gurgle())
+		"cust_hiss": return _pack(_cust_hiss())
+		"cust_shriek": return _pack(_cust_shriek())
+		"pappy_laugh": return _pack(_pappy_laugh())
+		"pappy_scream": return _pack(_pappy_scream())
+		"spider_hiss": return _pack(_spider_hiss())
+		"spider_shriek": return _pack(_spider_shriek())
+		"roach_chitter": return _pack(_roach_chitter())
+		"chase": return _pack(_chase(), true)
 	push_warning("Sfx: unknown sound '%s'" % id)
 	return _pack(PackedFloat32Array([0.0]))
 
@@ -233,7 +261,12 @@ static func _drone() -> PackedFloat32Array:
 		lp += a * (r.randf_range(-1.0, 1.0) - lp)
 		lp2 += a * (lp - lp2)
 		var swell := 0.6 + 0.4 * sin(TAU * t / 6.0)
-		b[i] = lp2 * 2.2 * swell + 0.08 * sin(TAU * 41.0 * t) + 0.04 * sin(TAU * 61.5 * t)
+		# Two notes a semitone apart, beating slowly against each other: wrong, never resolving.
+		var unease := 0.035 * (sin(TAU * 82.4 * t) + sin(TAU * 87.3 * t)) * (0.5 + 0.5 * sin(TAU * t / 6.0 + 1.0))
+		# Once a loop, the building groans: a deep bend down with a rough edge.
+		var g := clampf((t - 2.8) / 1.8, 0.0, 1.0)
+		var groan := sin(TAU * (140.0 * t - 12.0 * g * g * 1.8)) * sin(PI * g) * (0.8 + 0.2 * sin(TAU * 31.0 * t)) * 0.05
+		b[i] = lp2 * 2.2 * swell + 0.08 * sin(TAU * 41.0 * t) + 0.04 * sin(TAU * 61.5 * t) + unease + groan
 	return _seamless(b, 0.5)
 
 
@@ -762,6 +795,285 @@ static func _roar() -> PackedFloat32Array:
 		var env := minf(1.0, t * 25.0) * (1.0 if u < 0.7 else maxf(0.0, 1.0 - (u - 0.7) / 0.3))
 		b[i] = tanh(out * 3.5) * env
 	return _normalize(b, 0.95)
+
+
+# --- Monster voices --------------------------------------------------------------------------------
+# Every monster has its own throat. The Hire chokes and shrieks like the person it used to be
+# ("scream", "roar" for the bite), the Custodian hisses and whistles through its teeth, Pappy's
+# voice chip laughs and wails in broken electronics, the Jumper and the swarm stridulate and click.
+
+## Plays one tick of a decaying click into a running value (for click trains).
+static func _decay(v: float, per_second: float) -> float:
+	return v * exp(-per_second / float(RATE))
+
+
+## The Hire's wet, choking gurgle: vocal fry through an "uh" throat, with bubbles in it. Its
+## noticing, its stun, its sweep: a person drowning in their own shirt collar.
+static func _hire_gurgle() -> PackedFloat32Array:
+	var dur := 1.6
+	var b := _buf(dur)
+	var r := _rng(701)
+	var st := PackedFloat32Array()
+	st.resize(16)
+	var next_pulse := 0.0
+	var exc := 0.0
+	var bubble_t := 0.0
+	var bubble_f := 400.0
+	var lp := 0.0
+	var k_lp := _lp_coef(3500.0)
+	for i in b.size():
+		var t := float(i) / RATE
+		var u := t / dur
+		# Vocal fry: irregular glottal clicks, quickening as the throat strains.
+		if t >= next_pulse:
+			exc = 1.0
+			next_pulse = t + 1.0 / r.randf_range(35.0 + 30.0 * u, 60.0 + 45.0 * u)
+		exc = _decay(exc, 1400.0)
+		var src := exc + r.randf_range(-0.12, 0.12)
+		var voice := _bandpass(src, 520.0 + 90.0 * sin(TAU * 1.3 * t), 4.0, st, 0) * 1.3
+		voice += _bandpass(src, 1050.0, 6.0, st, 4) * 0.7
+		voice += _bandpass(src, 2500.0, 9.0, st, 8) * 0.3
+		# Bubbles: short bursts of narrow noise at random pitches.
+		if bubble_t <= 0.0 and r.randf() < 0.0007:
+			bubble_t = r.randf_range(0.012, 0.045)
+			bubble_f = r.randf_range(250.0, 900.0)
+		var bub := 0.0
+		if bubble_t > 0.0:
+			bubble_t -= 1.0 / RATE
+			bub = _bandpass(r.randf_range(-1.0, 1.0), bubble_f, 12.0, st, 12) * 4.0
+		lp += k_lp * (voice + bub - lp)
+		var env := smoothstep(0.0, 0.12, u) * (1.0 - smoothstep(0.75, 1.0, u)) * (0.7 + 0.3 * sin(TAU * 2.2 * t))
+		b[i] = tanh(lp * 2.2) * env
+	return _normalize(b, 0.9)
+
+
+## The Custodian's hiss: breath forced through teeth, rattling, with the wet clicks of a jaw. It
+## comes out of the ceiling tiles before the arm does.
+static func _cust_hiss() -> PackedFloat32Array:
+	var dur := 1.5
+	var b := _buf(dur)
+	var r := _rng(709)
+	var st := PackedFloat32Array()
+	st.resize(12)
+	var rattle := 0.0
+	var click := 0.0
+	for i in b.size():
+		var t := float(i) / RATE
+		var u := t / dur
+		var n := r.randf_range(-1.0, 1.0)
+		var hiss := _bandpass(n, 4200.0 - 1400.0 * u, 2.5, st, 0) + _bandpass(n, 7000.0, 3.0, st, 4) * 0.5
+		rattle += r.randf_range(16.0, 27.0) / RATE
+		var shake := 0.45 + 0.55 * absf(sin(PI * rattle))
+		if r.randf() < 0.0009:
+			click = 1.0
+		click = _decay(click, 260.0)
+		var clk := _bandpass(click * r.randf_range(-1.0, 1.0), 1800.0, 5.0, st, 8) * 3.0
+		var env := smoothstep(0.0, 0.25, u) * (1.0 - smoothstep(0.7, 1.0, u))
+		b[i] = tanh((hiss * shake * 1.8 + clk) * 1.5) * env
+	return _normalize(b, 0.85)
+
+
+## The Custodian's shriek when it takes you: a whistle through clenched teeth with a sick fast
+## vibrato, a second whistle beating against it, breath tearing underneath.
+static func _cust_shriek() -> PackedFloat32Array:
+	var dur := 1.5
+	var b := _buf(dur)
+	var r := _rng(719)
+	var st := PackedFloat32Array()
+	st.resize(8)
+	var p0 := 0.0
+	var p1 := 0.0
+	var p2 := 0.0
+	for i in b.size():
+		var t := float(i) / RATE
+		var u := t / dur
+		var f := 1700.0 + 900.0 * smoothstep(0.0, 0.08, u) - 1100.0 * smoothstep(0.55, 1.0, u)
+		f += 160.0 * sin(TAU * 31.0 * t)
+		p0 = fposmod(p0 + f / RATE, 1.0)
+		p1 = fposmod(p1 + f * 1.07 / RATE, 1.0)
+		p2 = fposmod(p2 + f * 0.5 / RATE, 1.0)
+		var tone := sin(TAU * p0) + 0.7 * sin(TAU * p1) + 0.4 * (2.0 * p2 - 1.0)
+		var n := r.randf_range(-1.0, 1.0)
+		var breath := _bandpass(n, f * 1.5, 3.0, st, 0) * 1.6 + _bandpass(n, 900.0, 2.0, st, 4) * 0.8 * (1.0 - u)
+		var env := minf(1.0, t * 60.0) * (1.0 - smoothstep(0.7, 1.0, u))
+		b[i] = tanh((tone * 0.6 + breath) * 2.4) * env
+	return _normalize(b, 0.93)
+
+
+## Pappy's laugh: his speaker's "ha, ha, ha", each one slower and lower, like a toy whose
+## batteries are dying; crushed to a few bits, held at a low sample rate, buzzing with mains hum.
+static func _pappy_laugh() -> PackedFloat32Array:
+	var dur := 2.4
+	var b := _buf(dur)
+	var r := _rng(727)
+	var st := PackedFloat32Array()
+	st.resize(12)
+	var starts: Array[float] = [0.0, 0.27, 0.56, 0.9, 1.3, 1.78]
+	var ph := 0.0
+	var held := 0.0
+	for i in b.size():
+		var t := float(i) / RATE
+		var u := t / dur
+		var gate := 0.0
+		var s := 0.0
+		for k in starts.size():
+			var span := 0.18 + 0.05 * float(k)
+			if t >= starts[k] and t < starts[k] + span:
+				s = (t - starts[k]) / span
+				gate = smoothstep(0.0, 0.08, s) * (1.0 - smoothstep(0.55, 1.0, s))
+		var f0 := lerpf(240.0, 92.0, u) * (1.0 - 0.15 * s) * (1.0 + 0.03 * sin(TAU * 5.0 * t))
+		ph = fposmod(ph + f0 / RATE, 1.0)
+		var src := (1.0 if ph < 0.28 else -0.4) * gate
+		src += r.randf_range(-1.0, 1.0) * gate * (1.0 - smoothstep(0.0, 0.3, s)) * 0.8  # the "h"
+		var voice := _bandpass(src, 760.0, 5.0, st, 0) + _bandpass(src, 1220.0, 6.0, st, 4) * 0.8
+		voice += _bandpass(src, 2600.0, 8.0, st, 8) * 0.4
+		voice += 0.04 * (sin(TAU * 60.0 * t) + 0.5 * sin(TAU * 180.0 * t))  # the mains buzz
+		if i % 3 == 0:
+			held = roundf(tanh(voice * 2.5) * 7.0) / 7.0  # 3-bit-ish, 7 kHz: a cheap chip
+		b[i] = held * (1.0 - smoothstep(0.92, 1.0, u))
+	return _normalize(b, 0.85)
+
+
+## Pappy's scream: the voice chip pushed past its limits. A rising wail ring-modulated into metal,
+## the speaker clipping and dropping out, a servo shrieking underneath.
+static func _pappy_scream() -> PackedFloat32Array:
+	var dur := 1.6
+	var b := _buf(dur)
+	var r := _rng(733)
+	var st := PackedFloat32Array()
+	st.resize(12)
+	var ph := 0.0
+	var ring := 0.0
+	var servo := 0.0
+	var held := 0.0
+	var drop := 0.0
+	for i in b.size():
+		var t := float(i) / RATE
+		var u := t / dur
+		var f0 := 280.0 + 470.0 * smoothstep(0.0, 0.15, u) + 70.0 * sin(TAU * 9.0 * t) - 260.0 * smoothstep(0.7, 1.0, u)
+		ph = fposmod(ph + f0 / RATE, 1.0)
+		ring = fposmod(ring + 173.0 / RATE, 1.0)
+		var saw := 2.0 * ph - 1.0
+		var src := saw * 0.6 + saw * sin(TAU * ring) * 0.8
+		var voice := _bandpass(src, 900.0, 4.0, st, 0) + _bandpass(src, 1400.0, 5.0, st, 4) * 0.8
+		voice += _bandpass(src, 2800.0, 7.0, st, 8) * 0.5
+		servo = fposmod(servo + lerpf(900.0, 2600.0, u) / RATE, 1.0)
+		voice += sin(TAU * servo) * 0.22
+		if drop <= 0.0 and r.randf() < 0.0004:
+			drop = r.randf_range(0.01, 0.03)  # the speaker cutting out
+		var gate := 1.0
+		if drop > 0.0:
+			drop -= 1.0 / RATE
+			gate = 0.0
+		if i % 2 == 0:
+			held = roundf(tanh(voice * 3.0) * 11.0) / 11.0
+		b[i] = held * gate * minf(1.0, t * 50.0) * (1.0 - smoothstep(0.8, 1.0, u))
+	return _normalize(b, 0.95)
+
+
+## The Jumper's hiss: stridulation, a dry comb of clicks quickening into a buzz, a hiss of air
+## through its spiracles and a low thrum in the body under it.
+static func _spider_hiss() -> PackedFloat32Array:
+	var dur := 1.3
+	var b := _buf(dur)
+	var r := _rng(739)
+	var st := PackedFloat32Array()
+	st.resize(12)
+	var next_click := 0.0
+	var click := 0.0
+	for i in b.size():
+		var t := float(i) / RATE
+		var u := t / dur
+		if t >= next_click:
+			click = 1.0
+			next_click = t + 1.0 / r.randf_range(40.0 + 80.0 * u, 60.0 + 110.0 * u)
+		click = _decay(click, 900.0)
+		var n := r.randf_range(-1.0, 1.0)
+		var comb := _bandpass(n * click, 3500.0, 4.0, st, 0) * 2.5 + _bandpass(n * click, 6500.0, 5.0, st, 4) * 1.5
+		var air := _bandpass(n, 5200.0, 1.5, st, 8) * 0.35 * smoothstep(0.0, 0.6, u)
+		var thrum := sin(TAU * 68.0 * t) * 0.35 * click
+		var env := smoothstep(0.0, 0.1, u) * (1.0 - smoothstep(0.75, 1.0, u))
+		b[i] = tanh((comb + air + thrum) * 1.8) * env
+	return _normalize(b, 0.85)
+
+
+## The Jumper's shriek when it pins you: a thud, then a chattering scream of mouthparts that climbs
+## out of hearing, two thin whistles bending against each other.
+static func _spider_shriek() -> PackedFloat32Array:
+	var dur := 1.4
+	var b := _buf(dur)
+	var r := _rng(743)
+	var st := PackedFloat32Array()
+	st.resize(8)
+	var w0 := 0.0
+	var w1 := 0.0
+	for i in b.size():
+		var t := float(i) / RATE
+		var u := t / dur
+		var chatter := 0.5 + 0.5 * signf(sin(TAU * (26.0 + 14.0 * u) * t))
+		var n := r.randf_range(-1.0, 1.0)
+		var mouth := _bandpass(n, lerpf(2500.0, 5800.0, u), 3.0, st, 0) * chatter * 1.8
+		var fm := 260.0 * sin(TAU * 40.0 * t)
+		w0 = fposmod(w0 + (3100.0 + 900.0 * u + fm) / RATE, 1.0)
+		w1 = fposmod(w1 + (3350.0 + 700.0 * u - fm) / RATE, 1.0)
+		var whistle := (sin(TAU * w0) + sin(TAU * w1)) * 0.35
+		var thud := sin(TAU * 58.0 * t) * exp(-t * 18.0) * 1.6
+		var env := minf(1.0, t * 80.0) * (1.0 - smoothstep(0.65, 1.0, u))
+		b[i] = tanh((mouth + whistle) * 2.0 * env + thud)
+	return _normalize(b, 0.93)
+
+
+## The swarm's chitter: a burst of dry clicks in uneven clusters.
+static func _roach_chitter() -> PackedFloat32Array:
+	var dur := 0.55
+	var b := _buf(dur)
+	var r := _rng(751)
+	var st := PackedFloat32Array()
+	st.resize(8)
+	var next_click := 0.0
+	var click := 0.0
+	for i in b.size():
+		var t := float(i) / RATE
+		var u := t / dur
+		if t >= next_click:
+			click = r.randf_range(0.5, 1.0)
+			next_click = t + (r.randf_range(0.006, 0.014) if r.randf() < 0.8 else r.randf_range(0.03, 0.06))
+		click = _decay(click, 1100.0)
+		var n := r.randf_range(-1.0, 1.0) * click
+		var out := _bandpass(n, 2800.0, 4.0, st, 0) * 2.0 + _bandpass(n, 5200.0, 5.0, st, 4) * 1.4
+		b[i] = tanh(out * 1.6) * (1.0 - smoothstep(0.6, 1.0, u))
+	return _normalize(b, 0.8)
+
+
+## The chase: what you hear while something is hunting you. A sub pulse beating like a pounding
+## heart, two low saws grinding a semitone apart, a high cluster trembling, a tick counting
+## you down. Loops seamlessly (every period divides 4 s; it is rendered twice and the second,
+## warmed-up pass is kept so the filter has no seam). Each monster plays it at its own pitch.
+static func _chase() -> PackedFloat32Array:
+	var loop := 4.0
+	var full := _buf(loop * 2.0)
+	var lp := 0.0
+	var k_lp := _lp_coef(420.0)
+	var r := _rng(757)
+	var st := PackedFloat32Array()
+	st.resize(4)
+	for i in full.size():
+		var t := float(i) / RATE
+		var tl := fposmod(t, loop)
+		var beat := fposmod(tl, 0.5)
+		var pulse := exp(-beat * 9.0) + 0.6 * exp(-maxf(0.0, beat - 0.14) * 11.0) * (1.0 if beat >= 0.14 else 0.0)
+		var sub := sin(TAU * 41.0 * tl) * pulse
+		var saws := (2.0 * fposmod(55.0 * tl, 1.0) - 1.0) + (2.0 * fposmod(58.25 * tl, 1.0) - 1.0)
+		lp += k_lp * (saws - lp)
+		var trem := 0.5 + 0.5 * sin(TAU * 8.0 * tl)
+		var cluster := (sin(TAU * 880.0 * tl) + sin(TAU * 932.25 * tl) + 0.7 * sin(TAU * 1244.5 * tl)) * trem
+		var tick_t := fposmod(tl, 0.25)
+		var tick := _bandpass(r.randf_range(-1.0, 1.0) * exp(-tick_t * 300.0), 2200.0, 6.0, st, 0)
+		full[i] = tanh(sub * 0.9 + lp * 0.35 * (0.6 + 0.4 * pulse) + cluster * 0.06 + tick * 0.8)
+	var b := _buf(loop)
+	for i in b.size():
+		b[i] = full[b.size() + i]
+	return _normalize(b, 0.8)
 
 
 # --- Level 3 --------------------------------------------------------------------------------------

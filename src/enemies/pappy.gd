@@ -14,6 +14,8 @@ extends Node3D
 ## eyes. It happens when a shutter's holder lets go while he's banging on it, and for as long as
 ## the power is out. The answer is running, not staring.
 enum PState { DORMANT, ROAM, BANGING, LUNGE, GRAB, STUNNED, TRAVEL, RUSH }
+const IDLE_CALL_EVERY: Vector2 = Vector2(22.0, 40.0)  # s between his laughs while he is out of sight
+const IDLE_CALL_REACH: float = 24.0  # m
 
 const STEP_BASE: float = 14.0  # s between moves for 1-2 players
 const STEP_PER_EXTRA_PLAYER: float = 1.0
@@ -47,6 +49,7 @@ var level: Pizzeria
 var floor_index: int = 0  # replicated
 var node_index: int = 0  # replicated
 var pstate: int = PState.DORMANT  # replicated
+var _idle_call_t: float = randf_range(8.0, 20.0)  # every peer: its own ambient timer
 var synced_position: Vector3 = Vector3.ZERO  # replicated
 var synced_yaw: float = 0.0  # replicated
 var watched: bool = false  # replicated: someone (or a camera) has him right now
@@ -143,6 +146,7 @@ func _build_visuals() -> void:
 	tag.pixel_size = 0.004
 	tag.modulate = Color(1.0, 0.9, 0.6)
 	tag.outline_size = 6
+	tag.shaded = true  # a printed badge, not a glowing caption
 	tag.position = Vector3(0.25, 1.55, -0.62)
 	tag.rotation = Vector3(0.0, PI, 0.0)
 	_model.add_child(tag)
@@ -331,7 +335,7 @@ func _start_rush(seconds: float) -> void:
 	hunt_peer = 0
 	level.set_jukebox(false)
 	_fx("servo", 4.0, 1.5)
-	_fx("growl", 2.0, 0.5)
+	_fx("pappy_laugh", 2.0, 0.95)
 	GameState.post_message("HE'S COMING. RUN. (A Break Room or the freezer is safe.)", 3.0)
 
 
@@ -496,7 +500,7 @@ func _start_lunge(p: Player) -> void:
 	_grabbed = p
 	_face(p.global_position)
 	level.set_jukebox(false)
-	_fx("growl", 3.0, 0.55)
+	_fx("pappy_laugh", 3.0, 1.0)
 	_fx("servo", 2.0, 1.6)
 
 
@@ -523,7 +527,7 @@ func _tick_lunge(delta: float) -> void:
 		_grab_t = 0.0
 		_burn = 0.0
 		_grabbed.grab_start(self)
-		_fx("growl", 6.0, 0.7)
+		_fx("pappy_laugh", 4.0, 0.9)
 		GameState.post_message("HE HAS %s. Air horn, party popper or a flashlight in his face. NOW." % _grabbed.display_name.to_upper(), 4.0)
 
 
@@ -781,6 +785,11 @@ func _rpc_stun_fx() -> void:
 # --- Visuals (every peer) ---------------------------------------------------------------------------
 
 func _update_visuals(delta: float) -> void:
+	_idle_call_t -= delta
+	if _idle_call_t <= 0.0:
+		_idle_call_t = randf_range(IDLE_CALL_EVERY.x, IDLE_CALL_EVERY.y)
+		if pstate == PState.ROAM or pstate == PState.TRAVEL or pstate == PState.DORMANT:
+			Sfx.idle_call(self, "pappy_laugh", head_point(), -10.0, randf_range(0.72, 0.88), IDLE_CALL_REACH, "a broken laugh, somewhere")
 	_model.visible = pstate != PState.DORMANT and pstate != PState.TRAVEL
 	if not multiplayer.is_server():
 		_model.rotation.y = lerp_angle(_model.rotation.y, synced_yaw, clampf(delta * 10.0, 0.0, 1.0))
@@ -788,12 +797,12 @@ func _update_visuals(delta: float) -> void:
 		_shown_state = pstate
 		if pstate == PState.GRAB:
 			# A scream through a broken speaker: deep, torn, too loud.
-			Sfx.play_at(self, "scream", head_point(), 9.0, 0.72, 40.0)
+			Sfx.play_at(self, "pappy_scream", head_point(), 9.0, 1.0, 40.0)
 			var caught := Net.find_player(grab_peer)
 			if caught != null and caught.is_local:
-				Sfx.play(self, "roar", 0.0, 0.8)
+				Sfx.play(self, "pappy_laugh", 2.0, 0.85)  # laughing inside your head
 		if pstate == PState.LUNGE:
-			Sfx.play_at(self, "scream", head_point(), 8.0, 0.68, 40.0)
+			Sfx.play_at(self, "pappy_scream", head_point(), 8.0, 0.92, 40.0)
 			var tw := create_tween()
 			tw.tween_property(_arm_l, "rotation:x", 2.4, 0.2)  # positive x swings an arm forward
 			tw.parallel().tween_property(_arm_r, "rotation:x", 2.4, 0.2)
@@ -858,3 +867,8 @@ func _update_visuals(delta: float) -> void:
 		if _creak_t <= 0.0 and pstate == PState.ROAM:
 			_creak_t = randf_range(5.0, 11.0)
 			Sfx.play_at(self, "click", chest_point(), -10.0, 0.35, 22.0)
+
+
+## For the chase music: only a visible rush, a lunge or a grab, not his unseen Steps.
+func is_chasing() -> bool:
+	return pstate == PState.RUSH or pstate == PState.LUNGE or pstate == PState.GRAB

@@ -119,15 +119,6 @@ func _ready() -> void:
 	handle.material_override = LevelKit.mat("hazard")
 	handle.position = to_local(_pull_point) + Vector3(0.0, 0.75, 0.0)
 	add_child(handle)
-	var tag := Label3D.new()
-	tag.text = "SHUTTER\nHOLD CTRL HERE\nTO KEEP IT DOWN"
-	tag.font_size = 26
-	tag.pixel_size = 0.004
-	tag.modulate = Color(1.0, 0.85, 0.3)
-	tag.outline_size = 8
-	tag.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	tag.position = to_local(_pull_point) + Vector3(0.0, 1.9, 0.0)
-	add_child(tag)
 
 
 func _box(at: Vector3, size: Vector3, key: String, basis: Basis, lift: float = 0.0) -> void:

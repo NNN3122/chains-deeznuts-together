@@ -408,7 +408,6 @@ func _build_floor(f: int) -> void:
 				continue
 			_dress_cell(root, batch, f, x, z, r, rng)
 	_build_room_lights(root, batch, f, rng)
-	_build_signs(root, batch, f)
 	batch.build(root, "P%d" % f)
 	_build_exit_signs(root)
 	_build_cameras(root, f)
@@ -627,6 +626,7 @@ func _build_stage(root: Node3D, batch: LevelKit.BoxBatch, rng: RandomNumberGener
 	mark_label.font_size = 40
 	mark_label.pixel_size = 0.006
 	mark_label.modulate = Color(0.1, 0.1, 0.1)
+	mark_label.shaded = true
 	mark_label.position = mark + Vector3(0.0, 0.012, 0.0)
 	mark_label.rotation = Vector3(-PI * 0.5, 0.0, 0.0)
 	root.add_child(mark_label)
@@ -655,7 +655,6 @@ func _build_stage(root: Node3D, batch: LevelKit.BoxBatch, rng: RandomNumberGener
 	var gallery := Vector3(left - 2.3 - 1.9 * 4.0 - 0.9, rail_y, plank_z)
 	batch.add(gallery - Vector3(0.0, 0.1, 0.0), Vector3(1.8, 0.2, 1.4), "metal")
 	batch.add(gallery + Vector3(0.0, 0.5, -0.68), Vector3(1.8, 1.0, 0.04), "steel_dark", true)  # back rail
-	_sign(root, "FLY GALLERY\nMIND THE GAP", gallery + Vector3(0.0, 1.5, -0.6), 0.0, Color(0.9, 0.9, 0.9))
 	test_points["p_rail_start"] = Vector3(left - 0.3, rail_y + 0.1, plank_z)
 	test_points["p_gallery"] = gallery + Vector3(0.0, 0.1, 0.0)
 	# A speaker case to climb at the loft's left end: 1 m up, then the loft.
@@ -678,8 +677,6 @@ func _build_stage(root: Node3D, batch: LevelKit.BoxBatch, rng: RandomNumberGener
 	hl.omni_range = 8.0
 	hl.position = hatch - Vector3(0.0, 0.3, 0.0)
 	root.add_child(hl)
-	_sign(root, "PROP LOFT\nROOF ACCESS\nEVERYONE UP HERE", Vector3(loft_c.x, base + STAGE_H + LOFT_H + 1.6, sz + 0.25), 0.0)
-	_sign(root, "ROOF ACCESS\nCLIMB THE CASE", Vector3(case_x, base + STAGE_H + 2.6, sz + 0.25), 0.0, Color(0.6, 1.0, 0.6))
 	_exit_area = Area3D.new()
 	_exit_area.name = "ExitArea"
 	_exit_area.collision_layer = 0
@@ -775,10 +772,6 @@ func _dress_cell(root: Node3D, batch: LevelKit.BoxBatch, f: int, x: int, z: int,
 			elif f == 1:
 				PizzeriaProps.shelf(batch, c + Vector3(0.0, 0.0, 2.6), true, rng, 2.4)
 			_poster(root, c, Vector3(1.0, 0.0, 0.0) if f == 0 else Vector3(0.0, 0.0, -1.0), rng)
-			if f == 0 and z == 0:
-				_sign(root, "EMPLOYEES ONLY\nDUMBWAITER ->", c + Vector3(2.88, 2.0, 0.0), -PI * 0.5)
-			elif f == 1 and x == 1:
-				_sign(root, "EMPLOYEES ONLY\n<- STAGE LIFT", c + Vector3(0.0, 2.0, 2.88), PI)
 		"U":
 			if f == 0:
 				_dumbwaiter_bottom(root, batch, c, rng)
@@ -802,7 +795,6 @@ func _dress_cell(root: Node3D, batch: LevelKit.BoxBatch, f: int, x: int, z: int,
 		"F":
 			PizzeriaProps.freezer(root, batch, c, rng)
 			test_points["p_freezer"] = c + Vector3(0.0, 0.1, 0.0)
-			_sign(root, "WALK-IN FREEZER\nHE WON'T COME IN HERE", c + Vector3(-2.88, 2.1, 0.0), PI * 0.5, Color(0.7, 0.9, 1.0))
 		"M":
 			_office(root, batch, f, c, rng)
 		"T":
@@ -861,6 +853,7 @@ func _receiving(root: Node3D, batch: LevelKit.BoxBatch, c: Vector3, rng: RandomN
 	sign.pixel_size = 0.005
 	sign.modulate = Color(0.95, 0.8, 0.25)
 	sign.outline_size = 10
+	sign.shaded = true
 	sign.double_sided = false
 	sign.position = c + Vector3(2.88, 2.4, 0.0)
 	sign.rotation = Vector3(0.0, -PI * 0.5, 0.0)
@@ -880,6 +873,7 @@ func _host_stand(root: Node3D, batch: LevelKit.BoxBatch, f: int, c: Vector3) -> 
 	l.pixel_size = 0.004
 	l.modulate = Color(1.0, 0.9, 0.7)
 	l.outline_size = 6
+	l.shaded = true
 	l.position = podium + Vector3(0.0, 0.9, 0.3)
 	root.add_child(l)
 	_add_desk(root, f, c + Vector3(-2.2, 0.0, 1.0), -PI * 0.5)
@@ -993,6 +987,7 @@ func _party_cell(root: Node3D, batch: LevelKit.BoxBatch, f: int, x: int, z: int,
 	banner.pixel_size = 0.005
 	banner.modulate = Color(1.0, 0.4, 0.5)
 	banner.outline_size = 8
+	banner.shaded = true
 	banner.double_sided = false
 	banner.position = c + Vector3(0.0, 2.4, 2.86)
 	banner.rotation = Vector3(0.0, PI, 0.0)
@@ -1011,15 +1006,6 @@ func _dumbwaiter_bottom(root: Node3D, batch: LevelKit.BoxBatch, c: Vector3, rng:
 	dumbwaiter = Dumbwaiter.create("Dumbwaiter", shaft, FLOOR_H, ropes)
 	root.add_child(dumbwaiter)
 	for rp in ropes:
-		var l := Label3D.new()
-		l.text = "HAND ROPE\nHOLD CTRL HERE\nTO HAUL THE CAR"
-		l.font_size = 26
-		l.pixel_size = 0.004
-		l.modulate = Color(1.0, 0.85, 0.3)
-		l.outline_size = 8
-		l.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-		l.position = rp + Vector3(0.0, 1.9, 0.0)
-		root.add_child(l)
 		batch.add(rp + Vector3(0.0, 0.0, 0.0), Vector3(0.9, 0.012, 0.9), "hazard", false)
 	batch.add(shaft + Vector3(1.0, 1.4, 0.0), Vector3(0.05, 2.8, 0.05), "rope", false)  # the hand rope
 	var sl := OmniLight3D.new()
@@ -1031,7 +1017,6 @@ func _dumbwaiter_bottom(root: Node3D, batch: LevelKit.BoxBatch, c: Vector3, rng:
 	batch.add(shaft + Vector3(0.0, 2.75, 0.4), Vector3(0.2, 0.08, 0.2), "glow", false)
 	PizzeriaProps.shelf(batch, c + Vector3(1.5, 0.0, 2.6), true, rng, 2.8)
 	PizzeriaProps.shelf(batch, c + Vector3(2.6, 0.0, 0.0), false, rng, 2.0)
-	_sign(root, "DUMBWAITER\nONE RIDER. SOMEONE HAULS.", c + Vector3(1.2, 3.3, -2.86), 0.0)
 	test_points["p_dumbwaiter"] = shaft + Vector3(0.0, 0.1, 0.0)
 	test_points["p_rope0"] = ropes[0]
 	test_points["p_rope1"] = ropes[1]
@@ -1052,7 +1037,6 @@ func _dumbwaiter_top(root: Node3D, batch: LevelKit.BoxBatch, c: Vector3, rng: Ra
 	batch.add(Vector3(shaft.x, c.y + 2.25, shaft.z), Vector3(Dumbwaiter.SIZE + 0.5, 0.1, Dumbwaiter.SIZE + 0.5), "steel_dark")  # shaft cap
 	batch.add(shaft + Vector3(0.0, 1.0, 0.0), Vector3(0.05, 2.0, 0.05), "rope", false)
 	PizzeriaProps.prep_table(batch, c + Vector3(1.8, 0.0, 1.8), Vector3(2.0, 0.9, 1.0), rng)
-	_sign(root, "DUMBWAITER\nHAUL FROM UP HERE TOO", c + Vector3(0.6, 2.5, -2.86), 0.0)
 	test_points["p_dumbwaiter_top"] = shaft + Vector3(0.0, 0.1, 1.6)
 
 
@@ -1107,6 +1091,7 @@ func _punch_clock(root: Node3D, batch: LevelKit.BoxBatch, at: Vector3, yaw: floa
 	clock.pixel_size = 0.005
 	clock.modulate = Color(1.0, 0.85, 0.3)
 	clock.outline_size = 8
+	clock.shaded = true
 	clock.double_sided = false
 	clock.position = at + Vector3(0.0, 1.8, 0.0) + Vector3(-sin(yaw), 0.0, -cos(yaw)) * 0.02
 	clock.rotation = Vector3(0.0, yaw, 0.0)
@@ -1119,16 +1104,6 @@ func _generator(root: Node3D, batch: LevelKit.BoxBatch, at: Vector3, yaw: float)
 	var n := Vector3(-sin(yaw), 0.0, -cos(yaw))
 	batch.add(at + n * 0.2 + Vector3(0.0, 1.3, 0.0), Vector3(0.4, 1.0, 0.7) if absf(n.x) > 0.5 else Vector3(0.7, 1.0, 0.4), "steel_dark")
 	batch.add(at + n * 0.41 + Vector3(0.0, 1.5, 0.0), Vector3(0.02, 0.1, 0.1) if absf(n.x) > 0.5 else Vector3(0.1, 0.1, 0.02), "neon_green", false)
-	var l := Label3D.new()
-	l.text = "GENERATOR\nSTAND IN THIS ROOM\nTO RESTART POWER"
-	l.font_size = 24
-	l.pixel_size = 0.004
-	l.modulate = Color(0.5, 1.0, 0.6)
-	l.outline_size = 6
-	l.double_sided = false
-	l.position = at + n * 0.42 + Vector3(0.0, 1.0, 0.0)
-	l.rotation = Vector3(0.0, yaw, 0.0)
-	root.add_child(l)
 
 
 func _kitchen_cell(root: Node3D, batch: LevelKit.BoxBatch, x: int, z: int, c: Vector3, rng: RandomNumberGenerator) -> void:
@@ -1161,7 +1136,6 @@ func _office(root: Node3D, batch: LevelKit.BoxBatch, f: int, c: Vector3, rng: Ra
 	batch.add(c + Vector3(-2.4, 1.0, 1.5), Vector3(0.8, 2.0, 1.2), "cabinet")
 	batch.add(c + Vector3(-1.0, 0.5, 2.2), Vector3(0.2, 1.0, 0.2), "pot", true)
 	_poster(root, c, Vector3(0.0, 0.0, -1.0), rng)
-	_sign(root, "MANAGER'S OFFICE\nTHE CAMERAS ARE IN HERE", c + Vector3(0.0, 2.0, 2.88), PI)
 
 
 func _lift_room(root: Node3D, _batch: LevelKit.BoxBatch, c: Vector3) -> void:
@@ -1169,7 +1143,6 @@ func _lift_room(root: Node3D, _batch: LevelKit.BoxBatch, c: Vector3) -> void:
 	stage_lift = StageLift.create("StageLift", c + Vector3(0.0, -0.15 + 0.01, 0.0), FLOOR_H, lever)
 	stage_lift.bind_power(get_power, drain_power)
 	root.add_child(stage_lift)
-	_sign(root, "STAGE LIFT\nHOLD THE LEVER. 3 RIDE.\nTHE LAST ONE GETS HOISTED.", c + Vector3(0.0, 2.1, 2.88), PI)
 	test_points["p_lift"] = c + Vector3(0.0, 0.1, 0.0)
 	test_points["p_lever"] = lever
 
@@ -1184,7 +1157,6 @@ func _sound_booth(root: Node3D, batch: LevelKit.BoxBatch, f: int, c: Vector3) ->
 	for k in 2:
 		batch.add(c + Vector3(-2.4 + 1.6 * float(k), 1.9, -2.6), Vector3(0.5, 0.7, 0.4), "speaker")
 	_speakers.append(PizzeriaProps.speaker(root, batch, c + Vector3(0.0, 3.0, -2.9)))
-	_sign(root, "SOUND BOOTH\nLAST CAMERA DESK", c + Vector3(0.0, 2.3, 2.88), PI)
 
 
 func _audience_cell(root: Node3D, batch: LevelKit.BoxBatch, x: int, z: int, c: Vector3, rng: RandomNumberGenerator) -> void:
@@ -1240,38 +1212,6 @@ func _build_room_lights(root: Node3D, batch: LevelKit.BoxBatch, f: int, rng: Ran
 			_lights.register(parts[0], parts[1], checkpoint_base + f, kind, hum)
 
 
-func _build_signs(root: Node3D, batch: LevelKit.BoxBatch, f: int) -> void:
-	# Green route signs over the doorways on the way to this floor's climb, like the office.
-	var routes: Array = [
-		[[0, 3, 0, 2], [1, 2, 1, 1], [1, 1, 1, 0]],
-		[[0, 0, 1, 0], [1, 0, 1, 1], [1, 1, 1, 2], [1, 2, 0, 2]],
-		[[0, 3, 0, 2], [0, 2, 1, 2]],  # the stage itself has its own CLIMB THE CASE sign
-	]
-	var names: Array[String] = ["DUMBWAITER", "STAGE LIFT", "ROOF ACCESS"]
-	var base := _origin.y + float(f) * FLOOR_H
-	for e in routes[f]:
-		var a := Vector2i(int(e[0]), int(e[1]))
-		var b := Vector2i(int(e[2]), int(e[3]))
-		var out := Vector3(float(b.x - a.x), 0.0, float(b.y - a.y))
-		var kind := _edge_kind(f, a, b)
-		var at := cell_center(f, a.x, a.y) + out * (CELL * 0.5 - WALL_T * 0.5 - 0.03)
-		at.y = base + (DOOR_H + 0.45 if (kind == Conn.DOOR or kind == Conn.SHUTTER) else 2.5)
-		if f == 2 and a.y >= 2 and b.y < 2:
-			at.y = base + 2.6
-		var yaw := atan2(-out.x, -out.z)
-		var plate := Vector3(1.25, 0.36, 0.03) if absf(out.z) > 0.5 else Vector3(0.03, 0.36, 1.25)
-		batch.add(at - out * 0.01, plate, "sign_green", false)
-		var l := Label3D.new()
-		l.text = "%s\nTHIS WAY" % names[f]
-		l.font_size = 32
-		l.pixel_size = 0.0042
-		l.modulate = Color(0.95, 1.0, 0.95)
-		l.outline_size = 0
-		l.double_sided = false
-		l.position = at - out * 0.03
-		l.rotation = Vector3(0.0, yaw, 0.0)
-		root.add_child(l)
-
 
 func _sign(root: Node3D, text: String, at: Vector3, yaw: float, color: Color = Color(1.0, 0.82, 0.15)) -> void:
 	var l := Label3D.new()
@@ -1280,6 +1220,7 @@ func _sign(root: Node3D, text: String, at: Vector3, yaw: float, color: Color = C
 	l.pixel_size = 0.005
 	l.modulate = color
 	l.outline_size = 10
+	l.shaded = true  # painted: read only where light falls
 	l.double_sided = false
 	l.position = at
 	l.rotation = Vector3(0.0, yaw, 0.0)
@@ -1308,6 +1249,7 @@ func _poster(root: Node3D, c: Vector3, normal: Vector3, rng: RandomNumberGenerat
 	label.pixel_size = 0.0045
 	label.modulate = Color(0.08, 0.06, 0.05) if col.get_luminance() > 0.5 else Color(1.0, 0.97, 0.9)
 	label.outline_size = 0
+	label.shaded = true
 	label.double_sided = false
 	label.transform = Transform3D(basis, pos + normal * 0.012)
 	root.add_child(label)

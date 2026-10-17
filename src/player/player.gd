@@ -24,7 +24,15 @@ const MOUSE_SENSITIVITY: float = 0.0022
 const PITCH_LIMIT: float = 1.45
 const TP_ARM_LENGTH: float = 2.7
 const STAND_HEIGHT: float = 1.8  # capsule, meters
-const GRAB_LOOK_RATE: float = 10.0  # 1/s, how hard a caught player's view is held on the face that has them
+const GRAB_LOOK_RATE: float = 10.0  # 1/s, how hard a caught player's view swings onto the face that has them
+const GRAB_LOOK_TIME: float = 0.6  # s the view is swung onto its face before the mouse is yours again
+const GRAB_PULL_RATE: float = 2.5  # 1/s, the softer pull back onto its face while you leave the mouse alone
+const GRAB_PULL_DELAY: float = 0.6  # s without looking around before that pull starts
+const CHASE_RANGE: float = 22.0  # m: a hunter further off than this doesn't bring the chase music
+const CHASE_DB: float = -7.0  # the chase music at full
+const CHASE_FADE_IN: float = 1.5  # 1/s
+const CHASE_FADE_OUT: float = 0.3  # 1/s: it lingers after the thing gives up
+const CHASE_PITCH: Dictionary = {"hire": 1.0, "custodian": 1.12, "pappy": 0.82, "launcher": 1.25}  # each its own key
 const ORPHAN_GRAB_TIME: float = 0.4  # s held by nothing before the grab is dropped
 const CROUCH_HEIGHT: float = 1.25
 const EYE_HEIGHT: float = 1.55
@@ -138,6 +146,10 @@ var _pitch: float = -0.15
 var _shake: float = 0.0
 var _heartbeat_t: float = 0.0
 var _was_grabbed: bool = false
+var _grab_look_t: float = 0.0  # s since this grab began, on this peer's camera
+var _grab_idle: float = 0.0  # s since the caught player last looked around
+var _chase_player: AudioStreamPlayer
+var _chase_level: float = 0.0  # 0..1, how far in the chase music is
 var _pov_forced: bool = false  # caught while playing in third person: the view is your own eyes until it lets go
 var _rig_pos: Vector3 = Vector3.ZERO
 var _land_off: float = 0.0
@@ -214,10 +226,13 @@ func _ready() -> void:
 	_name_label.text = display_name
 	_name_label.position = Vector3(0.0, 2.3, 0.0)
 	_name_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	_name_label.font_size = 40
-	_name_label.pixel_size = 0.006
-	_name_label.outline_size = 10
-	_name_label.no_depth_test = true
+	# Faint and hidden by walls: a teammate's name, not a glowing caption over the scene.
+	_name_label.font_size = 30
+	_name_label.pixel_size = 0.005
+	_name_label.outline_size = 6
+	_name_label.modulate = Color(1.0, 1.0, 1.0, 0.4)
+	_name_label.outline_modulate = Color(0.0, 0.0, 0.0, 0.3)
+	_name_label.no_depth_test = false
 	_name_label.visible = not is_local
 	add_child(_name_label)
 	_build_flashlight()
@@ -373,20 +388,32 @@ func _process(delta: float) -> void:
 func _update_local_camera(delta: float) -> void:
 	var look := input.consume_look() * MOUSE_SENSITIVITY * Settings.mouse_sensitivity
 	var keys := input.key_look(delta)
-	# Caught: you look at it. For the whole hold the view is your own eyes (first person, whichever
-	# camera you play with) locked on its face, and the mouse does nothing; when it lets go (or you
-	# are taken) the camera you chose comes back.
+	# Caught: you look at it. The view is your own eyes (first person, whichever camera you play
+	# with), swung onto its face for GRAB_LOOK_TIME; after that the mouse is yours (the user could not
+	# look down when it held the view the whole time), and if you leave it alone the view drifts back
+	# onto its face. When it lets go (or you are taken) the camera you chose comes back.
 	var grabbed_now := (synced_flags & SFLAG_GRABBED) != 0
 	if grabbed_now != _was_grabbed:
 		_was_grabbed = grabbed_now
 		_set_pov_forced(grabbed_now)
+		_grab_look_t = 0.0
+		_grab_idle = 0.0
+		input.reset_look()  # what you did with the mouse before (or during) the grab is spent
+		look = Vector2.ZERO
+		keys = Vector2.ZERO
 	if grabbed_now:
 		add_shake(delta * 0.8)
-		_turn_toward_grabber(delta)
+		_grab_look_t += delta
+		if _grab_look_t < GRAB_LOOK_TIME:
+			input.reset_look()
+			_turn_toward_grabber(delta, GRAB_LOOK_RATE)
+		else:
+			_apply_look(look, keys)
+			_grab_idle = 0.0 if look.length_squared() + keys.length_squared() > 1e-8 else _grab_idle + delta
+			if _grab_idle > GRAB_PULL_DELAY:
+				_turn_toward_grabber(delta, GRAB_PULL_RATE)
 	else:
-		_yaw -= look.x + keys.x
-		var pitch_in := look.y * (-1.0 if Settings.invert_y else 1.0)
-		_pitch = clampf(_pitch - pitch_in + keys.y, -PITCH_LIMIT, PITCH_LIMIT)
+		_apply_look(look, keys)
 	var fp := camera_mode == CameraMode.FIRST_PERSON or _pov_forced
 	# The eye drops with a crouch, smoothly, so the view never pops.
 	var crouching := (synced_flags & SFLAG_BRACING) != 0
@@ -444,8 +471,14 @@ func _update_local_camera(delta: float) -> void:
 	_tick_heartbeat(delta)
 
 
+func _apply_look(look: Vector2, keys: Vector2) -> void:
+	_yaw -= look.x + keys.x
+	var pitch_in := look.y * (-1.0 if Settings.invert_y else 1.0)
+	_pitch = clampf(_pitch - pitch_in + keys.y, -PITCH_LIMIT, PITCH_LIMIT)
+
+
 ## Eases the local view toward the monster whose grab_peer is us (grab_peer reaches every peer).
-func _turn_toward_grabber(delta: float) -> void:
+func _turn_toward_grabber(delta: float, rate: float) -> void:
 	var grabber: Node3D = null
 	var candidates := get_tree().get_nodes_in_group("monster") + get_tree().get_nodes_in_group("custodian")
 	for m in candidates:
@@ -469,19 +502,25 @@ func _turn_toward_grabber(delta: float) -> void:
 		return
 	var want_yaw := atan2(-to.x, -to.z)
 	var want_pitch := clampf(atan2(to.y, maxf(flat, 0.01)), -PITCH_LIMIT, PITCH_LIMIT)
-	var k := 1.0 - exp(-GRAB_LOOK_RATE * delta)
+	var k := 1.0 - exp(-rate * delta)
 	_yaw += wrapf(want_yaw - _yaw, -PI, PI) * k
 	_pitch = lerpf(_pitch, want_pitch, k)
 
 
 func _tick_heartbeat(delta: float) -> void:
 	var period := 0.0
-	if synced_flags & SFLAG_GRABBED:
+	var hunter: Node3D = null
+	var grabbed := (synced_flags & SFLAG_GRABBED) != 0
+	if grabbed:
 		period = 0.45
 	else:
 		for c in get_tree().get_nodes_in_group("monster"):
 			if c.get("hunt_peer") == peer_id:
 				period = 0.8
+				if c is Node3D and (c as Node3D).global_position.distance_to(global_position) < CHASE_RANGE \
+						and (not c.has_method("is_chasing") or bool(c.call("is_chasing"))):
+					hunter = c as Node3D
+	_tick_chase(delta, hunter, grabbed)
 	if period <= 0.0:
 		_heartbeat_t = 0.0
 		return
@@ -489,6 +528,30 @@ func _tick_heartbeat(delta: float) -> void:
 	if _heartbeat_t <= 0.0:
 		_heartbeat_t = period
 		Sfx.play(self, "heartbeat", -2.0)
+
+
+## The chase music: in while something close is hunting you (or has you), at that monster's own
+## pitch, and out slowly once it gives up.
+func _tick_chase(delta: float, hunter: Node3D, grabbed: bool) -> void:
+	if Sfx.is_silent():
+		return
+	var want := 1.0 if hunter != null or grabbed else 0.0
+	_chase_level = move_toward(_chase_level, want, delta * (CHASE_FADE_IN if want > _chase_level else CHASE_FADE_OUT))
+	if _chase_level <= 0.0:
+		if _chase_player != null and _chase_player.playing:
+			_chase_player.stop()
+		return
+	if _chase_player == null:
+		_chase_player = AudioStreamPlayer.new()
+		_chase_player.stream = Sfx.stream("chase")
+		add_child(_chase_player)
+	if hunter != null:
+		for g: String in CHASE_PITCH:
+			if hunter.is_in_group(g):
+				_chase_player.pitch_scale = CHASE_PITCH[g]
+	_chase_player.volume_db = CHASE_DB + linear_to_db(_chase_level)
+	if not _chase_player.playing:
+		_chase_player.play()
 
 
 ## Where the body should be drawn this frame: between the last two physics positions.

@@ -79,11 +79,12 @@ func _ready() -> void:
 	add_child(lamp)
 	_part(Vector3(0.0, h - 0.02, 0.0), Vector3(0.9, 0.04, 0.3), "glow", false)
 	var sign := Label3D.new()
-	sign.text = "FREIGHT ELEVATOR\nEVERYONE IN TO GO UP"
+	sign.text = "FREIGHT ELEVATOR"
 	sign.font_size = 40
 	sign.pixel_size = 0.005
 	sign.modulate = Color(1.0, 0.82, 0.15)
 	sign.outline_size = 10
+	sign.shaded = true
 	sign.double_sided = false
 	sign.position = Vector3(0.0, h - 0.5, -w * 0.5 - 0.14)
 	sign.rotation = Vector3(0.0, PI, 0.0)

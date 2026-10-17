@@ -84,6 +84,7 @@ static func counter(root: Node3D, b: LevelKit.BoxBatch, at: Vector3, along: Vect
 	sign.pixel_size = 0.0045
 	sign.modulate = Color(1.0, 0.9, 0.7)
 	sign.outline_size = 6
+	sign.shaded = true
 	sign.position = at + Vector3(0.0, 2.6, 0.0) - n * 2.5
 	sign.rotation = Vector3(0.0, -yaw + PI * 0.5, 0.0)
 	root.add_child(sign)
@@ -104,6 +105,7 @@ static func arcade_cabinet(root: Node3D, b: LevelKit.BoxBatch, at: Vector3, fwd:
 	l.pixel_size = 0.004
 	l.modulate = glow
 	l.outline_size = 4
+	l.set_meta("light_fixture", true)  # a lit marquee, allowed to glow
 	l.position = at + Vector3(0.0, 1.95, 0.0) + fwd * 0.41
 	l.rotation = Vector3(0.0, yaw, 0.0)
 	root.add_child(l)
@@ -250,6 +252,7 @@ static func dock_door(root: Node3D, b: LevelKit.BoxBatch, at: Vector3, normal: V
 	l.pixel_size = 0.006
 	l.modulate = Color(0.9, 0.85, 0.7)
 	l.outline_size = 0
+	l.shaded = true
 	l.double_sided = false
 	l.position = at + Vector3(0.0, 2.0, 0.0) - normal * 0.03
 	l.rotation = Vector3(0.0, yaw, 0.0)
@@ -266,6 +269,7 @@ static func neon(root: Node3D, b: LevelKit.BoxBatch, text: String, at: Vector3, 
 	l.modulate = color
 	l.outline_size = 2
 	l.outline_modulate = color.darkened(0.6)
+	l.set_meta("light_fixture", true)  # neon tubes glow; printed words don't
 	l.double_sided = false
 	l.position = at
 	l.rotation = Vector3(0.0, yaw, 0.0)

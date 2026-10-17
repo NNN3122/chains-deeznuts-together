@@ -776,6 +776,7 @@ func _build_roof(batch: LevelKit.BoxBatch, i: int) -> void:
 			text.font_size = 72
 			text.pixel_size = 0.011
 			text.modulate = Color(0.08, 0.06, 0.05)
+			text.shaded = true
 			text.position = bb + Vector3(0.0, 0.0, 0.2)
 			root.add_child(text)
 			_block(p.x, p.z, 6.0, 0.6)
@@ -1080,6 +1081,7 @@ func _backdrop(batch: LevelKit.BoxBatch, rng: RandomNumberGenerator, c: Vector3,
 		text.font_size = 96
 		text.pixel_size = 0.018
 		text.modulate = Color(0.08, 0.06, 0.05)
+		text.shaded = true
 		text.position = bb + Vector3((-1.0 if toward_x else 1.0) * 0.25, 0.0, 0.0)
 		text.rotation.y = PI * 0.5 if toward_x else -PI * 0.5
 		root.add_child(text)
@@ -1296,7 +1298,7 @@ func play_scare(kind: String, pos: Vector3, targeted: bool) -> void:
 			_spawn_roof_shadow(pos, Horde.KIND_WEAVER, 3.0)
 		"roof_swarm":
 			Sfx.caption(self, "wings bursting out behind you", pos)
-			Sfx.play_at(self, "growl", pos, 0.0, 1.5, 30.0)
+			Sfx.play_at(self, "roach_chitter", pos, 4.0, 0.8, 30.0)
 			if targeted:
 				# Not play_at: a positional screech gets the Jumper's "about to jump" caption.
 				Sfx.play(self, "screech", -4.0, 2.4)
@@ -1361,7 +1363,7 @@ func _spawn_spider_drop(pos: Vector3) -> void:
 	tw.tween_property(spider, "global_position", face, 0.22).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
 	for k in 4:
 		tw.tween_property(spider, "rotation:z", 0.25 if k % 2 == 0 else -0.25, 0.12)
-	tw.tween_callback(func() -> void: Sfx.play_at(self, "growl", face, 2.0, 1.9, 20.0))
+	tw.tween_callback(func() -> void: Sfx.play_at(self, "spider_shriek", face, 2.0, 1.25, 20.0))
 	tw.tween_property(spider, "global_position", face + Vector3(0.0, 10.0, 0.0), 0.35).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
 	tw.tween_callback(spider.queue_free)
 

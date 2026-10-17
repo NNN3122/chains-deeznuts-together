@@ -42,15 +42,6 @@ func _ready() -> void:
 	light.omni_range = 2.2
 	light.position = Vector3(0.0, 0.3, 0.0)
 	_visual.add_child(light)
-	var label := Label3D.new()
-	label.text = data.display_name if data != null else item_id
-	label.position = Vector3(0.0, 0.55, 0.0)
-	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	label.font_size = 30
-	label.pixel_size = 0.005
-	label.outline_size = 8
-	label.modulate = color.lightened(0.3)
-	_visual.add_child(label)
 	_t = randf() * TAU
 	body_entered.connect(_on_body_entered)
 
