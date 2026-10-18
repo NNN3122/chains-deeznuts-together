@@ -10,7 +10,7 @@ const SHOULDER_SPEED: float = 5.0  # m/s toward it: a sprint (7) does it, a walk
 const BANG_SECONDS: float = 3.0  # s the bang counts as noise for the Hires
 const WAKE_SECONDS: float = 14.0  # s the floor's Hires hunt after the bang
 const STUMBLE: float = 5.5  # m/s the shoulderer is thrown through the doorway
-const TELL_GAP_MS: int = 3500
+const TELL_GAP_MS: int = 20000
 
 var axis: Vector3 = Vector3.RIGHT  # along the doorway
 var normal: Vector3 = Vector3.FORWARD  # across it

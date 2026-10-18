@@ -12,6 +12,7 @@ signal footstep(strength: float)
 signal landed(strength: float)
 
 const SCALE: float = 0.93
+const SWING_TIME: float = 0.42  # s, a wrench swing from wind-up to settle
 const SKIN_TONES: Array[Color] = [
 	Color(0.93, 0.76, 0.62), Color(0.76, 0.55, 0.41), Color(0.52, 0.36, 0.25),
 	Color(0.87, 0.68, 0.52), Color(0.4, 0.27, 0.19), Color(0.96, 0.82, 0.7),
@@ -46,6 +47,7 @@ var _held_root: Node3D
 var _held_id: String = ""
 var _phase: float = 0.0
 var _t: float = 0.0
+var _swing_t: float = 0.0  # s left of a wrench swing
 var _yaw: float = 0.0
 var _turn_rate: float = 0.0
 var _fwd_speed: float = 0.0
@@ -207,6 +209,11 @@ func set_talking(on: bool) -> void:
 		_talk_glyph.position = Vector3(0.0, 2.55, 0.0)
 		add_child(_talk_glyph)
 	_talk_glyph.visible = on and not _first_person
+
+
+## A wrench swing: the right arm goes up and comes down hard (every peer, from Player.rpc_swing).
+func swing() -> void:
+	_swing_t = SWING_TIME
 
 
 func set_held_item(id: String) -> void:
@@ -421,6 +428,17 @@ func animate(delta: float, vel: Vector3, facing: float, grounded: bool, bracing:
 	shoulder_r.rotation = shoulder_r.rotation.lerp(sh_r, k_arm)
 	elbow_l.rotation.x = lerpf(elbow_l.rotation.x, el_l, k_arm)
 	elbow_r.rotation.x = lerpf(elbow_r.rotation.x, el_r, k_arm)
+	# A wrench swing is set straight onto the arm: the arm's easing would smear it to nothing.
+	if _swing_t > 0.0:
+		_swing_t = maxf(0.0, _swing_t - delta)
+		var u := 1.0 - _swing_t / SWING_TIME
+		var raise := smoothstep(0.0, 0.3, u)  # up over the shoulder
+		var strike := smoothstep(0.3, 0.55, u)  # and down hard across the front
+		var settle := smoothstep(0.7, 1.0, u)
+		var sx := lerpf(lerpf(lerpf(shoulder_r.rotation.x, 2.9, raise), 0.35, strike), sh_r.x, settle)
+		shoulder_r.rotation = Vector3(sx, 0.0, lerpf(-0.25 * (raise - strike), sh_r.z, settle))
+		elbow_r.rotation.x = lerpf(lerpf(1.3 * raise, 0.1, strike), el_r, settle)
+		spine.rotation.x = spine.rotation.x - 0.18 * strike * (1.0 - settle)
 	# The head counters the torso so it stays level, then looks where you aim.
 	var head_t := Vector3(head_pitch - spine_rot.x - pelvis_rot.x, head_yaw - spine_rot.y - pelvis_rot.y, -spine_rot.z * 0.6)
 	head.rotation = head.rotation.lerp(head_t, k_head)

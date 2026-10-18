@@ -626,7 +626,7 @@ static func make_environment(quality: int, level: int = 0) -> Environment:
 		# so the landing lamps are pools you run between and the tower's red light (which ignores
 		# fog) is the only bright thing out there.
 		env.ambient_light_color = Color(0.34, 0.38, 0.5)
-		env.ambient_light_energy = 0.075
+		env.ambient_light_energy = 0.05  # darker again (the user: Level 3 still too bright)
 		env.tonemap_mode = Environment.TONE_MAPPER_AGX
 		env.tonemap_exposure = 0.95
 		env.glow_enabled = true
@@ -705,19 +705,64 @@ static func make_camera_attributes() -> CameraAttributesPractical:
 
 ## Batches boxes per material into one MultiMesh each, plus one StaticBody3D for collision.
 class BoxBatch:
+	const PROP_CHUNK: float = 12.0  # m: props are batched per square this size (two rooms)
+	const PROP_DRAW_RANGE: float = 34.0  # m: further than this a prop chunk isn't drawn (it's dark there anyway)
 	var boxes: Dictionary = {}  # material key -> Array of Transform3D (unit box scaled)
 	var shapes: Array = []  # [Transform3D, Vector3 size]
+	var props: Dictionary = {}  # PropMeshes key -> Array of Transform3D (sculpted furniture)
 
 	func add(center: Vector3, size: Vector3, key: String, collide: bool = true, rot_y: float = 0.0) -> void:
 		var rot := Basis.from_euler(Vector3(0.0, rot_y, 0.0))
+		# Box-shaped furniture (cardboard, partitions, doors, tops) is drawn sculpted instead.
+		var prop := PropMeshes.boxed(key, center, size, rot_y)
+		if not prop.is_empty():
+			add_prop(prop[0], prop[1])
+			if collide:
+				shapes.append([Transform3D(rot, center), size])
+			return
 		if not boxes.has(key):
 			boxes[key] = []
 		boxes[key].append(Transform3D(rot * Basis.from_scale(size), center))
 		if collide:
 			shapes.append([Transform3D(rot, center), size])
 
+	## A sculpted prop (PropMeshes) at xform. Its collision, if any, goes in with add_solid.
+	func add_prop(key: String, xform: Transform3D) -> void:
+		if not props.has(key):
+			props[key] = []
+		props[key].append(xform)
+
+	## Collision only: the shape of a prop that is drawn by add_prop.
+	func add_solid(center: Vector3, size: Vector3, rot_y: float = 0.0) -> void:
+		shapes.append([Transform3D(Basis.from_euler(Vector3(0.0, rot_y, 0.0)), center), size])
+
 	func build(parent: Node3D, prefix: String) -> void:
 		var unit := BoxMesh.new()
+		# Props are drawn in PROP_CHUNK squares, not one batch per floor: a floor-wide batch can't
+		# be culled, takes no LOD, and every shadow pass drew all of it.
+		for key in props:
+			var chunks: Dictionary = {}
+			for xf: Transform3D in props[key]:
+				var ck := Vector2i(floori(xf.origin.x / PROP_CHUNK), floori(xf.origin.z / PROP_CHUNK))
+				if not chunks.has(ck):
+					chunks[ck] = []
+				chunks[ck].append(xf)
+			for ck: Vector2i in chunks:
+				var plist: Array = chunks[ck]
+				var pmm := MultiMesh.new()
+				pmm.transform_format = MultiMesh.TRANSFORM_3D
+				pmm.mesh = PropMeshes.mesh(key)
+				pmm.instance_count = plist.size()
+				for i in plist.size():
+					pmm.set_instance_transform(i, plist[i])
+				var pmi := MultiMeshInstance3D.new()
+				pmi.name = "%s_prop_%s_%d_%d" % [prefix, key, ck.x, ck.y]
+				pmi.multimesh = pmm
+				pmi.material_override = PropMeshes.material()
+				pmi.visibility_range_end = PROP_DRAW_RANGE
+				pmi.visibility_range_end_margin = 4.0
+				pmi.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
+				parent.add_child(pmi)
 		for key in boxes:
 			var list: Array = boxes[key]
 			var mm := MultiMesh.new()

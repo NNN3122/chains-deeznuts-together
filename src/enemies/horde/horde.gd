@@ -902,7 +902,7 @@ func _server_contacts(delta: float) -> void:
 		var t := float(_maul_t.get(p.peer_id, 0.0))
 		if contacts >= MAUL_CONTACTS and p.state == Player.State.NORMAL:
 			if t <= 0.0:
-				GameState.post_message("THEY'RE ON %s. Pull them out: sprint, shoot, or bomb the crowd." % p.display_name.to_upper(), 3.0)
+				GameState.post_tip("horde_grab", "THEY'RE ON %s. Pull them out: sprint, shoot, or bomb the crowd." % p.display_name.to_upper(), 3.0)
 			t += delta
 			if t >= MAUL_TIME:
 				t = -3.0  # grace after the layoff
@@ -1043,7 +1043,7 @@ func _server_grabs(_delta: float) -> void:
 				if fx != null:
 					fx.fx_sound.rpc("clink", Vector3(cx, lerpf(ay[k], by[k], t), cz), -2.0, 0.7)
 				if holders[k] == GRAB_MAX_PER_SEGMENT:
-					GameState.post_message("THREE ON THE CHAIN, chewing. You're stuck: someone SPRINT to jerk it, shoot them, bomb them, or the horn.", 3.5)
+					GameState.post_tip("horde_chain", "THREE ON THE CHAIN, chewing. You're stuck: someone SPRINT to jerk it, shoot them, bomb them, or the horn.", 3.5)
 			break
 
 
@@ -1075,8 +1075,6 @@ func _on_jerk(seg: ChainSystem.Segment) -> void:
 				away = Vector2(sin(seed_f[i] * 40.0), cos(seed_f[i] * 40.0))
 			_release(i, away.normalized(), FLING_SPEED * 1.3)
 			n += 1
-	if n > 0:
-		GameState.post_message("The jerk threw %d of them off the chain." % n, 2.5)
 
 
 # --- Server: weapons ------------------------------------------------------------------------------

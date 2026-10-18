@@ -18,6 +18,7 @@ static var brightness: float = 1.0  # post-process brightness; dark scenes turn 
 static var show_fps: bool = false
 static var first_person: bool = false  # the camera you start with; V still flips it in play
 static var captions: bool = true  # on-screen captions for important sounds, with direction
+static var hud_mode: int = 0  # 0 auto (shows only when needed), 1 always, 2 off (messages only)
 static var player_name: String = ""
 static var open_router_port: bool = true  # UPnP while hosting, so friends join with an invite code
 static var last_join: String = ""  # the last invite code or address typed into JOIN
@@ -47,6 +48,7 @@ static func load_settings() -> void:
 	show_fps = bool(cfg.get_value("video", "show_fps", show_fps))
 	first_person = bool(cfg.get_value("video", "first_person", first_person))
 	captions = bool(cfg.get_value("audio", "captions", captions))
+	hud_mode = clampi(int(cfg.get_value("video", "hud_mode", hud_mode)), 0, 2)
 	volume = float(cfg.get_value("audio", "volume", volume))
 	player_name = String(cfg.get_value("player", "name", player_name))
 	open_router_port = bool(cfg.get_value("network", "open_router_port", open_router_port))
@@ -68,6 +70,7 @@ static func save_settings() -> void:
 	cfg.set_value("video", "show_fps", show_fps)
 	cfg.set_value("video", "first_person", first_person)
 	cfg.set_value("audio", "captions", captions)
+	cfg.set_value("video", "hud_mode", hud_mode)
 	cfg.set_value("audio", "volume", volume)
 	cfg.set_value("player", "name", player_name)
 	cfg.set_value("network", "open_router_port", open_router_port)

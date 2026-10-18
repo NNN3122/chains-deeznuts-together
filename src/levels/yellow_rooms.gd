@@ -1,6 +1,6 @@
 class_name YellowRooms
 extends Node3D
-## Level 1: The Yellow Rooms. Four floors (B4 at the bottom to B1) of 6 m office cells built
+## Level 1: The Yellow Rooms. Four floors (B4 at the bottom to B1) of 9 x 9 six-metre office cells built
 ## from a seed the host picks (a new layout every run; the tests use DEFAULT_SEED), so every
 ## peer builds the identical building before connecting.
 ## Each floor: a Break Room you arrive in (checkpoint), a maze of halls / cubicles / meeting rooms
@@ -17,7 +17,7 @@ extends Node3D
 ## Line's floor stutters out for 12-20 s every 60-90 s; Break Rooms keep their lights.
 
 const CELL: float = 6.0
-const GRID: int = 6
+const GRID: int = 9  # rooms a side: 54 m floors (was 6; the user wanted a bigger maze)
 const FLOORS: int = 4
 const FLOOR_H: float = 5.0
 const SLAB: float = 0.4
@@ -75,7 +75,6 @@ const STUTTER_MIN: float = 60.0  # s between power stutters on the Line's floor
 const STUTTER_MAX: float = 90.0
 const STUTTER_DARK_MIN: float = 12.0  # s the floor stays dark (Break Rooms excepted)
 const STUTTER_DARK_MAX: float = 20.0
-const CALLOUT_MESSAGE_GAP_MS: int = 12000
 const SCRIPTED_SCARES: Array = [
 	[[2, "footsteps"], [4, "dennis"]],
 	[[2, "lights_out"], [4, "phone"]],
@@ -103,8 +102,8 @@ var _door_done: Dictionary = {}  # floor -> true once its jammed door was should
 var _hatch_thrown: bool = false
 var _ambush_armed: bool = true
 var _stutter_t: float = 45.0  # the first stutter comes a little sooner than the steady gap
-var _callout_msec: int = -100000
 var _stutter_rng: RandomNumberGenerator = RandomNumberGenerator.new()
+var breakers: Array[BreakerPanel] = []  # one per floor; the wrench fixes the power at them
 
 
 func _ready() -> void:
@@ -346,6 +345,7 @@ func _build_floor(i: int) -> void:
 			if t != "ascent" and t != "breakroom" and rng.randf() < 0.35:
 				_poster(root, i, c, rng)
 	_dennis(root, batch, i, rng)
+	_build_breaker(root, i)
 	batch.build(root, "F%d" % i)
 	_build_hires(i)
 	_build_events(root, i)
@@ -449,9 +449,6 @@ func _wall(batch: LevelKit.BoxBatch, center: Vector3, along_x: bool, kind: int, 
 		var leaf_dir := (-dir * hinge_s * cos(ang) + normal * side * sin(ang)).normalized()
 		var rot := atan2(-leaf_dir.z, leaf_dir.x)
 		batch.add(hinge + leaf_dir * 0.34 + Vector3(0.0, 1.11, 0.0), Vector3(0.68, 2.2, 0.045), "door", true, rot)
-		var leaf_n := Vector3(-leaf_dir.z, 0.0, leaf_dir.x)
-		for s: float in [-1.0, 1.0]:
-			batch.add(hinge + leaf_dir * 0.6 + Vector3(0.0, 1.0, 0.0) + leaf_n * s * 0.045, Vector3(0.1, 0.025, 0.03), "fixture", false, rot)
 	# A few glowing EXIT signs over doorways (built later with their light and lettering).
 	if _hash(center + Vector3(7.7, 0.0, 2.2)) < 0.16:
 		var at := Vector3(center.x, base + DOOR_H + 0.3, center.z)
@@ -519,57 +516,14 @@ func _wall_details(batch: LevelKit.BoxBatch, i: int, c: Vector2i, center: Vector
 
 
 ## A potted office plant: a tapered pot and clumps of leaves, slightly droopy from neglect.
-func _plant(root: Node3D, batch: LevelKit.BoxBatch, at: Vector3, rng: RandomNumberGenerator) -> void:
-	batch.add(at + Vector3(0.0, 0.25, 0.0), Vector3(0.38, 0.5, 0.38), "pot")  # collision + base
-	var pot := MeshInstance3D.new()
-	var pm := CylinderMesh.new()
-	pm.top_radius = 0.24
-	pm.bottom_radius = 0.17
-	pm.height = 0.52
-	pot.mesh = pm
-	pot.position = at + Vector3(0.0, 0.26, 0.0)
-	pot.material_override = LevelKit.mat("pot")
-	root.add_child(pot)
-	var soil := MeshInstance3D.new()
-	var sm := CylinderMesh.new()
-	sm.top_radius = 0.22
-	sm.bottom_radius = 0.22
-	sm.height = 0.02
-	soil.mesh = sm
-	soil.position = at + Vector3(0.0, 0.5, 0.0)
-	soil.material_override = LevelKit.mat("dark")
-	root.add_child(soil)
-	var leaf := StandardMaterial3D.new()
-	leaf.albedo_color = Color(0.13, 0.28, 0.1)
-	leaf.roughness = 0.6
-	for k in 7:
-		var clump := MeshInstance3D.new()
-		var cm := SphereMesh.new()
-		cm.radius = rng.randf_range(0.14, 0.22)
-		cm.height = cm.radius * 1.3
-		cm.radial_segments = 12
-		cm.rings = 6
-		clump.mesh = cm
-		var a := TAU * float(k) / 7.0 + rng.randf_range(-0.3, 0.3)
-		var rr := rng.randf_range(0.05, 0.22)
-		clump.position = at + Vector3(cos(a) * rr, rng.randf_range(0.65, 1.15), sin(a) * rr)
-		clump.rotation = Vector3(rng.randf_range(-0.5, 0.5), a, rng.randf_range(-0.5, 0.5))
-		clump.material_override = leaf
-		root.add_child(clump)
-
+## A dying office plant (sculpted), turned at random.
+func _plant(_root: Node3D, batch: LevelKit.BoxBatch, at: Vector3, rng: RandomNumberGenerator) -> void:
+	batch.add_solid(at + Vector3(0.0, 0.25, 0.0), Vector3(0.38, 0.5, 0.38))
+	batch.add_prop("plant", PropMeshes.at(at, rng.randf() * TAU))
 
 func _office_chair(batch: LevelKit.BoxBatch, pos: Vector3, yaw: float) -> void:
-	var fwd := Vector3(-sin(yaw), 0.0, -cos(yaw))
-	batch.add(pos + Vector3(0.0, 0.47, 0.0), Vector3(0.48, 0.08, 0.46), "fabric", true, yaw)
-	batch.add(pos - fwd * 0.24 + Vector3(0.0, 0.8, 0.0), Vector3(0.44, 0.52, 0.06), "fabric", false, yaw)
-	batch.add(pos - fwd * 0.2 + Vector3(0.0, 0.58, 0.0), Vector3(0.05, 0.2, 0.05), "plastic", false, yaw)
-	batch.add(pos + Vector3(0.0, 0.26, 0.0), Vector3(0.05, 0.38, 0.05), "metal", false)
-	for k in 5:
-		var a := yaw + TAU * float(k) / 5.0
-		var d := Vector3(cos(a), 0.0, -sin(a))
-		batch.add(pos + d * 0.16 + Vector3(0.0, 0.07, 0.0), Vector3(0.32, 0.035, 0.045), "plastic", false, a)
-		batch.add(pos + d * 0.31 + Vector3(0.0, 0.03, 0.0), Vector3(0.05, 0.05, 0.05), "plastic", false)
-
+	batch.add_solid(pos + Vector3(0.0, 0.47, 0.0), Vector3(0.48, 0.08, 0.46), yaw)
+	batch.add_prop("office_chair", PropMeshes.at(pos, yaw))
 
 func _add_light(root: Node3D, batch: LevelKit.BoxBatch, i: int, center: Vector3, t: String, holed: bool, rng: RandomNumberGenerator) -> void:
 	var at := center + (Vector3(-1.9, 0.0, -1.9) if holed else Vector3.ZERO)
@@ -637,18 +591,16 @@ func _cubicles(root: Node3D, batch: LevelKit.BoxBatch, center: Vector3, rng: Ran
 		batch.add(p + Vector3(0.0, 0.65, sz * 0.95), Vector3(1.9, 1.3, 0.06), "partition")
 		batch.add(p + Vector3(sx * 0.95, 0.65, 0.0), Vector3(0.06, 1.3, 1.9), "partition")
 		var desk := p + Vector3(0.0, 0.0, sz * 0.5)
-		batch.add(desk + Vector3(0.0, 0.73, 0.0), Vector3(1.5, 0.04, 0.75), "desk")
-		batch.add(desk + Vector3(0.0, 0.7, 0.0), Vector3(1.46, 0.03, 0.71), "desk_leg", false)
-		batch.add(desk + Vector3(-0.7, 0.36, 0.0), Vector3(0.04, 0.7, 0.68), "desk_leg")
-		batch.add(desk + Vector3(0.7, 0.36, 0.0), Vector3(0.04, 0.7, 0.68), "desk_leg")
-		batch.add(desk + Vector3(0.0, 0.45, sz * 0.33), Vector3(1.36, 0.5, 0.02), "desk_leg", false)  # modesty panel
+		var desk_yaw := 0.0 if sz > 0.0 else PI  # the props face -Z; this desk's chair is on the -sz side
+		batch.add_solid(desk + Vector3(0.0, 0.73, 0.0), Vector3(1.5, 0.04, 0.75))
+		batch.add_solid(desk + Vector3(-0.7, 0.36, 0.0), Vector3(0.04, 0.7, 0.68))
+		batch.add_solid(desk + Vector3(0.7, 0.36, 0.0), Vector3(0.04, 0.7, 0.68))
+		batch.add_prop("desk", PropMeshes.at(desk, desk_yaw))
 		# Monitor on a stand, keyboard, mouse, a mug.
 		var on := rng.randf() < 0.35
 		var mon := desk + Vector3(rng.randf_range(-0.2, 0.2), 0.0, sz * 0.18)
 		batch.add(mon + Vector3(0.0, 1.06, 0.0), Vector3(0.56, 0.34, 0.025), "screen" if on else "screen_off", false)
-		batch.add(mon + Vector3(0.0, 1.06, sz * 0.02), Vector3(0.6, 0.38, 0.02), "plastic", false)
-		batch.add(mon + Vector3(0.0, 0.84, sz * 0.05), Vector3(0.05, 0.2, 0.04), "plastic", false)
-		batch.add(mon + Vector3(0.0, 0.755, sz * 0.05), Vector3(0.24, 0.015, 0.17), "plastic", false)
+		batch.add_prop("monitor", PropMeshes.at(mon, desk_yaw))
 		batch.add(desk + Vector3(0.0, 0.76, -sz * 0.12), Vector3(0.44, 0.02, 0.14), "plastic", false)
 		batch.add(desk + Vector3(0.32, 0.76, -sz * 0.12), Vector3(0.06, 0.025, 0.09), "plastic", false)
 		if rng.randf() < 0.5:
@@ -662,18 +614,18 @@ func _cubicles(root: Node3D, batch: LevelKit.BoxBatch, center: Vector3, rng: Ran
 			root.add_child(glow)
 		_office_chair(batch, p + Vector3(rng.randf_range(-0.3, 0.3), 0.0, -sz * 0.3), (0.0 if sz > 0.0 else PI) + rng.randf_range(-0.7, 0.7))
 		# Filing cabinet and a bin under the desk.
-		batch.add(desk + Vector3(sx * 0.48, 0.33, 0.02), Vector3(0.42, 0.66, 0.55), "cabinet")
-		for h: float in [0.2, 0.45]:
-			batch.add(desk + Vector3(sx * 0.48, h, -sz * 0.27), Vector3(0.14, 0.02, 0.02), "plastic", false)
+		batch.add_solid(desk + Vector3(sx * 0.48, 0.33, 0.02), Vector3(0.42, 0.66, 0.55))
+		batch.add_prop("cabinet", PropMeshes.at(desk + Vector3(sx * 0.48, 0.0, 0.02), desk_yaw))
 		batch.add(desk + Vector3(-sx * 0.45, 0.17, 0.0), Vector3(0.26, 0.34, 0.26), "plastic", false)
 		if rng.randf() < 0.4:
 			batch.add(desk + Vector3(rng.randf_range(-0.5, 0.5), 0.76, 0.1), Vector3(0.3, 0.02, 0.22), "paper", false, rng.randf_range(-0.6, 0.6))
 
 
 func _meeting(root: Node3D, batch: LevelKit.BoxBatch, center: Vector3, rng: RandomNumberGenerator) -> void:
-	batch.add(center + Vector3(0.0, 0.74, 0.0), Vector3(3.2, 0.06, 1.2), "desk")
+	batch.add_solid(center + Vector3(0.0, 0.74, 0.0), Vector3(3.2, 0.06, 1.2))
 	for x: float in [-1.4, 1.4]:
-		batch.add(center + Vector3(x, 0.36, 0.0), Vector3(0.08, 0.72, 0.9), "desk_leg")
+		batch.add_solid(center + Vector3(x, 0.36, 0.0), Vector3(0.08, 0.72, 0.9))
+	batch.add_prop("long_table", PropMeshes.at(center, 0.0))
 	for k in 6:
 		var x := -1.1 + float(k % 3) * 1.1
 		var z := -1.0 if k < 3 else 1.0
@@ -701,11 +653,12 @@ func _storage(batch: LevelKit.BoxBatch, center: Vector3, rng: RandomNumberGenera
 			var size := Vector3(1.8, 2.0, 0.5) if along_x else Vector3(0.5, 2.0, 1.8)
 			var at := p + (Vector3(0.0, 1.0, signf(q.z) * 0.7) if along_x else Vector3(signf(q.x) * 0.7, 1.0, 0.0))
 			for h: float in [0.05, 0.7, 1.35, 1.98]:
-				batch.add(Vector3(at.x, center.y + h, at.z), Vector3(size.x, 0.04, size.z), "metal")
+				batch.add_solid(Vector3(at.x, center.y + h, at.z), Vector3(size.x, 0.04, size.z))
 			for cx: float in [-1.0, 1.0]:
 				for cz: float in [-1.0, 1.0]:
 					var leg := Vector3(cx * (size.x * 0.5 - 0.03), 0.0, cz * (size.z * 0.5 - 0.03))
-					batch.add(Vector3(at.x + leg.x, center.y + 1.0, at.z + leg.z), Vector3(0.04, 2.0, 0.04), "metal")
+					batch.add_solid(Vector3(at.x + leg.x, center.y + 1.0, at.z + leg.z), Vector3(0.04, 2.0, 0.04))
+			batch.add_prop("shelf_unit", PropMeshes.at(Vector3(at.x, center.y, at.z), 0.0 if along_x else PI * 0.5))
 			for h: float in [0.07, 0.72, 1.37]:
 				if rng.randf() < 0.7:
 					var bs := rng.randf_range(0.3, 0.5)
@@ -973,10 +926,6 @@ func hire_callout(caller: HollowHire, target: Player) -> void:
 			answered += 1
 	if answered > 0:
 		_rpc_floor_stutter.rpc(caller.floor_index, 2.2, 1.4, "the lights gutter: something's coming")
-		var now := Time.get_ticks_msec()
-		if now - _callout_msec > CALLOUT_MESSAGE_GAP_MS:
-			_callout_msec = now
-			GameState.post_message("IT CALLED THE OTHERS. RUN.", 3.0)
 
 
 ## Server: something loud on a floor (a shouldered door, the alarm, the hatch slamming): every
@@ -1038,6 +987,51 @@ func _rpc_breaker(i: int) -> void:
 	if me != null and floor_of(me.global_position.y) == i:
 		Sfx.play_at(self, "slam", me.global_position + Vector3(randf_range(-6.0, 6.0), 3.0, randf_range(-6.0, 6.0)), -4.0, 0.5, 30.0)
 
+
+## Server: a breaker panel was fixed: the floor's lights come back now, on every peer.
+func server_restore_power(i: int, at: Vector3) -> void:
+	if multiplayer.is_server():
+		_rpc_restore_power.rpc(i, at)
+
+
+@rpc("authority", "call_local", "reliable")
+func _rpc_restore_power(i: int, at: Vector3) -> void:
+	_lights.floor_restore(i)
+	ScareDirector.end_blackout_on_floor(float(i) * FLOOR_H)
+	Sfx.play_at(self, "slam", at, 2.0, 0.7, 30.0)
+	Sfx.caption(self, "the breakers catch: the lights come back", at)
+
+
+## A breaker panel on a solid wall of a room off the route (seeded, so every peer agrees). There
+## are no signs to it: in a blackout you find it by its sparks and its buzz.
+func _build_breaker(root: Node3D, i: int) -> void:
+	var f: Dictionary = floors[i]
+	var path: Array[Vector2i] = f["path"]
+	var types: Dictionary = f["types"]
+	var conn: Dictionary = f["conn"]
+	var rng := RandomNumberGenerator.new()
+	rng.seed = seed_value * 17 + i
+	var sides: Array[Vector2i] = [Vector2i(0, 1), Vector2i(0, -1), Vector2i(1, 0), Vector2i(-1, 0)]
+	for attempt in 200:
+		var c := Vector2i(rng.randi_range(0, GRID - 1), rng.randi_range(0, GRID - 1))
+		var kind := String(types.get(c, ""))
+		if path.has(c) or kind == "breakroom" or kind == "ascent":
+			continue
+		if kind != "hall" and attempt < 150:
+			continue  # halls keep their walls clear (other rooms stand shelves and desks against them)
+		for s in sides:
+			var nb := c - s  # the wall on this side is shared with nb
+			var inside := nb.x >= 0 and nb.y >= 0 and nb.x < GRID and nb.y < GRID
+			if inside and int(conn.get(_edge_key(c, nb), Conn.NONE)) != Conn.NONE:
+				continue  # a doorway or an open side: no wall to hang it on
+			var normal := Vector3(float(s.x), 0.0, float(s.y))  # out of the wall, into the room
+			var along := Vector3(normal.z, 0.0, normal.x)
+			var at := cell_center(i, c) - normal * (CELL * 0.5 - WALL_T * 0.5 - 0.01) + along * 0.9 + Vector3(0.0, 1.45, 0.0)  # clear of corner props and posters
+			var panel := BreakerPanel.create("Breaker%d" % i, at, normal, i, self)
+			root.add_child(panel)
+			breakers.append(panel)
+			test_points["breaker%d" % i] = at + normal * 1.3 - Vector3(0.0, 1.35, 0.0)
+			return
 
 ## Tests: a stutter now, on a floor.
 func debug_power_stutter(i: int, seconds: float = 14.0) -> void:
@@ -1180,7 +1174,6 @@ func _tick_ambush() -> void:
 	var door := (cell_center(AMBUSH_FLOOR, before) + cell_center(AMBUSH_FLOOR, ascent)) * 0.5
 	var back := (cell_center(AMBUSH_FLOOR, before) - cell_center(AMBUSH_FLOOR, ascent)).normalized()
 	pick.ambush(door + back * 0.9, victim)
-	GameState.post_message("BEHIND YOU. Everyone in the elevator. NOW.", 3.0)
 
 
 ## The route between two cells through the doorways (the maze), for the Hires.
@@ -1282,26 +1275,44 @@ func _build_scare_triggers(root: Node3D, i: int) -> void:
 ## Spawns every pickup through the network spawner (call once on the server after hosting).
 func server_populate() -> void:
 	for i in FLOORS:
-		var f: Dictionary = floors[i]
-		var path: Array[Vector2i] = f["path"]
 		var loot: Array = FLOOR_LOOT[i]
+		var cells := _loot_cells(i, loot.size() + (1 if i > 0 else 0))
 		for k in loot.size():
-			var idx := clampi(1 + int(float(k + 1) * float(path.size() - 2) / float(loot.size() + 1)), 1, maxi(1, path.size() - 2))
-			var c: Vector2i = path[idx]
-			Net.spawn_pickup(loot[k], cell_center(i, c) + Vector3(0.0, 0.1, 1.0), 0)
+			Net.spawn_pickup(loot[k], cell_center(i, cells[k]) + Vector3(0.0, 0.1, 1.0), 0)
+		if i > 0:
+			# Spare rounds for the Snubby, one box per floor after the first.
+			Net.spawn_pickup("ammo", cell_center(i, cells[loot.size()]) + Vector3(-1.2, 0.1, -1.2), 0)
 	if _boost_jetpack_pos != Vector3.ZERO:
 		Net.spawn_pickup("jetpack", _boost_jetpack_pos, 0)
 	if test_points.has("tray_end"):
 		var te: Vector3 = test_points["tray_end"]
 		Net.spawn_pickup("drink", te + Vector3(-0.4, 0.0, 0.0), 0)
 		Net.spawn_pickup("ammo", te + Vector3(0.2, 0.0, 0.0), 0)
-	# Spare rounds for the Snubby, one box per floor after the first, off the main path.
-	for i in range(1, FLOORS):
-		var f: Dictionary = floors[i]
-		var path: Array[Vector2i] = f["path"]
-		var c: Vector2i = path[maxi(1, path.size() / 2)]
-		Net.spawn_pickup("ammo", cell_center(i, c) + Vector3(-1.2, 0.1, -1.2), 0)
 	_tasks_floor = -1
+
+
+## Rooms for a floor's loot, scattered OFF the route: glowing pickups along the way out were a trail
+## of breadcrumbs to it. Seeded, so a test run finds them in the same rooms.
+func _loot_cells(i: int, count: int) -> Array[Vector2i]:
+	var f: Dictionary = floors[i]
+	var on_route: Array[Vector2i] = f["path"]
+	var spare: Array[Vector2i] = []
+	for x in GRID:
+		for z in GRID:
+			var c := Vector2i(x, z)
+			if not on_route.has(c):
+				spare.append(c)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = seed_value * 13 + i
+	for k in range(spare.size() - 1, 0, -1):
+		var j := rng.randi_range(0, k)
+		var tmp := spare[k]
+		spare[k] = spare[j]
+		spare[j] = tmp
+	var out: Array[Vector2i] = []
+	for k in count:
+		out.append(spare[k % spare.size()])
+	return out
 
 
 ## The HUD checklist for the floor the Line is on (by its last checkpoint), ticked as it's done.

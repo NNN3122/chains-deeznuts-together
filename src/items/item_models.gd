@@ -52,6 +52,16 @@ static func build(id: String) -> Node3D:
 			_box(root, Vector3(0.36, 0.42, 0.06), Vector3(0.0, 0.0, -0.08), _m(Color(0.6, 0.12, 0.08), 0.5))
 			_cyl(root, 0.05, 0.07, 0.1, Vector3(-0.11, -0.3, 0.0), _m(Color(0.15, 0.15, 0.15), 0.4, 0.8), false)
 			_cyl(root, 0.05, 0.07, 0.1, Vector3(0.11, -0.3, 0.0), _m(Color(0.15, 0.15, 0.15), 0.4, 0.8), false)
+		"wrench":
+			# A long steel pipe wrench: a worn grip, the shaft, an open jaw at the striking end (-Z).
+			var steel := _m(Color(0.55, 0.56, 0.6), 0.35, 0.9)
+			var dark := _m(Color(0.18, 0.18, 0.2), 0.5, 0.7)
+			_cyl(root, 0.022, 0.022, 0.16, Vector3(0.0, 0.0, 0.1), _m(Color(0.35, 0.08, 0.06), 0.8), true)
+			_box(root, Vector3(0.03, 0.035, 0.34), Vector3(0.0, 0.0, -0.1), steel)
+			_box(root, Vector3(0.05, 0.1, 0.06), Vector3(0.0, 0.03, -0.29), dark)
+			_box(root, Vector3(0.045, 0.025, 0.09), Vector3(0.0, 0.07, -0.34), steel)
+			_box(root, Vector3(0.045, 0.025, 0.07), Vector3(0.0, -0.005, -0.33), steel)
+			_cyl(root, 0.02, 0.02, 0.05, Vector3(0.0, 0.03, -0.25), dark, false)
 		_:
 			_box(root, Vector3(0.2, 0.2, 0.2), Vector3.ZERO, _m(Color(0.8, 0.2, 0.8), 0.5))
 	return root

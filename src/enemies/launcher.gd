@@ -296,7 +296,6 @@ func _settle_or_fall(delta: float) -> bool:
 	global_position.y -= 12.0 * delta
 	if global_position.y < floor_y - STREET_FALL:
 		die()
-		GameState.post_message("The Jumper went over the edge.", 2.5)
 	return false
 
 
@@ -458,8 +457,6 @@ func _land(missed: bool) -> void:
 	_t = RECOVER_TIME
 	_settle_floor()
 	_fx("thump", 0.0, 0.7)
-	if missed and _target != null and is_instance_valid(_target):
-		GameState.post_message("%s dodged the Jumper." % _target.display_name, 2.0)
 
 
 func _start_grab(p: Player) -> void:
@@ -478,7 +475,7 @@ func _start_grab(p: Player) -> void:
 		_face_dir(to.normalized())
 	p.grab_start(self)
 	_fx("spider_hiss", 4.0, 0.9)
-	GameState.post_message("IT'S ON %s. Everyone beside them: HOLD CTRL. Or a light in its face, the air horn, or two shots." % p.display_name.to_upper(), 4.0)
+	GameState.post_tip("grab_jumper", "IT'S ON %s. Everyone beside them: HOLD CTRL. Or a light in its face, the air horn, or two shots." % p.display_name.to_upper(), 4.0)
 
 
 func _tick_grab(delta: float) -> void:
@@ -493,12 +490,10 @@ func _tick_grab(delta: float) -> void:
 		if b != _grabbed and b.global_position.distance_to(_grabbed.global_position) < RESCUE_RADIUS:
 			_rescue += b.resist_value() * delta
 	if _rescue >= RESCUE_NEEDED:
-		GameState.post_message("They pulled it off %s. GO." % _grabbed.display_name, 3.0)
 		release(false)
 		stun(1.6)
 		return
 	if _tick_burn(delta):
-		GameState.post_message("The light in its eyes. It let go.", 3.0)
 		release(false)
 		stun(2.0)
 		return
@@ -547,7 +542,6 @@ func take_hit() -> void:
 	if hits >= HITS_TO_DIE:
 		die()
 	elif lstate == LState.GRAB and _hits_in_grab >= HITS_TO_RELEASE:
-		GameState.post_message("Two hits. It dropped them.", 2.5)
 		release(false)
 		stun(1.2)
 	elif lstate == LState.WINDUP:
@@ -569,7 +563,6 @@ func die() -> void:
 	grab_peer = 0
 	_dead_t = 0.0
 	_fx("spider_hiss", 2.0, 0.7)
-	GameState.post_message("Jumper down.", 2.0)
 
 
 ## Tests and respawns: back on its feet at a spot.
@@ -811,3 +804,14 @@ func _update_visuals(delta: float) -> void:
 ## For the chase music: hunting, not stunned or dead.
 func is_chasing() -> bool:
 	return lstate != LState.DEAD and lstate != LState.STUNNED
+
+
+## A wrench across it (server): drops whoever it pins and reels; otherwise a stagger (which
+## also spoils a jump it was coiling for). True when it freed someone.
+func wrench_hit(_by: Node3D) -> bool:
+	if lstate == LState.DEAD:
+		return false
+	var held := _grabbed != null
+	if held or lstate != LState.STUNNED:
+		stun(Wrench.RESCUE_STUN if held else Wrench.STAGGER)
+	return held

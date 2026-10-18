@@ -50,6 +50,12 @@ func _ready() -> void:
 	var cubicle := _find_cell(0, "cubicles")
 	if cubicle != Vector2i(-1, -1):
 		await _shot("03_cubicles", _level.cell_center(0, cubicle) + Vector3(0.0, 0.1, 2.4), 0.0, -0.1, false)
+		# The sculpted furniture: from the middle of the room toward a cubicle in a corner.
+		await _shot("03b_cubicle_props", _level.cell_center(0, cubicle) + Vector3(0.4, 0.1, 0.4), PI * 0.25, -0.3, true)
+		await _shot("03d_cubicle_props", _level.cell_center(0, cubicle) + Vector3(-0.4, 0.1, -0.4), -PI * 0.75, -0.3, true)
+	var storage := _find_cell(0, "storage")
+	if storage != Vector2i(-1, -1):
+		await _shot("03c_storage_props", _level.cell_center(0, storage) + Vector3(0.3, 0.1, 0.3), PI * 0.25, -0.15, true)
 	var hall := _find_cell(0, "hall")
 	if hall != Vector2i(-1, -1):
 		await _shot("04_hall", _level.cell_center(0, hall) + Vector3(0.0, 0.1, 2.4), 0.0, 0.0, true)
@@ -66,6 +72,18 @@ func _ready() -> void:
 		_use()
 		await _shot("06_dark_room_flashlight", _level.cell_center(0, dark) + Vector3(0.0, 0.1, 2.0), 0.0, -0.1, true)
 		_host.server_drop_item(false)
+	# The wrench raised at a breaker panel sparking in a power stutter.
+	_give("wrench")
+	var panel: BreakerPanel = _level.breakers[0]
+	var stand: Vector3 = _level.test_points["breaker0"]
+	var bto := panel.fix_point() - (stand + Vector3(0.0, 1.6, 0.0))
+	await _shot("06b_breaker_panel", stand, atan2(-bto.x, -bto.z), -0.15, false)
+	_level.debug_power_stutter(0, 30.0)
+	await _wait(2.0)  # out: the panel sparks in the dark
+	_host.model.swing()
+	await _wait(0.13)
+	await _capture_to(out_dir.path_join("06c_wrench_swing.png"))
+	_host.server_drop_item(false)
 	# A Hollow Hire down the hall, then running at you, then on top of you.
 	var h0: HollowHire = _level.hires_on(0)[0]
 	var path: Array[Vector2i] = f0["path"]
@@ -77,6 +95,36 @@ func _ready() -> void:
 	await _wait(0.3)
 	h0.debug_frozen = true
 	await _shot_here("07b_hollow_hire_chasing", 0.0, 0.0, true)
+	# Its other attacks, caught mid-move, from behind you (it picks one at random as it closes in).
+	h0.debug_frozen = true
+	h0.debug_reset(spot + Vector3(0.0, 0.0, -1.5), PI)
+	await _shot("07c_before_the_slap", spot, 0.0, -0.1, false)
+	h0.debug_attack(HollowHire.HState.SLAP, _host)
+	await _wait(0.27)
+	await _capture_to(out_dir.path_join("07d_slap_windup.png"))
+	await _wait(0.22)
+	await _capture_to(out_dir.path_join("07e_slapped_across_the_room.png"))
+	await _wait(1.6)
+	h0.debug_frozen = true
+	h0.debug_reset(spot + Vector3(0.0, 0.0, -3.0), PI)
+	await _shot("07f_before_the_tackle", spot, 0.0, -0.1, false)
+	h0.debug_attack(HollowHire.HState.TACKLE, _host)
+	await _wait(0.42)
+	await _capture_to(out_dir.path_join("07g_tackle_dive.png"))
+	await _wait(0.4)
+	await _capture_to(out_dir.path_join("07h_tackled_down.png"))
+	h0.release(false)
+	h0.debug_frozen = true
+	h0.debug_reset(spot + Vector3(0.0, 0.0, -2.6), PI)
+	await _wait(2.4)
+	await _shot("07i_before_the_charge", spot, 0.0, -0.1, false)
+	h0.debug_attack(HollowHire.HState.CHARGE, _host)
+	await _wait(0.3)
+	await _capture_to(out_dir.path_join("07j_charge_windup.png"))
+	await _wait(0.4)
+	await _capture_to(out_dir.path_join("07k_charged_into_the_air.png"))
+	await _wait(1.8)
+	h0.debug_frozen = true
 	for b in Net.get_chain_bodies():
 		if b != _host:
 			b.teleport_to(spot + Vector3(3.5, 0.0, 0.0), 0.0)  # out of rescue range for the shot

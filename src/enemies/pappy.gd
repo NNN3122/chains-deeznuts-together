@@ -336,7 +336,7 @@ func _start_rush(seconds: float) -> void:
 	level.set_jukebox(false)
 	_fx("servo", 4.0, 1.5)
 	_fx("pappy_laugh", 2.0, 0.95)
-	GameState.post_message("HE'S COMING. RUN. (A Break Room or the freezer is safe.)", 3.0)
+	GameState.post_tip("pappy_coming", "HE'S COMING. RUN. (A Break Room or the freezer is safe.)", 3.0)
 
 
 ## Walks node to node toward the nearest player, through open doors only, and lunges when close.
@@ -400,7 +400,6 @@ func _end_rush() -> void:
 	node_index = level.nearest_node(floor_index, global_position)
 	_teleport(level.node_position(floor_index, node_index))
 	level.set_jukebox(true)
-	GameState.post_message("He stopped. He's back on his timer.", 2.5)
 
 
 ## One Step: toward the Line, through a shutter if it's open, into a lunge if someone is close.
@@ -472,7 +471,6 @@ func _retreat_home() -> void:
 	_told = false
 	_bang_shutter = null
 	level.set_jukebox(true)
-	GameState.post_message("He gave up on the shutter. He'll be back. MOVE.", 3.5)
 
 
 func _can_lunge_at(p: Player) -> bool:
@@ -528,7 +526,7 @@ func _tick_lunge(delta: float) -> void:
 		_burn = 0.0
 		_grabbed.grab_start(self)
 		_fx("pappy_laugh", 4.0, 0.9)
-		GameState.post_message("HE HAS %s. Air horn, party popper or a flashlight in his face. NOW." % _grabbed.display_name.to_upper(), 4.0)
+		GameState.post_tip("grab_pappy", "HE HAS %s. Air horn, party popper or a flashlight in his face. NOW." % _grabbed.display_name.to_upper(), 4.0)
 
 
 func _tick_grab(delta: float) -> void:
@@ -539,7 +537,6 @@ func _tick_grab(delta: float) -> void:
 	_grabbed.global_position = global_position + Vector3(-sin(_model.rotation.y), 0.0, -cos(_model.rotation.y)) * 0.9 + Vector3(0.0, 0.2 + 0.5 * clampf(_grab_t / GRAB_TIME, 0.0, 1.0), 0.0)
 	_grabbed.synced_position = _grabbed.global_position
 	if _tick_burn(delta):
-		GameState.post_message("The light in his face. He dropped them. Go!", 3.0)
 		release(false)
 		stun(1.5)
 		return
@@ -872,3 +869,11 @@ func _update_visuals(delta: float) -> void:
 ## For the chase music: only a visible rush, a lunge or a grab, not his unseen Steps.
 func is_chasing() -> bool:
 	return pstate == PState.RUSH or pstate == PState.LUNGE or pstate == PState.GRAB
+
+
+## A wrench on his metal skull (server): he drops whoever he holds and locks up; otherwise a
+## shorter lock-up. True when he freed someone.
+func wrench_hit(_by: Node3D) -> bool:
+	var held := _grabbed != null
+	stun(Wrench.RESCUE_STUN if held else Wrench.STAGGER)
+	return held

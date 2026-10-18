@@ -18,7 +18,7 @@ extends Node3D
 ## over it staring for as long as it squeaks.
 ## Host-authoritative like the rest; position, state and grab are replicated.
 
-enum HState { WANDER, INVESTIGATE, CHASE, GRAB, STUNNED, DEAD, SWEEP }
+enum HState { WANDER, INVESTIGATE, CHASE, GRAB, STUNNED, DEAD, SWEEP, TACKLE, CHARGE, SLAP }
 
 const WANDER_SPEED: float = 1.3  # m/s
 const INVESTIGATE_SPEED: float = 2.6
@@ -61,6 +61,33 @@ const INVESTIGATE_NOISE: float = 20.0  # effective loudness that turns its head
 const TURN_SPEED: float = 7.0  # rad/s
 const SAFE_WAIT: float = 3.0  # s it stands at a Break Room door before wandering off
 const HEAD_H: float = 1.62
+# Attacks (the user: chase and grab, run at you and tackle you down, sprint at you and hit you so
+# hard you fly into the wall, or slap you across the room). When a chase closes in it has already
+# picked one at random; each starts from its own range and commits to the line it had.
+const ATTACK_WEIGHTS: Dictionary = {"grab": 40, "tackle": 25, "charge": 20, "slap": 15}
+const ATTACK_COOLDOWN: float = 1.2  # s after an attack before the next
+const HIT_RADIUS: float = 1.0  # m: a dive or a charge connects this close
+const TACKLE_RANGE: float = 3.6  # m: it dives from here
+const TACKLE_WINDUP: float = 0.3  # s crouched, gathering
+const TACKLE_SPEED: float = 9.0  # m/s along the dive
+const TACKLE_DIVE: float = 0.45  # s in the air
+const TACKLE_SPRAWL: float = 1.1  # s on the floor after a miss: your chance
+const TACKLE_PIN: float = 0.55  # s on top of you before it takes you by the throat
+const TACKLE_DOWN: float = 2.2  # s you are flat
+const CHARGE_RANGE: float = 6.5  # m: it runs at you from here
+const CHARGE_MIN: float = 2.2  # m: closer than this a charge makes no sense; it slaps instead
+const CHARGE_WINDUP: float = 0.45  # s head down, a foot scraping
+const CHARGE_SPEED: float = 10.0  # m/s
+const CHARGE_TIME: float = 0.85  # s of running before it gives up the line
+const CHARGE_SKID: float = 0.6  # s skidding to a stop after
+const CHARGE_FLING: float = 15.0  # m/s it throws you
+const CHARGE_WALL_STUN: float = 1.6  # s it reels after running into a wall (dodge it)
+const SLAP_RANGE: float = 1.8  # m
+const SLAP_WINDUP: float = 0.35  # s the arm goes back
+const SLAP_SWING: float = 0.15  # s the swing connects in
+const SLAP_RECOVER: float = 0.5
+const SLAP_FLING: float = 12.0  # m/s sideways across the room
+static var debug_force_plan: String = ""  # tests: always this attack ("grab" keeps the old behaviour)
 
 var level: YellowRooms
 var floor_index: int = 0
@@ -76,6 +103,7 @@ var hunt_peer: int = 0
 var grab_peer: int = 0
 var burn_fraction: float = 0.0
 var hits: int = 0
+var attack_hit: bool = false  # replicated: the attack in progress connected
 
 # Server.
 var _target: Player = null
@@ -95,6 +123,12 @@ var _alert_t: float = 0.0  # s left of "the floor is awake": it hunts the neares
 var _sweep_base: float = 0.0
 var _sweep_dir: float = 1.0
 var _hold: Node3D = null  # the decoy it is standing over
+var _plan: String = "grab"  # server: the attack it will use when it closes in
+var _attack_cd: float = 0.0
+var _attack_dir: Vector3 = Vector3.FORWARD
+var _attack_target: Player = null
+var _hit_t: float = 0.0
+var _attack_vis_t: float = 0.0  # every peer: seconds into the attack it is showing
 var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
 
 # Visuals.
@@ -125,7 +159,7 @@ func _enter_tree() -> void:
 	var sync := MultiplayerSynchronizer.new()
 	sync.name = "Sync"
 	var cfg := SceneReplicationConfig.new()
-	for prop in ["synced_position", "synced_yaw", "hstate", "hunt_peer", "grab_peer", "burn_fraction", "hits"]:
+	for prop in ["synced_position", "synced_yaw", "hstate", "hunt_peer", "grab_peer", "burn_fraction", "hits", "attack_hit"]:
 		var path := NodePath(".:" + prop)
 		cfg.add_property(path)
 		cfg.property_set_replication_mode(path, SceneReplicationConfig.REPLICATION_MODE_ALWAYS)
@@ -298,7 +332,11 @@ func chest_point() -> Vector3:
 
 
 func is_hunting() -> bool:
-	return hstate == HState.CHASE or hstate == HState.GRAB
+	return hstate == HState.CHASE or hstate == HState.GRAB or is_attacking()
+
+
+func is_attacking() -> bool:
+	return hstate == HState.TACKLE or hstate == HState.CHARGE or hstate == HState.SLAP
 
 
 func is_dead() -> bool:
@@ -319,7 +357,7 @@ func _physics_process(delta: float) -> void:
 	if multiplayer.is_server():
 		_server_tick(delta)
 	else:
-		var k := 16.0 if hstate == HState.CHASE else 10.0
+		var k := 22.0 if is_attacking() else (16.0 if hstate == HState.CHASE else 10.0)
 		global_position = global_position.lerp(synced_position, clampf(delta * k, 0.0, 1.0))
 	_update_visuals(delta)
 
@@ -327,6 +365,7 @@ func _physics_process(delta: float) -> void:
 func _server_tick(delta: float) -> void:
 	if debug_frozen and hstate != HState.GRAB:
 		return
+	_attack_cd = maxf(0.0, _attack_cd - delta)
 	_immune_t = maxf(0.0, _immune_t - delta)
 	_alert_t = maxf(0.0, _alert_t - delta)
 	if hstate != HState.GRAB:
@@ -358,6 +397,8 @@ func _server_tick(delta: float) -> void:
 			_tick_chase(delta)
 		HState.GRAB:
 			_tick_grab(delta)
+		HState.TACKLE, HState.CHARGE, HState.SLAP:
+			_tick_attack(delta)
 		HState.STUNNED:
 			_t -= delta
 			if _t <= 0.0:
@@ -421,6 +462,7 @@ func _start_chase(p: Player) -> void:
 	_route.clear()
 	_safe_t = 0.0
 	_hold = null
+	_pick_plan()
 	if fresh:
 		_fx("hire_gurgle", 4.0, _rng.randf_range(0.9, 1.0))
 		_rpc_seen.rpc()
@@ -430,7 +472,7 @@ func _start_chase(p: Player) -> void:
 
 @rpc("authority", "call_local", "reliable")
 func _rpc_seen() -> void:
-	Sfx.play_at(self, "scream", head_point(), 4.0, randf_range(0.95, 1.08), 50.0)
+	Sfx.play_at(self, "scream", head_point(), 4.0, randf_range(0.88, 0.97), 50.0)
 	Sfx.caption(self, "a scream: it's seen you", head_point())
 	var me := Net.get_local_player()
 	if me != null and me.global_position.distance_to(global_position) < 20.0:
@@ -457,7 +499,7 @@ func join_chase(p: Player) -> void:
 
 @rpc("authority", "call_local", "reliable")
 func _rpc_answered() -> void:
-	Sfx.play_at(self, "scream", head_point(), -2.0, randf_range(0.85, 0.95), 45.0)
+	Sfx.play_at(self, "scream", head_point(), -2.0, randf_range(0.78, 0.86), 45.0)
 	Sfx.caption(self, "another scream answers", head_point())
 
 
@@ -558,8 +600,8 @@ func _tick_chase(delta: float) -> void:
 	else:
 		_route_toward(goal)
 		_follow_route(CHASE_SPEED, delta)
-	if seen and not safe and _flat_dist(_target.global_position) < GRAB_RANGE and absf(_target.global_position.y - global_position.y) < 1.6:
-		_start_grab(_target)
+	if seen and not safe and _attack_cd <= 0.0 and absf(_target.global_position.y - global_position.y) < 1.6:
+		_try_attack(_target)
 
 
 func _give_up() -> void:
@@ -573,6 +615,201 @@ func _give_up() -> void:
 		_start_sweep()
 
 
+## Server: which attack it will use on this chase's next close-in.
+func _pick_plan() -> void:
+	if debug_force_plan != "":
+		_plan = debug_force_plan
+		return
+	var total := 0
+	for k: String in ATTACK_WEIGHTS:
+		total += int(ATTACK_WEIGHTS[k])
+	var r := _rng.randi_range(0, total - 1)
+	for k: String in ATTACK_WEIGHTS:
+		r -= int(ATTACK_WEIGHTS[k])
+		if r < 0:
+			_plan = k
+			return
+
+
+## Server: close enough for the attack it picked? Someone already flat on the floor just gets taken.
+func _try_attack(p: Player) -> void:
+	var d := _flat_dist(p.global_position)
+	if p.is_downed() or d < GRAB_RANGE * 0.7:
+		if d < GRAB_RANGE:
+			_start_grab(p)
+		return
+	var clear := _has_clear_floor_line(p.global_position)
+	var plan := _plan
+	if plan == "charge" and d < CHARGE_MIN:
+		plan = "slap"
+	match plan:
+		"grab":
+			if d < GRAB_RANGE:
+				_start_grab(p)
+		"slap":
+			if d < SLAP_RANGE:
+				_start_attack(HState.SLAP, p)
+		"tackle":
+			if d < TACKLE_RANGE and clear:
+				_start_attack(HState.TACKLE, p)
+		"charge":
+			if d < CHARGE_RANGE and clear:
+				_start_attack(HState.CHARGE, p)
+
+
+func _start_attack(kind: int, p: Player) -> void:
+	hstate = kind
+	_t = 0.0
+	attack_hit = false
+	_attack_target = p
+	_target = p
+	hunt_peer = p.peer_id
+	_aim_at(p)
+	match kind:
+		HState.TACKLE:
+			_fx("hire_gurgle", 5.0, 1.3)
+		HState.CHARGE:
+			_fx("roar", 6.0, 0.75)
+		HState.SLAP:
+			_fx("hire_gurgle", 3.0, 1.6)
+
+
+func _aim_at(p: Player) -> void:
+	var to := p.global_position - global_position
+	to.y = 0.0
+	if to.length() > 0.05:
+		_attack_dir = to.normalized()
+	_face(p.global_position, -1.0)
+
+
+## Server: the attack in progress. Wind-ups track you; once it goes, it commits to that line.
+func _tick_attack(delta: float) -> void:
+	_t += delta
+	var p := _attack_target
+	var valid := p != null and is_instance_valid(p) and p.state == Player.State.NORMAL
+	match hstate:
+		HState.TACKLE:
+			if _t < TACKLE_WINDUP:
+				if valid:
+					_aim_at(p)
+			elif not attack_hit and _t < TACKLE_WINDUP + TACKLE_DIVE:
+				var blocked := _dash(_attack_dir, TACKLE_SPEED, delta)
+				if valid and _flat_dist(p.global_position) < HIT_RADIUS:
+					attack_hit = true
+					_hit_t = _t
+					p.knock(_attack_dir * 3.0 + Vector3.UP * 1.0, TACKLE_DOWN, true)
+					_rpc_attack_hit.rpc(p.peer_id, HState.TACKLE)
+				elif blocked:
+					_t = TACKLE_WINDUP + TACKLE_DIVE  # face first into the wall: sprawled
+			elif attack_hit:
+				if valid:
+					global_position = Vector3(p.global_position.x, floor_y, p.global_position.z) - _attack_dir * 0.5
+				if _t >= _hit_t + TACKLE_PIN:
+					if valid:
+						_start_grab(p)  # on top of you, then by the throat
+					else:
+						_end_attack()
+			elif _t >= TACKLE_WINDUP + TACKLE_DIVE + TACKLE_SPRAWL:
+				_end_attack()
+		HState.CHARGE:
+			if _t < CHARGE_WINDUP:
+				if valid:
+					_aim_at(p)
+			elif not attack_hit and _t < CHARGE_WINDUP + CHARGE_TIME:
+				var blocked := _dash(_attack_dir, CHARGE_SPEED, delta)
+				if valid and _flat_dist(p.global_position) < HIT_RADIUS:
+					attack_hit = true
+					_hit_t = _t
+					p.knock(_attack_dir * CHARGE_FLING + Vector3.UP * 3.5, 1.4, false)
+					_rpc_attack_hit.rpc(p.peer_id, HState.CHARGE)
+				elif blocked:
+					# It ran into the wall you weren't standing in front of any more.
+					_rpc_wall.rpc(global_position + _attack_dir * 0.5 + Vector3.UP * 1.3)
+					stun(CHARGE_WALL_STUN)
+					return
+			else:
+				var since := _t - (_hit_t if attack_hit else CHARGE_WINDUP + CHARGE_TIME)
+				_dash(_attack_dir, CHARGE_SPEED * 0.4 * maxf(0.0, 1.0 - since / CHARGE_SKID), delta)
+				if since >= CHARGE_SKID:
+					_end_attack()
+		HState.SLAP:
+			if _t < SLAP_WINDUP:
+				if valid:
+					_aim_at(p)
+			elif _t < SLAP_WINDUP + SLAP_SWING:
+				if not attack_hit and valid:
+					var to := p.global_position - global_position
+					to.y = 0.0
+					if to.length() < SLAP_RANGE + 0.3 and facing().angle_to(to) < 1.1:
+						attack_hit = true
+						var side := -facing().cross(Vector3.UP).normalized()  # a backhand from its right: you go to its left
+						p.knock(side * SLAP_FLING + facing() * 3.0 + Vector3.UP * 3.5, 1.3, false)
+						_rpc_attack_hit.rpc(p.peer_id, HState.SLAP)
+			elif _t >= SLAP_WINDUP + SLAP_SWING + SLAP_RECOVER:
+				_end_attack()
+
+
+func _end_attack() -> void:
+	_attack_cd = ATTACK_COOLDOWN
+	attack_hit = false
+	_pick_plan()
+	var p := _attack_target
+	_attack_target = null
+	if p != null and is_instance_valid(p) and p.state == Player.State.NORMAL:
+		hstate = HState.CHASE
+		_target = p
+		_last_seen = p.global_position
+		_lose_t = 0.0
+		_route.clear()
+	else:
+		_give_up()
+
+
+## Server: straight along dir at speed, stopping at a wall. True when the wall stopped it.
+func _dash(dir: Vector3, speed: float, delta: float) -> bool:
+	var step := dir * speed * delta
+	if step.length() < 0.0001:
+		return false
+	var from := global_position + Vector3(0.0, 1.0, 0.0)
+	var q := PhysicsRayQueryParameters3D.create(from, from + dir * (step.length() + 0.45), ChainBody.LAYER_WORLD)
+	if not get_world_3d().direct_space_state.intersect_ray(q).is_empty():
+		return true
+	global_position += step
+	global_position.y = floor_y
+	return false
+
+
+## Every peer: an attack landed on someone. A heavy hit for everyone; for them, the screen jolts.
+@rpc("authority", "call_local", "reliable")
+func _rpc_attack_hit(peer: int, kind: int) -> void:
+	var p := Net.find_player(peer)
+	var at := p.global_position + Vector3.UP * 1.1 if p != null else chest_point()
+	Sfx.play_at(self, "thump", at, 6.0, 0.55 if kind == HState.CHARGE else 0.8, 35.0)
+	if kind == HState.SLAP:
+		Sfx.play_at(self, "slam", at, 2.0, 1.4, 30.0)
+	else:
+		Sfx.play_at(self, "scream", head_point(), 5.0, 0.85, 40.0)
+	if p != null:
+		p.model.pop_hat(Vector3.UP * 3.0 + facing() * 2.5)
+		if p.is_local:
+			Sfx.play(self, "stinger", 0.0, 1.0)
+			p.add_shake(1.0)
+			ScreenFx.jolt(0.45)
+
+
+## Every peer: it ran into a wall.
+@rpc("authority", "call_local", "reliable")
+func _rpc_wall(at: Vector3) -> void:
+	Sfx.play_at(self, "slam", at, 6.0, 0.6, 35.0)
+	Sfx.play_at(self, "thump", at, 4.0, 0.5, 30.0)
+
+
+## Tests: start an attack on a player right now.
+func debug_attack(kind: int, p: Player) -> void:
+	debug_frozen = false
+	_start_attack(kind, p)
+
+
 func _start_grab(p: Player) -> void:
 	hstate = HState.GRAB
 	_grabbed = p
@@ -584,7 +821,7 @@ func _start_grab(p: Player) -> void:
 	_face(p.global_position, -1.0)
 	p.grab_start(self)
 	_fx("hire_gurgle", 6.0, 0.8)
-	GameState.post_message("IT HAS %s. Everyone beside them: HOLD CTRL. Or a light in its face, or shoot it." % p.display_name.to_upper(), 4.0)
+	GameState.post_tip("grab_hire", "IT HAS %s. Everyone beside them: HOLD CTRL. Or a light in its face, or shoot it." % p.display_name.to_upper(), 4.0)
 
 
 func _tick_grab(delta: float) -> void:
@@ -600,7 +837,6 @@ func _tick_grab(delta: float) -> void:
 		if b != _grabbed and b.global_position.distance_to(_grabbed.global_position) < RESCUE_RADIUS:
 			_rescue += b.resist_value() * delta
 	if _rescue >= RESCUE_NEEDED:
-		GameState.post_message("They pulled it off %s. RUN." % _grabbed.display_name, 3.0)
 		release(false)
 		stun(2.0)
 		return
@@ -653,7 +889,6 @@ func take_hit() -> void:
 	if hits >= HITS_TO_DIE:
 		die()
 	elif hstate == HState.GRAB:
-		GameState.post_message("Shot. It dropped them.", 2.5)
 		release(false)
 		stun(1.5)
 
@@ -672,7 +907,6 @@ func die() -> void:
 	grab_peer = 0
 	_dead_t = 0.0
 	_fx("hire_gurgle", 2.0, 0.6)
-	GameState.post_message("One down. The floor will send another.", 2.5)
 
 
 ## Server: back on its feet somewhere (a respawn, a test, a regroup pushing it away).
@@ -868,7 +1102,6 @@ func _tick_burn(delta: float) -> bool:
 	if _burn >= BURN_TO_STUN:
 		var holding := _grabbed != null
 		stun(STUN_TIME)
-		GameState.post_message("The light stops it. For a moment." + (" It let go. GO." if holding else ""), 2.5)
 		return true
 	return false
 
@@ -898,18 +1131,19 @@ func _update_visuals(delta: float) -> void:
 		var prey := Net.find_player(hunt_peer)
 		if prey != null and prey.global_position.distance_to(global_position) < SCREAM_NEAR:
 			_screamed_near = true
-			Sfx.play_at(self, "scream", head_point(), 7.0, randf_range(1.0, 1.12), 45.0)
+			Sfx.play_at(self, "scream", head_point(), 7.0, randf_range(0.9, 0.98), 45.0)
 			if prey.is_local:
 				prey.add_shake(0.5)
 	elif hstate != HState.CHASE:
 		_screamed_near = false
 	if hstate != _shown_state and hstate == HState.GRAB:
-		Sfx.play_at(self, "scream", head_point(), 8.0, 1.15, 40.0)
+		Sfx.play_at(self, "scream", head_point(), 8.0, 0.92, 40.0)
 		var caught := Net.find_player(grab_peer)
 		if caught != null and caught.is_local:
-			Sfx.play(self, "scream", 0.0, 1.15)  # inside your head as well
+			Sfx.play(self, "scream", 0.0, 0.85)  # inside your head as well
 	if hstate != _shown_state:
 		_shown_state = hstate
+		_attack_vis_t = 0.0
 		if hstate == HState.DEAD:
 			var tw := create_tween()
 			tw.tween_property(_model, "rotation:x", PI * 0.5 - 0.1, 0.6).set_ease(Tween.EASE_IN)
@@ -938,6 +1172,10 @@ func _update_visuals(delta: float) -> void:
 	# The head: always tilted a little too far, and it keeps turning to whoever is looking at it.
 	var head_t := Vector3(0.1 * sin(t * 0.7), 0.0, 0.35 + 0.1 * sin(t * 0.5))
 	var jaw_t := -0.04 - 0.03 * maxf(0.0, sin(t * 0.9))  # never quite closed
+	var body_pitch := 0.0
+	var hips_drop := 0.0
+	_attack_vis_t += delta
+	var a := _attack_vis_t
 	var head_z := 0.0
 	if hstate == HState.GRAB:
 		_catch_t += delta
@@ -966,6 +1204,51 @@ func _update_visuals(delta: float) -> void:
 			lean = pose[3]
 			jaw_t = pose[4]
 			head_z = pose[5]
+		HState.TACKLE:
+			if a < TACKLE_WINDUP:
+				# Gathering: low, arms back, jaw open.
+				lean = 0.75
+				hips_drop = 0.3
+				arm_l = Vector3(-0.8, 0.0, -0.4)
+				arm_r = Vector3(-0.8, 0.0, 0.4)
+				head_t = Vector3(-0.4, head_t.y, 0.3)
+				jaw_t = -0.55
+			else:
+				# The dive: flat out in the air, arms reaching; then down on you (or face down, missed).
+				var flat := smoothstep(TACKLE_WINDUP, TACKLE_WINDUP + 0.18, a)
+				body_pitch = -(1.25 if attack_hit else 1.45) * flat
+				hips_drop = 0.45 * flat
+				arm_l = Vector3(2.8, 0.0, -0.35)
+				arm_r = Vector3(2.8, 0.0, 0.35)
+				head_t = Vector3(-0.6, 0.0, 0.2 * sin(t * 12.0))
+				jaw_t = -0.75
+		HState.CHARGE:
+			if a < CHARGE_WINDUP:
+				# Head down like something about to come through a door; a foot scraping.
+				lean = 0.6
+				arm_l = Vector3(-0.6, 0.0, -0.3)
+				arm_r = Vector3(-0.6, 0.0, 0.3)
+				head_t = Vector3(0.55, 0.0, 0.0)
+				hip_r = 0.35 * sin(t * 14.0)
+				jaw_t = -0.3
+			else:
+				lean = 0.8
+				arm_l = Vector3(1.3 * s, 0.0, -0.3)
+				arm_r = Vector3(-1.3 * s, 0.0, 0.3)
+				head_t = Vector3(0.35, 0.0, 0.0)
+				jaw_t = -0.65
+		HState.SLAP:
+			if a < SLAP_WINDUP:
+				# The arm goes up and back, wide.
+				arm_r = Vector3(2.4, 0.0, 1.4)
+				arm_l = Vector3(0.4, 0.0, -0.3)
+				lean = -0.1
+				head_t = Vector3(-0.2, head_t.y, 0.25)
+			elif a < SLAP_WINDUP + SLAP_SWING + 0.12:
+				# And comes across.
+				arm_r = Vector3(1.5, 0.0, -1.3)
+				lean = 0.3
+				jaw_t = -0.5
 		HState.STUNNED:
 			arm_l = Vector3(2.6, 0.0, -0.4)  # hands over the face
 			arm_r = Vector3(2.6, 0.0, 0.4)
@@ -980,13 +1263,15 @@ func _update_visuals(delta: float) -> void:
 			arm_r = Vector3(0.1, 0.0, 0.15)
 	var k := 1.0 - exp(-14.0 * delta)
 	_hips.rotation.x = lerpf(_hips.rotation.x, -lean, k)
-	_hips.position.y = lerpf(_hips.position.y, 0.95 - (0.08 if chase else 0.0), k)
+	_hips.position.y = lerpf(_hips.position.y, 0.95 - (0.08 if chase else 0.0) - hips_drop, k)
 	_thigh_l.rotation.x = lerpf(_thigh_l.rotation.x, hip_l, k)
 	_thigh_r.rotation.x = lerpf(_thigh_r.rotation.x, hip_r, k)
 	_arm_l.rotation = _arm_l.rotation.lerp(arm_l + Vector3(0.0, 0.0, -0.1), k)
 	_arm_r.rotation = _arm_r.rotation.lerp(arm_r + Vector3(0.0, 0.0, 0.1), k)
 	_head.rotation = _head.rotation.lerp(head_t, k)
 	var kf := 1.0 - exp(-24.0 * delta)  # the jaw and the bite are quick
+	if hstate == HState.TACKLE:
+		_model.rotation.x = lerpf(_model.rotation.x, body_pitch, 1.0 - exp(-16.0 * delta))
 	_jaw.rotation.x = lerpf(_jaw.rotation.x, jaw_t, kf)
 	_head.position.z = lerpf(_head.position.z, head_z, kf)
 	# Footsteps (quick and wrong while chasing), and a caption now and then while it wanders.
@@ -999,3 +1284,14 @@ func _update_visuals(delta: float) -> void:
 				Sfx.caption(self, "running footsteps" if chase else "footsteps, somewhere", chest_point())
 			if fmod(_phase, PI) < delta * (_vis_speed * 3.6 + 0.5):
 				Sfx.play_at(self, "step", global_position, -6.0 if chase else -16.0, 1.1 if chase else 0.9, 22.0)
+
+
+## A wrench across it (server): drops whoever it holds and reels; holding nobody, it staggers.
+## True when it freed someone. No kill credit: that is what the Snubby is for.
+func wrench_hit(_by: Node3D) -> bool:
+	if hstate == HState.DEAD:
+		return false
+	var held := _grabbed != null
+	if held or hstate != HState.STUNNED:
+		stun(Wrench.RESCUE_STUN if held else Wrench.STAGGER)
+	return held

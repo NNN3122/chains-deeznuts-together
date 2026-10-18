@@ -15,6 +15,7 @@ enum ChainConfig { LINE, RING, PAIRS }
 ## The current floor's task list under the objective: [[text, done], ...]. Server-owned,
 ## pushed to everyone (and to late joiners with the rest of the state).
 var tasks: Array = []
+var _tips_shown: Dictionary = {}  # server: tip keys already shown this run
 
 var chain_config: ChainConfig = ChainConfig.LINE
 var checkpoint_index: int = 0
@@ -54,6 +55,7 @@ func reset_run(spawn: Vector3, facing: float, first_objective: String) -> void:
 	final_jerks = 0
 	escape_line = ""
 	tasks = []
+	_tips_shown.clear()
 	objective_changed.emit(objective)
 	tasks_changed.emit()
 
@@ -146,6 +148,15 @@ func _rpc_checkpoint(index: int, position: Vector3, facing: float, new_objective
 	checkpoint_changed.emit(index)
 	objective_changed.emit(objective)
 	post_message_local("CLOCKED IN. Checkpoint saved.", 3.0)
+
+
+## Server: an instruction shown once per run (the first grab by each monster, say). After that
+## the moment plays without words on the screen: text mid-scare kills the fear.
+func post_tip(key: String, text: String, seconds: float = 3.0) -> void:
+	if not multiplayer.is_server() or _tips_shown.has(key):
+		return
+	_tips_shown[key] = true
+	post_message(text, seconds)
 
 
 func post_message(text: String, seconds: float = 3.0) -> void:

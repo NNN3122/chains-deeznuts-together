@@ -32,8 +32,6 @@ func _tick(delta: float, _held: bool, pressed: bool) -> void:
 		if not m.has_method("stun") or (m as Node3D).global_position.distance_to(holder.global_position) >= RANGE:
 			continue
 		m.call("stun", STUN)
-		if m is PappyPepperoni:
-			GameState.post_message("%s hit the air horn. He's locked up. GO." % holder.display_name, 3.0)
 	var horde := holder.get_tree().get_first_node_in_group("horde")
 	if horde != null:
 		horde.call("stun", holder.global_position, RANGE * 0.5)

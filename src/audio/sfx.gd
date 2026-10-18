@@ -12,7 +12,7 @@ const IDS: Array[String] = [
 	"jukebox", "servo", "shutter", "bell", "klaxon", "static", "popper", "airhorn", "birthday", "bang",
 	"screech", "wind", "skitter", "scream", "roar",
 	"hire_gurgle", "cust_hiss", "cust_shriek", "pappy_laugh", "pappy_scream", "spider_hiss", "spider_shriek",
-	"roach_chitter", "chase",
+	"roach_chitter", "chase", "pant",
 ]
 
 ## Sounds that get an on-screen caption (Settings.captions), with direction worked out by the HUD.
@@ -189,6 +189,7 @@ static func _build(id: String) -> AudioStreamWAV:
 		"spider_shriek": return _pack(_spider_shriek())
 		"roach_chitter": return _pack(_roach_chitter())
 		"chase": return _pack(_chase(), true)
+		"pant": return _pack(_pant(), true)
 	push_warning("Sfx: unknown sound '%s'" % id)
 	return _pack(PackedFloat32Array([0.0]))
 
@@ -734,43 +735,85 @@ static func _normalize(b: PackedFloat32Array, peak: float) -> PackedFloat32Array
 	return b
 
 
-## A scream with a throat in it: three ragged voices (one an octave down, rasping) through vowel
-## formants that slide from an open "aah" to a thin "eee", driven into distortion. It jumps up at
-## the start, shakes, cracks higher near the end and falls away. Played near you as it closes in,
-## and in your face when it has you.
+## The Hire's scream: not one voice but a throatful. Six ragged voices that never agree on a pitch
+## (each wanders on its own), every one tearing into a sub-octave rasp (period doubling: the sound of
+## a throat giving way), more breath than tone, through a dark open throat and a harsh high band,
+## with a ring-modulated edge no person makes and a low roar under its first half, then a small dead
+## room's echo. No vibrato, no vowel slide, no crack: those made the old one sound like a cartoon.
 static func _scream() -> PackedFloat32Array:
-	var dur := 1.7
-	var b := _buf(dur)
+	var dur := 1.9
+	var tail := 0.6
+	var b := _buf(dur + tail)
 	var r := _rng(613)
-	var ratios: Array[float] = [1.0, 1.012, 0.497]
-	var amps: Array[float] = [0.55, 0.45, 0.6]
-	var ph := PackedFloat32Array([0.0, 0.31, 0.62])
+	var ratios: Array[float] = [1.0, 1.013, 0.987, 1.026, 0.974, 0.5]
+	var amps: Array[float] = [0.5, 0.42, 0.42, 0.3, 0.3, 0.55]
+	var ph: Array[float] = [0.0, 0.17, 0.41, 0.63, 0.82, 0.29]
+	var drift: Array[float] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 	var st := PackedFloat32Array()
-	st.resize(16)
+	st.resize(24)
 	var breath := 0.0
+	var roar_ph := 0.0
+	var rasp_ph := 0.0
 	for i in b.size():
 		var t := float(i) / RATE
-		var u := t / dur
-		var f0 := 520.0 + 400.0 * smoothstep(0.0, 0.1, u) + 160.0 * sin(TAU * 6.5 * t) * u
-		if u > 0.6 and u < 0.68:
-			f0 += 340.0  # the crack
-		f0 -= 300.0 * maxf(0.0, u - 0.74) / 0.26
-		f0 *= 1.0 + r.randf_range(-0.025, 0.025)
+		var u := minf(t / dur, 1.0)
+		var on := 1.0 if t < dur else 0.0
+		# Jumps up hard, strains a little higher, then sags as it runs out of air.
+		var f0 := 300.0 + 190.0 * smoothstep(0.0, 0.05, u) + 45.0 * smoothstep(0.05, 0.5, u) - 170.0 * smoothstep(0.55, 1.0, u)
 		var src := 0.0
-		for v in 3:
-			ph[v] += f0 * ratios[v] / RATE
-			var saw := 2.0 * (ph[v] - floorf(ph[v])) - 1.0
-			src += saw * amps[v]
-		breath += 0.3 * (r.randf_range(-1.0, 1.0) - breath)
-		src += breath * (0.5 + 0.4 * u)
-		var vowel := smoothstep(0.15, 0.7, u)
-		var out := _bandpass(src, lerpf(850.0, 420.0, vowel), 5.0, st, 0) * 1.0
-		out += _bandpass(src, lerpf(1300.0, 2250.0, vowel), 7.0, st, 4) * 0.8
-		out += _bandpass(src, lerpf(2600.0, 3000.0, vowel), 9.0, st, 8) * 0.55
-		out += _bandpass(src, 3800.0, 11.0, st, 12) * 0.35
-		var env := minf(1.0, t * 40.0) * (1.0 if u < 0.78 else maxf(0.0, 1.0 - (u - 0.78) / 0.22))
-		b[i] = tanh(out * 2.6) * env
-	return _normalize(b, 0.95)
+		for v in ratios.size():
+			drift[v] += (r.randf_range(-1.0, 1.0) - drift[v]) * 0.0025
+			var f := f0 * ratios[v] * (1.0 + 0.05 * drift[v])
+			ph[v] = fposmod(ph[v] + f / RATE, 2.0)  # two cycles, so the sub-octave rasp can alternate
+			var saw := 2.0 * fposmod(ph[v], 1.0) - 1.0
+			var tear := 1.0 + 0.55 * signf(1.0 - ph[v])  # every other cycle louder: period doubling
+			src += saw * tear * amps[v]
+		breath += 0.45 * (r.randf_range(-1.0, 1.0) - breath)
+		src = src * 0.55 + breath * 1.3
+		# Roughness: the throat flutters at a ragged 60-90 Hz.
+		rasp_ph = fposmod(rasp_ph + r.randf_range(60.0, 90.0) / RATE, 1.0)
+		src *= 0.7 + 0.3 * sin(TAU * rasp_ph)
+		var out := _bandpass(src, 640.0, 3.0, st, 0) * 1.0
+		out += _bandpass(src, 1150.0, 4.0, st, 4) * 0.55
+		out += _bandpass(src, 3200.0, 5.0, st, 8) * 0.95
+		out += _bandpass(src, 4500.0, 6.0, st, 12) * 0.5
+		out += out * sin(TAU * 1270.0 * t) * 0.3  # the metallic edge
+		# A low roar under the first half gives it a body behind the throat.
+		roar_ph = fposmod(roar_ph + (82.0 + r.randf_range(-4.0, 4.0)) / RATE, 1.0)
+		var roar := _bandpass(2.0 * roar_ph - 1.0 + breath * 0.6, 260.0, 1.2, st, 16) * (1.0 - smoothstep(0.2, 0.6, u)) * 1.4
+		var env := minf(1.0, t * 80.0) * (1.0 - smoothstep(0.78, 1.0, u)) * on
+		b[i] = tanh((out + roar) * 3.2 * env)
+	var roomed := _room(b, 0.32)
+	for i in roomed.size():
+		roomed[i] = tanh(roomed[i] * 1.8)  # squeeze the echo's peaks so the scream itself stays loud
+	return _normalize(roomed, 0.95)
+
+
+## A small dead room round a sound: four feedback combs (Schroeder), mixed in at wet. One flat
+## buffer for all four lines: writing into a PackedFloat32Array held in an Array copies it each time.
+static func _room(b: PackedFloat32Array, wet: float) -> PackedFloat32Array:
+	var delays: Array[int] = [int(0.0297 * RATE), int(0.0371 * RATE), int(0.0411 * RATE), int(0.0437 * RATE)]
+	var starts: Array[int] = []
+	var total := 0
+	for d in delays:
+		starts.append(total)
+		total += d
+	var lines := PackedFloat32Array()
+	lines.resize(total)
+	var idx: Array[int] = [0, 0, 0, 0]
+	var out := PackedFloat32Array()
+	out.resize(b.size())
+	for i in b.size():
+		var x := b[i]
+		var verb := 0.0
+		for k in 4:
+			var at: int = starts[k] + idx[k]
+			var y := lines[at]
+			lines[at] = x + y * 0.72
+			idx[k] = (idx[k] + 1) % delays[k]
+			verb += y
+		out[i] = x * (1.0 - wet) + verb * 0.5 * wet
+	return out
 
 
 ## A roar right on you: two deep rasping voices, a rattle in the throat, heavy distortion.
@@ -1074,6 +1117,32 @@ static func _chase() -> PackedFloat32Array:
 	for i in b.size():
 		b[i] = full[b.size() + i]
 	return _normalize(b, 0.8)
+
+
+## Out of breath: ragged in-out panting through the mouth, a voice catching on the out-breath,
+## 1.6 breaths a second. Loops (seamless); its volume follows the stamina left.
+static func _pant() -> PackedFloat32Array:
+	var dur := 2.5
+	var b := _buf(dur + 0.3)
+	var r := _rng(761)
+	var st := PackedFloat32Array()
+	st.resize(12)
+	var period := dur / 4.0
+	var ph := 0.0
+	for i in b.size():
+		var t := float(i) / RATE
+		var c := fposmod(t, period) / period
+		var n := r.randf_range(-1.0, 1.0)
+		# In through the teeth: short, high, quieter. Out through the mouth: longer, lower, louder.
+		var inhale := smoothstep(0.0, 0.08, c) * (1.0 - smoothstep(0.28, 0.36, c))
+		var exhale := smoothstep(0.42, 0.5, c) * (1.0 - smoothstep(0.78, 0.97, c))
+		var jitter := 0.85 + 0.3 * r.randf()
+		var air := _bandpass(n, 2100.0, 2.0, st, 0) * inhale * 0.55
+		air += (_bandpass(n, 950.0, 1.6, st, 4) + _bandpass(n, 1600.0, 3.0, st, 8) * 0.5) * exhale
+		ph = fposmod(ph + (118.0 + 10.0 * c) / RATE, 1.0)
+		var voice := (2.0 * ph - 1.0) * exhale * 0.08 * smoothstep(0.45, 0.6, c)
+		b[i] = tanh((air * jitter + voice) * 1.8)
+	return _normalize(_seamless(b, 0.3), 0.8)
 
 
 # --- Level 3 --------------------------------------------------------------------------------------

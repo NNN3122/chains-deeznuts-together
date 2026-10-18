@@ -13,9 +13,18 @@ extends Node
 ## Roof scares (HordeArena.play_scare): roof_hush, roof_glimpse, roof_drop, roof_swarm,
 ## roof_shadow, roof_scrape. The roof paces its own (RoofDread, level.paces_own_scares).
 
-const FIRST_DELAY: float = 22.0  # s into a run before the first (the user: more often)
-const MIN_GAP: float = 16.0
-const MAX_GAP: float = 34.0
+## Pacing (the office and the pizzeria; the roof has RoofDread). A scare every 16-34 s numbed
+## people, so now the director waits for quiet, lets dread build on whoever wandered, and only
+## then hits: the heartbeat climbs, the sound drops out, then the scare (or, sometimes, nothing).
+const FIRST_DELAY: float = 35.0  # s into a run before the first build may start
+const COOLDOWN_MIN: float = 30.0  # s after a scare before the next can start building
+const COOLDOWN_MAX: float = 50.0
+const QUIET_MIN: float = 8.0  # s with nothing hunting anyone (and nobody caught) before a build
+const QUIET_MAX: float = 15.0
+const BUILD_TIME: float = 4.5  # s from the first heartbeat to the scare
+const HUSH_TIME: float = 1.2  # s at the end of the build where the world goes nearly silent
+const HUSH_DB: float = -16.0  # how far the target's sound drops in the hush
+const FAKE_CHANCE: float = 0.25  # a build that ends in a breath, footsteps or only the silence
 const REPEAT_PENALTY: float = 0.25  # weight multiplier for the last two kinds played, so runs vary
 const POOL: Array = [
 	["face", 3], ["lunge", 2], ["ceiling_drop", 2], ["crawler", 2], ["peek", 2], ["hands", 2], ["behind", 2], ["lights_out", 2], ["tile", 2], ["whisper", 1], ["slam", 2], ["figure", 2], ["phone", 1], ["dennis", 1],
@@ -32,6 +41,14 @@ var _flicker_until: int = 0
 var _layer: CanvasLayer
 var _overlay: ColorRect
 var _next_t: float = FIRST_DELAY
+var _quiet_t: float = 0.0  # server: how long nothing has hunted anyone
+var _quiet_need: float = QUIET_MIN
+var _build_t: float = -1.0  # server: >= 0 while dread builds on _build_target
+var _build_target: Player
+var _dread_left: float = 0.0  # local: seconds of the build still to run on this screen
+var _beat_t: float = 0.0
+var _duck_base: float = 0.0
+var _ducked: bool = false
 var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
 var _recent: Array[String] = []  # the last kinds played, so the next pick leans elsewhere
 
@@ -50,6 +67,12 @@ func _ready() -> void:
 
 func blackout_active() -> bool:
 	return Time.get_ticks_msec() < _blackout_until
+
+
+## The power came back on a floor (a fixed breaker panel): a lights-out there ends now.
+func end_blackout_on_floor(floor_y: float) -> void:
+	if blackout_active() and absf(blackout_center.y - floor_y) < 3.0:
+		_blackout_until = 0
 
 
 ## Local: every light within radius of center goes dark for a while.
@@ -79,31 +102,126 @@ static func lights_out_msec(pos: Vector3) -> int:
 ## Server: called at the start of every run.
 func reset_director() -> void:
 	_next_t = FIRST_DELAY
+	_quiet_t = 0.0
+	_build_t = -1.0
+	_build_target = null
+	_unduck()
 
 
 # --- Server: deciding ------------------------------------------------------------------------
 
 func _process(delta: float) -> void:
+	_tick_local_dread(delta)
 	if not multiplayer.has_multiplayer_peer() or not multiplayer.is_server():
 		return
 	if get_tree().get_first_node_in_group("level") == null or GameState.escaped:
 		return
 	_next_t -= delta
-	if _next_t > 0.0:
-		return
-	_next_t = _rng.randf_range(MIN_GAP, MAX_GAP)
+	var busy := false
 	for c in get_tree().get_nodes_in_group("monster"):
-		if c.call("is_hunting"):
-			_next_t = 12.0  # never pile a fake scare on top of a real one
+		if c.call("is_hunting") or int(c.get("grab_peer")) != 0:
+			busy = true  # never pile a fake scare on top of a real one
+	# A build in progress: it lands, or a real threat cancels it.
+	if _build_t >= 0.0:
+		if busy or _build_target == null or not is_instance_valid(_build_target):
+			_cancel_build()
 			return
+		_build_t += delta
+		if _build_t >= BUILD_TIME:
+			_land_build()
+		return
+	if busy:
+		_quiet_t = 0.0
+		return
+	_quiet_t += delta
+	if _next_t > 0.0 or _quiet_t < _quiet_need:
+		return
 	var players := Net.get_players()
 	if players.is_empty():
 		return
 	var target := _pick_target(players)
 	var level := get_tree().get_first_node_in_group("level")
 	if level != null and level.has_method("paces_own_scares") and level.call("paces_own_scares", target.global_position):
-		return  # the roof waits for quiet and builds its own (RoofDread)
+		_next_t = 5.0  # the roof waits for quiet and builds its own (RoofDread)
+		return
+	_build_t = 0.0
+	_build_target = target
+	_rpc_dread.rpc(target.peer_id, BUILD_TIME)
+
+
+func _land_build() -> void:
+	var target := _build_target
+	_build_t = -1.0
+	_build_target = null
+	_next_t = _rng.randf_range(COOLDOWN_MIN, COOLDOWN_MAX)
+	_quiet_t = 0.0
+	_quiet_need = _rng.randf_range(QUIET_MIN, QUIET_MAX)
+	if _rng.randf() < FAKE_CHANCE:
+		var fake: String = ["breath", "footsteps", ""][_rng.randi() % 3]
+		if fake != "":
+			trigger_for(fake, target)
+		return  # or only the silence, and then the room again
 	trigger_for(_pick_kind(target.global_position), target)
+
+
+func _cancel_build() -> void:
+	var peer := _build_target.peer_id if _build_target != null and is_instance_valid(_build_target) else 0
+	_build_t = -1.0
+	_build_target = null
+	_quiet_t = 0.0
+	_rpc_dread.rpc(peer, 0.0)
+
+
+## Every peer: the target hears the build (seconds 0 ends one early: something real came).
+@rpc("authority", "call_local", "reliable")
+func _rpc_dread(target_peer: int, seconds: float) -> void:
+	var me := Net.get_local_player()
+	if me == null or me.peer_id != target_peer:
+		return
+	_dread_left = seconds
+	_beat_t = 0.0
+	if seconds <= 0.0:
+		_unduck()
+
+
+## Local: a heartbeat that climbs from slow to racing, then the world drops to near silence for
+## the last HUSH_TIME so the scare lands out of nothing.
+func _tick_local_dread(delta: float) -> void:
+	if _dread_left <= 0.0:
+		return
+	_dread_left -= delta
+	var u := clampf(1.0 - _dread_left / BUILD_TIME, 0.0, 1.0)
+	if _dread_left > HUSH_TIME:
+		_beat_t -= delta
+		if _beat_t <= 0.0:
+			_beat_t = lerpf(0.95, 0.38, u)
+			Sfx.play(self, "heartbeat", lerpf(-12.0, 0.0, u), 1.0)
+	elif not _ducked:
+		_ducked = true
+		_duck_base = AudioServer.get_bus_volume_db(0)
+		AudioServer.set_bus_volume_db(0, _duck_base + HUSH_DB)
+	if _dread_left <= 0.0:
+		_unduck()
+
+
+func _unduck() -> void:
+	_dread_left = 0.0
+	if _ducked:
+		_ducked = false
+		AudioServer.set_bus_volume_db(0, _duck_base)
+
+
+## Tests: is a build running (server), and start one now on a player.
+func is_building() -> bool:
+	return _build_t >= 0.0
+
+
+func debug_build(p: Player) -> void:
+	_next_t = 0.0
+	_quiet_t = _quiet_need
+	_build_t = 0.0
+	_build_target = p
+	_rpc_dread.rpc(p.peer_id, BUILD_TIME)
 
 
 func _pick_kind(at: Vector3) -> String:
@@ -214,6 +332,8 @@ func play_local(kind: String, pos: Vector3, target_peer: int = 0) -> void:
 	scares_played += 1
 	var me := Net.get_local_player()
 	var targeted := me != null and me.peer_id == target_peer
+	if targeted:
+		_unduck()  # the hush ends the instant it lands
 	match kind:
 		"face":
 			# The big one: whatever haunts this level, its face out of nowhere into yours, a scream,
@@ -424,7 +544,7 @@ func _spawn_face(pos: Vector3) -> void:
 	face.position = Vector3(0.35, -0.15, -4.0)
 	face.scale = Vector3.ONE * 0.7
 	Sfx.play(self, "stinger", 6.0)
-	Sfx.play(self, ["scream", "pappy_scream", "spider_shriek"][clampi(idx, 0, 2)], 3.0, 1.05)
+	Sfx.play(self, ["scream", "pappy_scream", "spider_shriek"][clampi(idx, 0, 2)], 3.0, 1.0)
 	var tw := face.create_tween()
 	tw.tween_property(face, "position", Vector3(0.0, -0.02, -0.34 if idx != 1 else -0.62), 0.16).set_trans(Tween.TRANS_EXPO).set_ease(Tween.EASE_IN)
 	tw.parallel().tween_property(face, "scale", Vector3.ONE, 0.16)
@@ -443,7 +563,7 @@ func _spawn_face(pos: Vector3) -> void:
 func _hit(strength: float = 1.0) -> void:
 	var me := Net.get_local_player()
 	Sfx.play(self, "stinger", 4.0 * strength)
-	Sfx.play(self, _level_scream(me.global_position) if me != null else "scream", 1.0 * strength, randf_range(0.92, 1.12))
+	Sfx.play(self, _level_scream(me.global_position) if me != null else "scream", 1.0 * strength, randf_range(0.88, 1.0))
 	_flash(0.55 * strength)
 	ScreenFx.jolt(0.45 * strength)
 	if me != null:

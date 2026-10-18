@@ -32,6 +32,8 @@ func _run_host() -> void:
 	var players := await _wait_for_players(expected_players, 25.0)
 	_check("players spawned", players.size() >= expected_players, "%d of %d" % [players.size(), expected_players])
 	_host = Net.find_player(1)
+	Player.debug_infinite_stamina = true  # the route tests sprint for minutes; _test_stamina turns breath back on
+	HollowHire.debug_force_plan = "grab"  # the old tests expect a grab; _test_hire_attacks covers the rest
 	var level_node := get_tree().get_first_node_in_group("level")
 	if _host != null and level_node is HordeArena:
 		await _run_arena(level_node as HordeArena)
@@ -51,11 +53,11 @@ func _run_host() -> void:
 	await _wait(0.6)
 	var bodies := Net.get_chain_bodies()
 	_mate = bodies[1] if bodies.size() > 1 else null
-	var missing_light := ""
+	var missing_kit := ""
 	for p in Net.get_players():
-		if not p.has_item("flashlight"):
-			missing_light = p.display_name
-	_check("every player starts with a flashlight", missing_light == "", missing_light)
+		if not p.has_item("flashlight") or not p.has_item("wrench") or p.held_item == null or p.held_item.data.id != "flashlight":
+			missing_kit = p.display_name
+	_check("every player starts with a flashlight (in hand) and a wrench", missing_kit == "", missing_kit)
 	_check("level built: 4 floors with test points", _level.floors.size() == 4 and _level.test_points.has("exit"), "%d floors, %d points" % [_level.floors.size(), _level.test_points.size()])
 	_check("pizzeria built on top: 3 floors, 3 desks, 2 shutters, Pappy", _pizzeria.desks.size() == 3 and _pizzeria.shutters.size() == 2 and _pizzeria.pappy != null and _pizzeria.base_y() > 19.0,
 		"desks %d, shutters %d, base y %.1f, points %d" % [_pizzeria.desks.size(), _pizzeria.shutters.size(), _pizzeria.base_y(), _pizzeria.test_points.size()])
@@ -81,10 +83,13 @@ func _run_host() -> void:
 	await _test_hires()
 	await _test_playtest()
 	await _test_grab_release()
+	await _test_wrench()
+	await _test_hire_attacks()
 	await _test_forced()
 	await _test_scares()
 	await _test_crouch()
 	await _test_slide()
+	await _test_stamina()
 	await _test_extras()
 	_test_invites()
 	await _test_exit()
@@ -100,6 +105,195 @@ func _run_host() -> void:
 	await _test_p_slide()
 	await _test_p_exit()
 	_finish()
+
+
+## Breath: a sprint runs dry, winded you only walk and you pant (noise something hears), and a
+## rest brings the sprint back.
+func _test_stamina() -> void:
+	Player.debug_infinite_stamina = false
+	var spawn_at: Vector3 = _level.test_points["spawn"]
+	_place(spawn_at, PI)
+	_park_mate(spawn_at)
+	await _wait(0.3)
+	_host._tick_stamina(Player.SPRINT_SECONDS + 0.1, true, Player.RUN_SPEED)
+	var winded := _host.is_winded() and _host.stamina <= 0.0
+	var from := _host.global_position
+	var speed := 0.0
+	for k in 10:
+		_bot(Vector2(0.0, 1.0), PI, Player.FLAG_RUN)  # world space: +z, into the room
+		await _wait(0.06)
+		speed = maxf(speed, Vector2(_host.velocity.x, _host.velocity.z).length())
+	var moved := Vector2(_host.global_position.x - from.x, _host.global_position.z - from.z).length()
+	var loud := _host.noise >= Player.NOISE_PANT - 1.0
+	_bot(Vector2.ZERO, PI, 0)
+	await _wait(Player.WINDED_UNTIL * Player.RECOVER_SECONDS + 0.6)
+	var back := not _host.is_winded()
+	_check("a sprint runs dry: winded you can only walk and you pant loud enough to be heard, and rest brings it back", winded and moved > 0.8 and speed <= Player.WALK_SPEED * 1.05 and loud and back,
+		"winded %s, moved %.2f m, top speed %.2f, noise %.0f, recovered %s (stamina %.2f)" % [winded, moved, speed, _host.noise, back, _host.stamina])
+	Player.debug_infinite_stamina = true
+	_place(spawn_at, PI)
+	await _wait(0.3)
+
+
+## The Hire's other attacks: a tackle puts you down and then it takes you by the throat; a charge
+## throws you; a slap sends you sideways across the room; thrown into a wall you slam and slump;
+## a charge that misses runs into the wall and stuns it.
+func _test_hire_attacks() -> void:
+	var h: HollowHire = _level.hires_on(0)[0]
+	var stand: Vector3 = _level.test_points["breaker0"]
+	var mid := _level.cell_center(0, _level.cell_of(stand)) + Vector3(0.0, 0.1, 0.0)
+	var out := mid + Vector3(30.0, 0.0, 0.0)
+	# Tackle: down, then pinned and grabbed.
+	_place(mid, 0.0)
+	_park_mate(mid)
+	await _wait(0.3)
+	h.debug_reset(mid + Vector3(0.0, 0.0, -2.6), PI)
+	h.debug_attack(HollowHire.HState.TACKLE, _host)
+	var downed := false
+	var grabbed := false
+	for i in 30:
+		await _wait(0.05)
+		downed = downed or _host.is_downed()
+		if _host.is_grabbed():
+			grabbed = true
+			break
+	_check("a tackle puts you on the floor, then it takes you by the throat", downed and grabbed, "downed %s, grabbed %s, state %d" % [downed, grabbed, h.hstate])
+	h.release(false)
+	h.debug_frozen = true
+	h.respawn_at(out)
+	await _wait(0.8)
+	# Charge: thrown.
+	_place(mid, 0.0)
+	_park_mate(mid)
+	await _wait(0.3)
+	h.debug_reset(mid + Vector3(0.0, 0.0, -4.0), PI)
+	h.debug_attack(HollowHire.HState.CHARGE, _host)
+	var thrown := false
+	var top := 0.0
+	for i in 30:
+		await _wait(0.05)
+		top = maxf(top, Vector2(_host.velocity.x, _host.velocity.z).length())
+		thrown = thrown or _host.is_knocked()
+	_check("a charge throws you", thrown and top > 6.0, "knocked %s, top speed %.1f m/s" % [thrown, top])
+	h.debug_frozen = true
+	h.respawn_at(out)
+	await _wait(2.0)
+	# Slap: across the room, sideways.
+	_place(mid, 0.0)
+	_park_mate(mid)
+	await _wait(0.3)
+	h.debug_reset(mid + Vector3(0.0, 0.0, -1.4), PI)
+	var before := _host.global_position
+	h.debug_attack(HollowHire.HState.SLAP, _host)
+	var slapped := false
+	for i in 16:
+		await _wait(0.05)
+		slapped = slapped or _host.is_knocked()
+	await _wait(0.4)
+	var side := absf(_host.global_position.x - before.x)
+	_check("a slap sends you sideways across the room", slapped and side > 1.0, "knocked %s, %.1f m sideways" % [slapped, side])
+	h.debug_frozen = true
+	h.respawn_at(out)
+	await _wait(2.0)
+	# Thrown into a wall: slammed, slumped.
+	var spawn_at: Vector3 = _level.test_points["spawn"]
+	_place(spawn_at, PI)
+	_park_mate(spawn_at)
+	await _wait(0.3)
+	_host.knock(Vector3(0.0, 1.5, -14.0), 1.0, false)
+	var slam := false
+	for i in 12:
+		await _wait(0.05)
+		slam = slam or _host.is_downed()
+	_check("thrown into a wall you slam into it and slump down it", slam, "downed %s" % slam)
+	await _wait(Player.WALL_DAZE + 0.5)
+	_check("...and you get up again", not _host.is_knocked(), "")
+	# A charge you dodge: it runs into the wall and reels.
+	var wall_at := spawn_at + Vector3(0.0, 0.0, 3.6)
+	_place(spawn_at + Vector3(2.0, 0.0, 1.0), PI)
+	_park_mate(spawn_at)
+	h.debug_reset(wall_at, 0.0)  # facing -z, the wall behind spawn
+	h.debug_attack(HollowHire.HState.CHARGE, _host)
+	h.set("_attack_dir", Vector3(0.0, 0.0, -1.0))
+	h.set("_t", HollowHire.CHARGE_WINDUP)  # already committed, at the wall
+	var reeled := false
+	for i in 30:
+		await _wait(0.05)
+		if h.hstate == HollowHire.HState.STUNNED:
+			reeled = true
+			break
+	_check("a charge that misses runs into the wall and stuns itself", reeled, "state %d" % h.hstate)
+	h.debug_frozen = true
+	h.respawn_at(out)
+	_place(spawn_at, PI)
+	await _wait(0.5)
+
+
+## The wrench: a swing staggers a Hire; a crack across one that holds a teammate frees them (dealt
+## directly in solo, where the only other body is the Ballast; swung for real in co-op); two cracks
+## at a floor's breaker panel during a power stutter bring its lights back.
+func _test_wrench() -> void:
+	var h: HollowHire = _level.hires_on(0)[0]
+	var spawn_at: Vector3 = _level.test_points["spawn"]
+	_place(spawn_at, PI)
+	_park_mate(spawn_at)
+	await _wait(0.3)
+	_give("wrench")
+	h.debug_reset(spawn_at + Vector3(0.0, 0.0, 1.8), 0.0)
+	h.debug_frozen = true
+	await _wait(0.2)
+	var to := h.chest_point() - _host.eye_position()
+	await _swing(atan2(-to.x, -to.z), atan2(to.y, Vector2(to.x, to.z).length()))
+	_check("a wrench swing staggers a Hire in front of you", h.hstate == HollowHire.HState.STUNNED, "state %d, %.1f m" % [h.hstate, to.length()])
+	await _wait(Wrench.COOLDOWN)
+	h.debug_reset(spawn_at + Vector3(0.0, 0.0, 2.6), 0.0)
+	h.debug_frozen = true
+	await _wait(0.2)
+	var freed := false
+	var victim: Player = _mate as Player if _mate is Player else _host
+	h._start_grab(victim)
+	await _wait(0.4)
+	var held := victim.is_grabbed()
+	if victim == _host:
+		freed = h.wrench_hit(null)
+	else:
+		to = victim.global_position + Vector3.UP * 1.2 - _host.eye_position()
+		await _swing(atan2(-to.x, -to.z), atan2(to.y, Vector2(to.x, to.z).length()))
+		freed = not victim.is_grabbed()
+	_check("a crack of the wrench makes a Hire drop the teammate it holds, and it reels", held and freed and not victim.is_grabbed() and h.hstate == HollowHire.HState.STUNNED,
+		"held %s, freed %s, state %d (%s)" % [held, freed, h.hstate, "swung" if victim != _host else "direct"])
+	h.respawn_at(spawn_at + Vector3(20.0, 0.0, 0.0))
+	h.debug_frozen = true
+	await _wait(Wrench.COOLDOWN)
+	# The breaker panel: out with the power, two cracks bring it back.
+	var panel: BreakerPanel = _level.breakers[0]
+	_level.debug_power_stutter(0, 30.0)
+	await _wait(1.8)
+	var was_dark := _level.lights().is_floor_dark(0) and panel.needs_fix()
+	var stand: Vector3 = _level.test_points["breaker0"]
+	_place(stand, 0.0)
+	_park_mate(stand)
+	await _wait(0.3)
+	to = panel.fix_point() - _host.eye_position()
+	var yaw := atan2(-to.x, -to.z)
+	var pitch := atan2(to.y, Vector2(to.x, to.z).length())
+	await _swing(yaw, pitch)
+	var one := panel.debug_hits()
+	var still_dark := _level.lights().is_floor_dark(0)
+	await _wait(Wrench.COOLDOWN)
+	await _swing(yaw, pitch)
+	await _wait(0.2)
+	_check("two cracks of the wrench at the breaker panel bring the floor's lights back", was_dark and one == 1 and still_dark and not _level.lights().is_floor_dark(0) and not panel.needs_fix(),
+		"dark %s, after one %d (still dark %s), dark now %s" % [was_dark, one, still_dark, _level.lights().is_floor_dark(0)])
+	_place(spawn_at, PI)
+	await _wait(0.3)
+
+
+func _swing(yaw: float, pitch: float) -> void:
+	_host._apply_input(Vector2.ZERO, yaw, pitch, Player.FLAG_USE | (_seq << Player.JUMP_SEQ_SHIFT))
+	await _wait(0.1)
+	_host._apply_input(Vector2.ZERO, yaw, pitch, _seq << Player.JUMP_SEQ_SHIFT)
+	await _wait(0.05)
 
 
 ## The building is different every run: other seeds must still produce four floors with every
@@ -705,8 +899,13 @@ func _test_hires() -> void:
 	_host.server_drop_item(false)
 	await _wait(HollowHire.STUN_TIME + 0.3)
 	_check("...and it comes round again", h.hstate != HollowHire.HState.STUNNED, "state %d" % h.hstate)
-	# Two rounds drop it; the floor sends another after a while, out of sight.
-	h.debug_reset(start + Vector3(0.0, 0.0, 5.0), 0.0)
+	# Two rounds drop it; the floor sends another after a while, out of sight. Shot across the Break
+	# Room: open floor on any layout (5 m on from the crates can be through a wall).
+	var spawn_at: Vector3 = _level.test_points["spawn"]
+	_place(spawn_at, PI)
+	_park_mate(spawn_at + Vector3(1.5, 0.0, -0.4))
+	await _wait(0.3)
+	h.debug_reset(spawn_at + Vector3(0.0, 0.0, 3.5), 0.0)
 	h.debug_frozen = true
 	_give("pistol")
 	for k in 2:
@@ -963,6 +1162,16 @@ func _test_scares() -> void:
 		var k: String = ScareDirector.call("_pick_kind", _host.global_position)
 		picks[k] = int(picks.get(k, 0)) + 1
 	_check("the procedural director spreads its picks across kinds", picks.size() >= 6, "%s" % picks)
+	# Pacing: dread builds on its target (the heartbeat, then the hush), then it lands and the
+	# director waits out a fresh cooldown before the next.
+	ScareDirector.debug_build(_host)
+	await _wait(0.3)
+	var building: bool = ScareDirector.is_building()
+	await _wait(ScareDirector.BUILD_TIME + 0.4)
+	var landed: bool = not ScareDirector.is_building()
+	var cooldown: float = ScareDirector.get("_next_t")
+	_check("scares are paced: dread builds on its target, lands, then a fresh cooldown", building and landed and cooldown >= ScareDirector.COOLDOWN_MIN - 6.0,
+		"building %s, landed %s, next in %.1f s" % [building, landed, cooldown])
 	_check("a task checklist is up for the current floor", GameState.tasks.size() >= 2, str(GameState.tasks))
 	# Dark that lasts: lights_out holds for 12-20 s, and the floor's power stutters out on its
 	# own (flicker, then dark) with the Break Room tubes left on.
@@ -974,6 +1183,7 @@ func _test_scares() -> void:
 	var msec := ScareDirector.lights_out_msec(_host.global_position)
 	_check("lights_out keeps the lights out for 12-20 s (a flashlight is the way across)", long_dark and msec >= 12000 and msec <= 20000, "still dark after 10.5 s %s, this spot %d ms" % [long_dark, msec])
 	var lights := _level.lights()
+	_level.set("_stutter_t", 999.0)  # its own stutter landing mid-check would restart the flicker
 	_level.debug_power_stutter(0, 14.0)
 	await _wait(0.2)
 	var flick := lights.is_floor_flickering(0)
@@ -1010,6 +1220,7 @@ func _test_crouch() -> void:
 	# low to crawl under, so use the cable tray: 1.9 m of headroom, less than a standing body).
 	var under: Vector3 = _level.test_points["tray_start"] + Vector3(0.0, -1.8, 0.0)
 	_host.teleport_to(under, PI)
+	_park_mate(under + Vector3(1.2, 0.0, -1.2))  # beside you: from the Break Room the chain drags you out
 	await _wait(0.3)
 	_bot(Vector2.ZERO, PI, Player.FLAG_BRACE)
 	await _wait(0.4)
@@ -1553,7 +1764,7 @@ func _test_route() -> void:
 		var yaw := atan2(-d.x, -d.y)
 		var edge := o2.dot(d) + prev.edge_along(d)  # the edge you leave from, as a coordinate along d
 		var near := edge + r.gap  # this roof's near edge
-		var start := arena.origin + Vector3(r.cross.x, prev.y + 0.1, r.cross.y) - d3 * 5.0
+		var start := arena.origin + Vector3(r.cross.x, prev.top + 0.1, r.cross.y) - d3 * 5.0  # on its raised part, if it has one
 		_host.teleport_to(start, yaw)
 		if _mate != null:
 			_mate.teleport_to(start - d3 * 2.2, yaw)
@@ -1602,8 +1813,45 @@ func _test_route() -> void:
 		_drive_mate(Vector2.ZERO, 0, false)
 		await _wait(0.6)
 		if not landed or arena.roof_at(_host.global_position) != i or not mate_landed:
-			failed += "roof %d (%s, heading %s) not reached: host at %s on roof %d, mate landed %s; " % [i, HordeArena.LINK_NAMES[r.link], d, _host.global_position, arena.roof_at(_host.global_position), mate_landed]
+			var h_along := Vector2(_host.global_position.x, _host.global_position.z).dot(d)
+			failed += "roof %d (%s, heading %s) not reached: host at %s on roof %d (%.1f m past the near edge, roof y %.1f, top %.1f), mate landed %s; " % [i, HordeArena.LINK_NAMES[r.link], d, _host.global_position, arena.roof_at(_host.global_position), h_along - near, r.y, r.top, mate_landed]
 	_check("every link of the route can be crossed by running, jumping, walking and climbing, whichever way it turns, with the partner on the chain (no layoffs)", failed == "" and GameState.wipes == wipes0, failed + "wipes %d -> %d" % [wipes0, GameState.wipes])
+	# The raised parts: from where you land, up onto the part you leave from (one mantle, or a
+	# unit and then a mantle when it's taller), the partner hauled up behind.
+	var tier_fail := ""
+	var tiers := 0
+	for i in range(1, arena.roofs.size() - 1):
+		var r: HordeArena.Roof = arena.roofs[i]
+		if r.tier.size.x <= 0.0:
+			continue
+		tiers += 1
+		var od := Vector3(r.out_dir.x, 0.0, r.out_dir.y)
+		var has_unit := r.tier_unit != Vector3.ZERO
+		var aim: Vector3 = r.tier_unit if has_unit else r.exit
+		var inner := minf(r.tier.position.dot(r.out_dir), r.tier.end.dot(r.out_dir))
+		var tside := arena._side(r.out_dir)
+		var s2 := r.out_dir * (inner - (3.5 if has_unit else 2.5)) + tside * Vector2(aim.x, aim.z).dot(tside)
+		var tyaw := atan2(-r.out_dir.x, -r.out_dir.y)
+		var at := arena.origin + Vector3(s2.x, r.y + 0.1, s2.y)
+		_host.teleport_to(at, tyaw)
+		if _mate != null:
+			_mate.teleport_to(at - od * 1.5, tyaw)
+		await _wait(0.3)
+		var up := false
+		for k in 120:
+			await _wait(0.05)
+			_bot(r.out_dir, tyaw, 0, k % 6 == 0)
+			if _mate is Player:
+				_drive_mate(r.out_dir, 0, k % 6 == 3)
+			if _host.is_on_floor() and _host.global_position.y > arena.origin.y + r.top - 0.3:
+				up = true
+				break
+		_bot(Vector2.ZERO, tyaw, 0)
+		_drive_mate(Vector2.ZERO, 0, false)
+		await _wait(0.3)
+		if not up:
+			tier_fail += "roof %d tier %.1f m%s: host at %s; " % [i, r.top - r.y, " (unit)" if has_unit else "", _host.global_position]
+	_check("the roofs stand at their own heights: most have a raised part to climb before the next crossing (%d of them), and each can be climbed with the partner on the chain" % tiers, tier_fail == "" and tiers >= 3, tier_fail)
 	# And the fire escape: landing by landing up the tower to the helipad, the way a player does it
 	# (walk into the side of the next landing and tap Space; off the last one onto the pad).
 	var steps: Array[Vector3] = arena.escape_steps
@@ -1660,7 +1908,7 @@ func _test_district() -> void:
 	for i in range(1, arena.roofs.size()):
 		var r: HordeArena.Roof = arena.roofs[i]
 		var prev: HordeArena.Roof = arena.roofs[i - 1]
-		var dy := r.y - prev.y
+		var dy := r.y - prev.top  # from where you leave: the top of the raised part, if it has one
 		var side := arena._side(r.dir)
 		var t := r.cross.dot(side)
 		var lo_p := minf(prev.rect.position.dot(side), prev.rect.end.dot(side))
@@ -1857,13 +2105,14 @@ var _horde: Horde
 
 
 func _run_arena(arena: HordeArena) -> void:
+	Player.debug_infinite_stamina = true  # the route is about parkour, not breath
 	_arena = arena
 	_horde = arena.horde
 	_host.bot_controlled = true
 	await _wait(0.6)
 	var bodies := Net.get_chain_bodies()
 	_mate = bodies[1] if bodies.size() > 1 else null
-	_check("arena built: field, the first wave of the swarm (a smaller one now), the Jumpers, the route, loot", _horde.count >= 100 and _horde.count <= 200 and _horde.count < arena.horde_count and arena.launchers.size() == HordeArena.LOT_JUMPERS + HordeArena.JUMPER_ROOFS.size() and arena.field.cell_count() > 9000 and arena.roofs.size() == HordeArena.ROOF_COUNT + 2 and get_tree().get_nodes_in_group("pickups").size() >= 10,
+	_check("arena built: field, the first wave of the swarm (a smaller one now), the Jumpers, the route, loot", _horde.count >= 50 and _horde.count <= 100 and _horde.count < arena.horde_count and arena.launchers.size() == HordeArena.LOT_JUMPERS + HordeArena.JUMPER_ROOFS.size() and arena.field.cell_count() > 9000 and arena.roofs.size() == HordeArena.ROOF_COUNT + 2 and get_tree().get_nodes_in_group("pickups").size() >= 10,
 		"agents %d, launchers %d, cells %d, pickups %d" % [_horde.count, arena.launchers.size(), arena.field.cell_count(), get_tree().get_nodes_in_group("pickups").size()])
 	var chain := _chain()
 	_check("chain links every body", chain != null and chain.segments.size() == bodies.size() - 1, "%d segments" % (chain.segments.size() if chain != null else -1))
@@ -1914,8 +2163,11 @@ func _test_roof_dread() -> void:
 	var dread := lot.dread
 	var horde := lot.horde
 	horde.debug_frozen = true
-	for l in lot.launchers:
+	for i in lot.launchers.size():
+		var l: Launcher = lot.launchers[i]
 		l.debug_frozen = true
+		if l.is_hunting():
+			l.debug_reset(lot.launcher_homes[i])  # one an earlier test froze mid-lunge would keep it from ever going quiet
 	var env := LevelKit.make_environment(2, 2)
 	var beacon_mat := LevelKit.mat("beacon") as StandardMaterial3D
 	_check("the roof's night is dark and fogged; the tower's red light ignores the fog", env.ambient_light_energy <= 0.08 and env.fog_density >= 0.03 and beacon_mat.disable_fog and lot.beacon != null and lot.beacon.omni_range >= 40.0, "ambient %.3f, fog %.3f" % [env.ambient_light_energy, env.fog_density])

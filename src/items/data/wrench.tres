@@ -1,0 +1,14 @@
+[gd_resource type="Resource" script_class="ItemData" load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://src/items/item_data.gd" id="1_data"]
+[ext_resource type="Script" path="res://src/items/wrench.gd" id="2_logic"]
+
+[resource]
+script = ExtResource("1_data")
+id = "wrench"
+display_name = "Wrench"
+description = "Crack whatever has your teammate. Fixes what's broken."
+color = Color(0.72, 0.74, 0.78, 1)
+rarity = 0
+logic_script = ExtResource("2_logic")
+hud_hint = "F / left click swings. Hit what holds a teammate; hit what's broken to fix it."

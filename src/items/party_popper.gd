@@ -21,7 +21,6 @@ func _tick(_delta: float, _held: bool, pressed: bool) -> void:
 		var pappy := m as PappyPepperoni
 		if pappy != null and pappy.global_position.distance_to(holder.global_position) < RANGE:
 			pappy.push_back()
-			GameState.post_message("%s popped Pappy back a room." % holder.display_name, 3.0)
 	for b in Net.get_chain_bodies():
 		if b == holder:
 			continue

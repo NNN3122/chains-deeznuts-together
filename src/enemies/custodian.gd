@@ -352,7 +352,7 @@ func _start_grab(p: Player) -> void:
 	if fx != null:
 		fx.fx_tile_drop.rpc(stain_point() + Vector3(0.25, 0.0, 0.2))
 		fx.fx_sound.rpc("cust_hiss", stain_point(), 4.0, 0.8)
-	GameState.post_message("IT HAS %s. EVERYONE NEAR THEM: HOLD CTRL AND HOLD ON. Or shine a light on it." % p.display_name.to_upper(), 4.0)
+	GameState.post_tip("grab_custodian", "IT HAS %s. EVERYONE NEAR THEM: HOLD CTRL AND HOLD ON. Or shine a light on it." % p.display_name.to_upper(), 4.0)
 
 
 func _tick_grab(delta: float) -> void:
@@ -377,11 +377,9 @@ func _tick_grab(delta: float) -> void:
 			level.call("request_layoff", "%s was taken into the ceiling." % victim)
 		return
 	if _hold_t >= GIVE_UP_TIME:
-		GameState.post_message("They held on. It let go.", 3.0)
 		release(false)
 		return
-	if _tick_burn(delta, stain_point(), BURN_TO_RELEASE):
-		GameState.post_message("The light burned it off!", 3.0)
+	_tick_burn(delta, stain_point(), BURN_TO_RELEASE)  # lets go by itself when the light wins
 
 
 ## Server. Lets go of whoever it holds and backs off. killed: the victim was taken.
@@ -428,7 +426,6 @@ func take_hit() -> void:
 		fx.fx_dust.rpc(stain_point())
 	if _hits >= HITS_TO_RETREAT:
 		if cstate == CState.GRAB:
-			GameState.post_message("Two hits. It let go.", 3.0)
 			release(false)
 		else:
 			_start_retreat()
@@ -540,7 +537,7 @@ func _tick_dwell(delta: float) -> void:
 			var fx := Effects.find(self)
 			if fx != null:
 				fx.fx_sound.rpc("creak", stain_point(), 2.0, 0.7)
-			GameState.post_message("...something in the ceiling is coming to look at whoever stopped moving.", 3.0)
+			GameState.post_tip("custodian_still", "...something in the ceiling is coming to look at whoever stopped moving.", 3.0)
 
 
 func _loudest() -> Array:
@@ -707,3 +704,13 @@ func _update_grab_visuals() -> void:
 		# A capsule's long axis is Y: rotate so Y follows the segment, then stretch to fit.
 		seg.global_transform = Transform3D(basis * Basis.from_euler(Vector3(PI * 0.5, 0.0, 0.0)) * Basis.from_scale(Vector3(1.0, l / 0.7 + 0.15, 1.0)), (p0 + p1) * 0.5)
 	_claws.global_position = hand
+
+
+## A wrench on the arm (server): holding someone, it lets go and goes back up; otherwise it
+## counts like a shot toward driving it off. True when it freed someone.
+func wrench_hit(_by: Node3D) -> bool:
+	if cstate == CState.GRAB:
+		release(false)
+		return true
+	take_hit()
+	return false

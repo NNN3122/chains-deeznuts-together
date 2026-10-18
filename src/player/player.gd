@@ -24,6 +24,7 @@ const MOUSE_SENSITIVITY: float = 0.0022
 const PITCH_LIMIT: float = 1.45
 const TP_ARM_LENGTH: float = 2.7
 const STAND_HEIGHT: float = 1.8  # capsule, meters
+const STARTING_KIT: Array[String] = ["flashlight", "wrench"]  # every player clocks in with these, slot 1 and 2
 const GRAB_LOOK_RATE: float = 10.0  # 1/s, how hard a caught player's view swings onto the face that has them
 const GRAB_LOOK_TIME: float = 0.6  # s the view is swung onto its face before the mouse is yours again
 const GRAB_PULL_RATE: float = 2.5  # 1/s, the softer pull back onto its face while you leave the mouse alone
@@ -53,6 +54,18 @@ const SLIDE_TIME: float = 1.0  # s the slide carries before it ends
 const SLIDE_END_SPEED: float = 1.6  # m/s: a slide that has slowed this far is over
 const SLIDE_COOLDOWN: float = 0.35
 const NOISE_SLIDE: float = 24.0
+const SPRINT_SECONDS: float = 8.0  # s of flat-out running from a full breath
+const RECOVER_SECONDS: float = 7.0  # s from empty back to full, standing still (walking is slower)
+const WINDED_UNTIL: float = 0.35  # run dry and you can't sprint or slide again until this much is back
+const SLIDE_STAMINA: float = 0.12  # a slide costs this much
+const PANT_BELOW: float = 0.3  # from here down you pant, and panting is noise
+const NOISE_PANT: float = 28.0  # gasping for air: enough for something to come and look
+const SFLAG_WINDED: int = 256
+const SFLAG_DOWNED: int = 512  # knocked flat (a tackle, a wall)
+const SFLAG_KNOCKED: int = 1024  # no control: thrown, sliding, or down
+const KNOCK_FRICTION: float = 7.0  # m/s^2: a thrown body skids along the floor this hard
+const WALL_SLAM_SPEED: float = 5.0  # m/s into a wall to be slammed against it
+const WALL_DAZE: float = 1.3  # s on the floor after a slam
 
 enum State { NORMAL, MANTLE, GRABBED }
 enum CameraMode { FIRST_PERSON, THIRD_PERSON }
@@ -95,6 +108,13 @@ var item_charge: float = 0.0
 var ammo_text: String = ""  # "8 / 24" for guns, "" otherwise
 var noise: float = 0.0
 var buff_state: int = 0  # 0 normal, 1 energy drink boost, 2 crash
+var stamina: float = 1.0  # server, replicated: 0..1 of a sprint left
+var _winded: bool = false  # server: ran dry; no sprint until WINDED_UNTIL
+var _knock_t: float = 0.0  # server: s left without control after a monster's hit
+var _downed: bool = false  # server: flat on the floor for it
+var _flung: bool = false  # server: in flight, and a wall will hurt
+var _down_amt: float = 0.0  # every peer: 0..1 of the lying-down pose
+static var debug_infinite_stamina: bool = false  # tests that are about routes, not breath
 
 # --- Server-side input -------------------------------------------------------------
 var input_move: Vector2 = Vector2.ZERO
@@ -166,6 +186,8 @@ var _name_label: Label3D
 var _flashlight: SpotLight3D
 var _jet_fx: GPUParticles3D
 var _jet_sound: AudioStreamPlayer3D
+var _breath: AudioStreamPlayer3D
+var _breath_level: float = 0.0  # every peer: 0..1 how hard this body is panting
 var _shape: CollisionShape3D
 var _last_visual_pos: Vector3
 var _visual_speed: float = 0.0
@@ -192,7 +214,7 @@ func _enter_tree() -> void:
 	var sync := MultiplayerSynchronizer.new()
 	sync.name = "Sync"
 	var cfg := SceneReplicationConfig.new()
-	for prop in ["synced_position", "synced_yaw", "synced_pitch", "synced_flags", "item_charge", "noise"]:
+	for prop in ["synced_position", "synced_yaw", "synced_pitch", "synced_flags", "item_charge", "noise", "stamina"]:
 		_cfg_add(cfg, prop, SceneReplicationConfig.REPLICATION_MODE_ALWAYS)
 	for prop in ["held_item_id", "slot_ids", "selected_slot", "ammo_text", "display_name", "buff_state"]:
 		_cfg_add(cfg, prop, SceneReplicationConfig.REPLICATION_MODE_ON_CHANGE)
@@ -247,7 +269,7 @@ func _ready() -> void:
 		add_child(input)
 		_setup_cameras()
 	if multiplayer.is_server():
-		_grant_starting_flashlight()
+		_grant_starting_kit()
 
 
 func _build_flashlight() -> void:
@@ -299,6 +321,9 @@ func _build_jet_fx() -> void:
 	_jet_sound = Sfx.loop_player("jet", -4.0, 35.0)
 	_jet_sound.position = Vector3(0.0, 1.2, 0.3)
 	model.add_child(_jet_sound)
+	_breath = Sfx.loop_player("pant", -40.0, 14.0)
+	_breath.position = Vector3(0.0, 1.55, -0.1)
+	model.add_child(_breath)
 
 
 func _setup_cameras() -> void:
@@ -419,7 +444,10 @@ func _update_local_camera(delta: float) -> void:
 	var crouching := (synced_flags & SFLAG_BRACING) != 0
 	var sliding := (synced_flags & SFLAG_SLIDING) != 0
 	var eye_target := EYE_HEIGHT
-	if sliding:
+	var downed := (synced_flags & SFLAG_DOWNED) != 0
+	if downed:
+		eye_target = 0.35  # flat on the floor, looking up at it
+	elif sliding:
 		eye_target = CROUCH_EYE_HEIGHT - 0.2  # lower than a crouch: you're on your back
 	elif crouching:
 		eye_target = CROUCH_EYE_HEIGHT
@@ -428,7 +456,7 @@ func _update_local_camera(delta: float) -> void:
 		_land_v -= 2.0  # the drop into the slide
 	_was_sliding = sliding
 	# The view cants over while you slide, like a head tipped back on one shoulder.
-	_slide_tilt = lerpf(_slide_tilt, 0.11 if sliding else 0.0, 1.0 - exp(-8.0 * delta))
+	_slide_tilt = lerpf(_slide_tilt, 0.11 if sliding else (0.45 if downed else 0.0), 1.0 - exp(-8.0 * delta))
 	# Follow the (render-interpolated) body through a spring: tight sideways, softer vertically so
 	# steps, mantles and landings don't jolt the view.
 	var target := _visual_position() + Vector3(0.0, _eye_h, 0.0)
@@ -445,7 +473,8 @@ func _update_local_camera(delta: float) -> void:
 	var bob_x := (0.016 if fp else 0.0) * g.y * sin(g.x)
 	_rig.global_position = _rig_pos + Vector3(0.0, _land_off + bob_y, 0.0) + right * bob_x
 	_rig.global_rotation = Vector3(0.0, _yaw, 0.0)
-	_pitch_pivot.rotation.x = _pitch
+	# Out of breath, the view heaves with each gasp.
+	_pitch_pivot.rotation.x = _pitch + sin(float(Time.get_ticks_msec()) * 0.001 * TAU * 1.6) * 0.014 * _breath_level
 	# Lean the view into strafes; widen it a touch when you run.
 	_roll = lerpf(_roll, -_visual_vel.dot(right) * (0.006 if fp else 0.01), 1.0 - exp(-6.0 * delta))
 	_fov_kick = lerpf(_fov_kick, 7.0 if _visual_speed > 5.5 else 0.0, 1.0 - exp(-4.0 * delta))
@@ -562,6 +591,7 @@ func _visual_position() -> Vector3:
 
 
 func _update_visuals(delta: float) -> void:
+	_tick_breath(delta)
 	var vis := _visual_position()
 	model.position = vis - global_position  # the body itself doesn't rotate, so this is local
 	_name_label.position = model.position + Vector3(0.0, 2.3, 0.0)
@@ -588,6 +618,10 @@ func _update_visuals(delta: float) -> void:
 	if aiming:
 		yaw = yw  # turn to face where you point it
 	model.animate(delta, _visual_vel, yaw, grounded, bracing, grabbed, mantling, aiming, p, sliding)
+	# Knocked flat, the whole body goes over on its back (thrown, it tips partway).
+	var down_want := 1.0 if (synced_flags & SFLAG_DOWNED) != 0 else (0.35 if (synced_flags & SFLAG_KNOCKED) != 0 else 0.0)
+	_down_amt = lerpf(_down_amt, down_want, 1.0 - exp(-10.0 * delta))
+	model.rotation.x = 1.45 * _down_amt
 	# Flashlight beam follows your view (local) or the replicated aim (everyone else).
 	var on := held_item_id == "flashlight" and using
 	_flashlight.visible = on
@@ -654,6 +688,12 @@ func _send_input() -> void:
 		_apply_input(move, _yaw, _pitch, flags)
 	else:
 		rpc_input.rpc_id(1, move, _yaw, _pitch, flags)
+
+
+## Server: a wrench swing, played on every peer's copy of the body.
+@rpc("authority", "call_local", "reliable")
+func rpc_swing() -> void:
+	model.swing()
 
 
 @rpc("any_peer", "call_remote", "unreliable_ordered")
@@ -729,7 +769,10 @@ func _server_tick(delta: float) -> void:
 			external_velocity = Vector3.ZERO
 			_tick_orphan_grab(delta)
 		_:
-			_tick_normal(delta)
+			if _knock_t > 0.0:
+				_tick_knocked(delta)
+			else:
+				_tick_normal(delta)
 	_tick_noise(delta, dragged)
 	synced_position = global_position
 	synced_yaw = body_yaw
@@ -750,6 +793,12 @@ func _server_tick(delta: float) -> void:
 		f |= SFLAG_RUNNING
 	if _slide_t > 0.0 and state == State.NORMAL:
 		f |= SFLAG_SLIDING
+	if _winded:
+		f |= SFLAG_WINDED
+	if _knock_t > 0.0 and state == State.NORMAL:
+		f |= SFLAG_KNOCKED
+		if _downed:
+			f |= SFLAG_DOWNED
 	if Voice.is_peer_talking(peer_id):
 		f |= SFLAG_TALKING
 	synced_flags = f
@@ -758,8 +807,9 @@ func _server_tick(delta: float) -> void:
 ## The selected item gets the use input (held, plus any taps that arrived); the others idle
 ## so their cooldowns and fuel still tick.
 func _tick_items(delta: float) -> void:
-	var use_held := (input_flags & FLAG_USE) != 0 and state != State.GRABBED
-	var taps := _use_taps if state != State.GRABBED else 0
+	var hands_free := state != State.GRABBED and _knock_t <= 0.0  # nothing in your hands works while you're thrown
+	var use_held := (input_flags & FLAG_USE) != 0 and hands_free
+	var taps := _use_taps if hands_free else 0
 	_use_taps = 0
 	var reloads := _reload_taps
 	_reload_taps = 0
@@ -808,8 +858,9 @@ func _tick_normal(delta: float) -> void:
 	# the capsule is crouch-height so you fit under low things, and the chain yanks whoever you
 	# slide away from exactly as a sprint does.
 	if brace_pressed and on_floor and _slide_t <= 0.0 and _slide_cooldown <= 0.0 \
-			and (input_flags & FLAG_RUN) != 0 and horizontal.length() >= SLIDE_MIN_SPEED:
+			and (input_flags & FLAG_RUN) != 0 and horizontal.length() >= SLIDE_MIN_SPEED and not _winded:
 		_slide_t = SLIDE_TIME
+		stamina = maxf(0.0, stamina - SLIDE_STAMINA)
 		_slide_dir = horizontal.normalized()
 		_crouched = true
 		horizontal = _slide_dir * maxf(horizontal.length(), SLIDE_SPEED * _speed_multiplier())
@@ -833,13 +884,16 @@ func _tick_normal(delta: float) -> void:
 		var target_speed := WALK_SPEED
 		if bracing:
 			target_speed = SNEAK_SPEED
-		elif (input_flags & FLAG_RUN) != 0:
+		elif (input_flags & FLAG_RUN) != 0 and not _winded:
 			target_speed = RUN_SPEED
 		target_speed *= _speed_multiplier() * (1.0 - drag)
 		var accel := AIR_ACCEL
 		if on_floor:
 			accel = GROUND_ACCEL if wish.length() > 0.1 else GROUND_DECEL
 		horizontal = horizontal.move_toward(wish * target_speed, accel * delta)
+	var sprinting := on_floor and _slide_t <= 0.0 and (input_flags & FLAG_RUN) != 0 and not _winded \
+			and wish.length() > 0.1 and horizontal.length() > WALK_SPEED * 1.05
+	_tick_stamina(delta, sprinting, horizontal.length())
 	velocity.x = horizontal.x
 	velocity.z = horizontal.z
 	if not ignore_gravity_this_tick:
@@ -868,6 +922,122 @@ func _tick_normal(delta: float) -> void:
 	if is_on_floor():
 		_fall_speed = 0.0
 	_was_on_floor = is_on_floor()
+
+
+## Server: a monster's hit. v is the throw (m/s); for `seconds` you have no control. downed:
+## flat on the floor (a tackle). A fast enough throw that meets a wall slams you into it.
+func knock(v: Vector3, seconds: float, downed: bool) -> void:
+	if state != State.NORMAL:
+		return
+	velocity = v
+	external_velocity = Vector3.ZERO
+	_knock_t = maxf(_knock_t, seconds)
+	_downed = downed
+	_flung = Vector2(v.x, v.z).length() > WALL_SLAM_SPEED
+	_slide_t = 0.0
+	_jump_buffer = 0.0
+	add_noise(40.0)
+
+
+func is_downed() -> bool:
+	return _knock_t > 0.0 and _downed
+
+
+func is_knocked() -> bool:
+	return _knock_t > 0.0
+
+
+## Server: thrown or down. No input; the body flies, lands and skids; a wall at speed is a slam.
+func _tick_knocked(delta: float) -> void:
+	_knock_t -= delta
+	velocity += external_velocity
+	external_velocity = Vector3.ZERO
+	var horizontal := Vector3(velocity.x, 0.0, velocity.z)
+	if is_on_floor() and velocity.y <= 0.1:
+		horizontal = horizontal.move_toward(Vector3.ZERO, KNOCK_FRICTION * delta)
+	velocity.x = horizontal.x
+	velocity.z = horizontal.z
+	velocity.y -= GRAVITY * delta
+	var speed := horizontal.length()
+	move_and_slide()
+	if _flung:
+		for i in get_slide_collision_count():
+			var c := get_slide_collision(i)
+			if absf(c.get_normal().y) < 0.5 and speed > WALL_SLAM_SPEED:
+				_wall_slam(c.get_position(), horizontal.normalized(), speed)
+				break
+		if _flung and is_on_floor() and speed < 1.0:
+			_flung = false
+	if _knock_t <= 0.0:
+		_knock_t = 0.0
+		_downed = false
+		_flung = false
+	_was_on_floor = is_on_floor()
+
+
+## Server: you hit the wall. You bounce off a little and slump down it, dazed, and the whole floor
+## heard it.
+func _wall_slam(at: Vector3, dir: Vector3, speed: float) -> void:
+	_flung = false
+	_downed = true
+	_knock_t = maxf(_knock_t, WALL_DAZE)
+	velocity = -dir * 1.2 + Vector3(0.0, -1.0, 0.0)
+	add_noise(80.0)
+	rpc_slammed.rpc(at, speed)
+
+
+## Every peer: the slam: a thud, your hat off, and for you the screen jolting.
+@rpc("authority", "call_local", "reliable")
+func rpc_slammed(at: Vector3, speed: float) -> void:
+	Sfx.play_at(self, "slam", at, 4.0, randf_range(0.7, 0.85), 30.0)
+	Sfx.play_at(self, "thump", at, 4.0, 0.6, 30.0)
+	model.pop_hat(Vector3.UP * 3.0 + (global_position - at).normalized() * 2.0)
+	if is_local:
+		add_shake(clampf(speed / 12.0, 0.5, 1.0))
+		ScreenFx.jolt(0.5)
+
+
+## Every peer: the panting you hear from a body follows its stamina (louder the emptier).
+func _tick_breath(delta: float) -> void:
+	if _breath == null:
+		return
+	var winded := (synced_flags & SFLAG_WINDED) != 0
+	var want := 1.0 if winded else clampf((PANT_BELOW + 0.2 - stamina) / (PANT_BELOW + 0.2), 0.0, 1.0)
+	_breath_level = lerpf(_breath_level, want, 1.0 - exp(-3.0 * delta))
+	if _breath_level < 0.03:
+		if _breath.playing:
+			_breath.stop()
+		return
+	_breath.volume_db = linear_to_db(_breath_level) - 2.0
+	_breath.pitch_scale = 0.95 + 0.12 * _breath_level
+	Sfx.start_loop(_breath)
+
+
+## Server: running drains the breath, anything else brings it back (faster standing still). Run
+## it dry and you are winded: no sprint, no slide, and you pant until a third of it is back.
+func _tick_stamina(delta: float, sprinting: bool, speed: float) -> void:
+	if debug_infinite_stamina or buff_state == 1:
+		stamina = 1.0
+		_winded = false
+		return
+	if sprinting:
+		stamina = maxf(0.0, stamina - delta / SPRINT_SECONDS)
+		if stamina <= 0.0:
+			_winded = true
+			GameState.post_tip("winded", "Out of breath: no sprinting until you get it back. And they can hear you gasping.", 3.5)
+	else:
+		var rate := 1.0 / RECOVER_SECONDS
+		if speed > 2.6:
+			rate *= 0.55
+		if buff_state == 2:
+			rate *= 0.5  # the drink's crash
+		stamina = minf(1.0, stamina + rate * delta)
+	if _winded and stamina >= WINDED_UNTIL:
+		_winded = false
+
+
+func is_winded() -> bool:
+	return _winded
 
 
 ## Crouch down whenever you brace; stand back up only when there's headroom.
@@ -911,6 +1081,8 @@ func _tick_noise(delta: float, dragged: float) -> void:
 			target = NOISE_SNEAK
 		if dragged > 0.02:
 			target = maxf(target, NOISE_DRAGGED)
+	if _winded or stamina < PANT_BELOW:
+		target = maxf(target, NOISE_PANT)
 	noise = maxf(target, noise - NOISE_DECAY * delta)
 
 
@@ -1028,6 +1200,9 @@ func teleport_to(pos: Vector3, yaw: float) -> void:
 func grab_start(by: Node) -> void:
 	if state != State.GRABBED:
 		_grab_origin = global_position
+	_knock_t = 0.0
+	_downed = false
+	_flung = false
 	state = State.GRABBED
 	grabbed_by = by
 	_orphan_grab_t = 0.0
@@ -1126,18 +1301,18 @@ func free_slot() -> int:
 	return -1
 
 
-## The office run hands every player a flashlight. The Break Room used to have one pickup
-## between the whole Line; a late joiner gets one too. The Loading Lot keeps its own stash.
-func _grant_starting_flashlight() -> void:
-	if has_item("flashlight"):
-		return
+## The office run hands every player a flashlight and a wrench (the Break Room used to have one
+## flashlight between the whole Line); a late joiner gets them too, and the flashlight stays in
+## hand. The Loading Lot keeps its own stash.
+func _grant_starting_kit() -> void:
 	var level := get_tree().get_first_node_in_group("level")
 	if not (level is LevelStack):
 		return
-	var data := ItemRegistry.get_data("flashlight")
-	if data == null:
-		return
-	server_give_item(data.create_logic())
+	for id: String in STARTING_KIT:
+		var data := ItemRegistry.get_data(id)
+		if data != null and not has_item(id):
+			server_give_item(data.create_logic())
+	select_slot(0)
 
 
 ## Puts an item in the first free slot and selects it. False when every slot is full.

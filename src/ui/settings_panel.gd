@@ -70,6 +70,16 @@ func _ready() -> void:
 			level.call("refresh_environment"))
 	q_row.add_child(q)
 	box.add_child(q_row)
+	var h_row := HBoxContainer.new()
+	h_row.add_child(_label("HUD"))
+	var h := OptionButton.new()
+	h.add_item("AUTO (only when needed)")
+	h.add_item("ALWAYS")
+	h.add_item("OFF")
+	h.selected = Settings.hud_mode
+	h.item_selected.connect(func(i: int) -> void: Settings.hud_mode = i)
+	h_row.add_child(h)
+	box.add_child(h_row)
 	box.add_child(UiTheme.button("BACK", _close, 200.0))
 
 

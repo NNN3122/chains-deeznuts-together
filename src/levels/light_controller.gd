@@ -46,6 +46,12 @@ func register(light: OmniLight3D, panel: MeshInstance3D, floor_index: int, kind:
 	tubes.append(t)
 
 
+## A floor's power is back now (a breaker panel was fixed): any gutter or stutter on it ends.
+func floor_restore(floor_index: int) -> void:
+	_flicker_until.erase(floor_index)
+	_dark_until.erase(floor_index)
+
+
 ## A floor's tubes gutter for flicker_s, then stay out for dark_s (0 for a strobe alone).
 func floor_stutter(floor_index: int, flicker_s: float, dark_s: float) -> void:
 	var now := Time.get_ticks_msec()

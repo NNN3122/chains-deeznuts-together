@@ -117,7 +117,7 @@ func _server_tick(delta: float) -> void:
 		near = true
 		if p.wants_brace():
 			holding = true
-	if near and not holding and Time.get_ticks_msec() - _told_msec > 4000:
+	if near and not holding and Time.get_ticks_msec() - _told_msec > 20000:  # once in a while, not a nag
 		_told_msec = Time.get_ticks_msec()
 		GameState.post_message("FIRE ALARM: hold Ctrl here to pull it. It releases the lift. It also wakes the floor.", 3.5)
 	_hold_t = _hold_t + delta if holding else maxf(0.0, _hold_t - delta * 2.0)

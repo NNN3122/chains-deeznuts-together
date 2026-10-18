@@ -20,6 +20,7 @@ Upstairs in the pizzeria: Pappy only moves while nobody looks at him and no came
 const HUD_ALPHA: float = 0.78  # the whole HUD: see-through, so the game shows round it
 const ITEM_IDLE_SECONDS: float = 4.0  # after this long with nothing changing, the item card fades back
 const ITEM_IDLE_ALPHA: float = 0.4
+const METER_NOISE: float = 22.0  # auto HUD: the noise meter shows from this loud
 
 var screen_fx: ScreenFx
 var _objective: Label
@@ -31,6 +32,7 @@ var _item_name: Label
 var _item_hint: Label
 var _item_bar: ProgressBar
 var _item_panel: PanelContainer
+var _meters: VBoxContainer  # bottom right: the noise meter and the chain's state
 var _noise_bar: ProgressBar
 var _noise_fill: StyleBoxFlat
 var _noise_label: Label
@@ -60,12 +62,14 @@ var _slot_styles: Array[StyleBoxFlat] = []
 var _slot_names: Array[Label] = []
 var _slot_subs: Array[Label] = []
 var _burn_label: Label
+var _grabs_seen: int = 0  # grabs this world: the escape instructions show on the first
+var _hud_was_grabbed: bool = false
 var _voice_label: Label
 
 ## One-time tips the first time you reach each climb: [test point, co-op text, solo text].
 const HINTS: Array = [
-	["spawn", "YOU'RE CHAINED TOGETHER (%.0f m of slack). Find the way up through the maze. You each have a flashlight (F). One thing in a vest walks this floor: if it SEES you, run, or fight (light in its face, two shots). Upstairs, a scream brings the others." % 4.3,
-		"YOU'RE CHAINED TO THE BALLAST (%.0f m of slack). Find the way up through the maze. You have a flashlight (F). One thing in a vest walks this floor: if it SEES you, run, or fight (light in its face, two shots). Upstairs, a scream brings the others." % 4.3],
+	["spawn", "YOU'RE CHAINED TOGETHER (%.0f m of slack). Find the way up through the maze. You each have a flashlight (F) and a wrench (2): crack whatever grabs a teammate. One thing in a vest walks this floor: if it SEES you, run, or fight (light in its face, two shots). Upstairs, a scream brings the others." % 4.3,
+		"YOU'RE CHAINED TO THE BALLAST (%.0f m of slack). Find the way up through the maze. You have a flashlight (F) and a wrench (2) that fixes what breaks. One thing in a vest walks this floor: if it SEES you, run, or fight (light in its face, two shots). Upstairs, a scream brings the others." % 4.3],
 	["door0", "JAMMED DOOR: sprint into it and it bangs open. Everything on the floor will come to look. Be through and gone, or ready.",
 		"JAMMED DOOR: sprint into it and it bangs open. Everything on the floor will come to look. Your Ballast gets dragged through after you."],
 	["crates_start", "CLIMB: walk into the crate and tap Space. Do the same at each ledge.",
@@ -226,6 +230,7 @@ func _ready() -> void:
 	item_box.add_child(_item_hint)
 
 	var right := VBoxContainer.new()
+	_meters = right
 	right.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_RIGHT, Control.PRESET_MODE_MINSIZE, 14)
 	right.grow_horizontal = Control.GROW_DIRECTION_BEGIN
 	right.grow_vertical = Control.GROW_DIRECTION_BEGIN
@@ -513,20 +518,26 @@ func _process(delta: float) -> void:
 	else:
 		_item_seen_t += delta
 	var idle := _item_seen_t > ITEM_IDLE_SECONDS
-	_item_panel.modulate.a = lerpf(_item_panel.modulate.a, ITEM_IDLE_ALPHA if idle else 1.0, clampf(delta * 3.0, 0.0, 1.0))
+	# HUD mode: auto hides the card once it has said its piece, always keeps it dimmed, off never shows
+	# it (H still does).
+	var card_a := 1.0
+	if Settings.hud_mode == 2:
+		card_a = 0.0
+	elif idle:
+		card_a = ITEM_IDLE_ALPHA if Settings.hud_mode == 1 else 0.0
+	if _help.visible:
+		card_a = 1.0
+	_item_panel.modulate.a = lerpf(_item_panel.modulate.a, card_a, clampf(delta * 3.0, 0.0, 1.0))
 	_item_hint.visible = not idle
 	# Someone is burning a grabber with a light: show how close it is to letting go.
 	var burn := 0.0
-	var burn_who := ""
 	for c in get_tree().get_nodes_in_group("monster"):
 		var b: float = float(c.get("burn_fraction")) if c.get("burn_fraction") != null else 0.0
 		if b > burn and int(c.get("grab_peer")) != 0:
 			burn = b
-			var victim := Net.find_player(int(c.get("grab_peer")))
-			burn_who = victim.display_name if victim != null else "them"
 	_burn_label.visible = burn > 0.02
 	if _burn_label.visible:
-		_burn_label.text = "LIGHT ON IT: %d%%   (keep the beam on it to free %s)" % [int(burn * 100.0), burn_who]
+		_burn_label.text = "LIGHT ON IT  %d%%" % int(burn * 100.0)
 	_voice_label.text = Voice.status_text()
 	# Noise meter.
 	_noise_bar.value = me.noise
@@ -544,10 +555,12 @@ func _process(delta: float) -> void:
 	else:
 		_noise_label.text = "NOISE"
 		_noise_label.add_theme_color_override("font_color", UiTheme.PAPER)
+	var chain_t := 0.0
 	# Chain tension.
 	var chain := get_tree().get_first_node_in_group("chain") as ChainSystem
 	if chain != null and not chain.segments.is_empty():
 		var t := chain.tension_for(me)
+		chain_t = t
 		if t > 0.98:
 			_chain_label.text = "CHAIN: TAUT"
 			_chain_label.add_theme_color_override("font_color", UiTheme.DANGER)
@@ -559,9 +572,25 @@ func _process(delta: float) -> void:
 			_chain_label.add_theme_color_override("font_color", Color(0.6, 0.95, 0.6))
 	else:
 		_chain_label.text = ""
-	_crosshair.visible = me.camera_mode == Player.CameraMode.FIRST_PERSON or me.held_item_id in ["pistol", "flashlight", "bomb", "decoy", "popper", "airhorn"]
+	# Auto: the meters come up only when they matter (getting loud, hunted, the chain going tight).
+	var meters_a := 1.0
+	if Settings.hud_mode == 2:
+		meters_a = 0.0
+	elif Settings.hud_mode == 0 and not (me.noise > METER_NOISE or hunted or chain_t > 0.8 or _help.visible):
+		meters_a = 0.0
+	_meters.modulate.a = lerpf(_meters.modulate.a, meters_a, clampf(delta * (6.0 if meters_a > 0.5 else 1.5), 0.0, 1.0))
+	var aimed := me.held_item_id in ["pistol", "bomb", "decoy", "popper", "wrench"]
+	if Settings.hud_mode == 1:
+		_crosshair.visible = me.camera_mode == Player.CameraMode.FIRST_PERSON or aimed or me.held_item_id in ["flashlight", "airhorn"]
+	else:
+		_crosshair.visible = Settings.hud_mode == 0 and aimed
 	_crosshair.color = Color(1.0, 0.4, 0.3, 0.9) if me.held_item_id == "pistol" and me.ammo_text.begins_with("0 ") else Color(1.0, 1.0, 1.0, 0.7)
-	_grab_label.visible = (me.synced_flags & Player.SFLAG_GRABBED) != 0
+	# How to get free is told on your first grab only; after that it is just you and its face.
+	var grabbed_now := (me.synced_flags & Player.SFLAG_GRABBED) != 0
+	if grabbed_now and not _hud_was_grabbed:
+		_grabs_seen += 1
+	_hud_was_grabbed = grabbed_now
+	_grab_label.visible = grabbed_now and _grabs_seen <= 1
 
 
 func _update_invite_label() -> void:
