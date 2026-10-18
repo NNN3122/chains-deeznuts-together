@@ -668,7 +668,7 @@ func _test_items() -> void:
 
 func _test_playtest() -> void:
 	var monsters := get_tree().get_nodes_in_group("custodian")
-	_check("two roaming Hires on each of the first two floors (no sentry), and the original Custodian on the second", _level.hires_on(0).size() == 2 and _level.hires_on(1).size() == 2 and not _level.hires_on(0)[0].sentry and monsters.size() == 1 and monsters[0].floor_index == 1, "B4 %d, B3 %d, custodians %d" % [_level.hires_on(0).size(), _level.hires_on(1).size(), monsters.size()])
+	_check("one roaming Hire on the first floor, two on the second (no sentry on either), and the original Custodian on the second", _level.hires_on(0).size() == 1 and _level.hires_on(1).size() == 2 and not _level.hires_on(1)[0].sentry and not _level.hires_on(0)[0].sentry and monsters.size() == 1 and monsters[0].floor_index == 1, "B4 %d, B3 %d, custodians %d" % [_level.hires_on(0).size(), _level.hires_on(1).size(), monsters.size()])
 	if not monsters.is_empty():
 		var c := monsters[0] as Custodian
 		var at: Vector3 = _level.test_points["plate"]
