@@ -11,6 +11,7 @@ Slide: run with Shift, then tap Ctrl (fits under low things; dodges a lunge; yan
 Look: move the mouse (push it against the side of the window to keep turning)
 Use item: F or left click     Drop: G     Camera: V     Reload: T
 Items: 1 / 2 / 3 or the mouse wheel picks which of your three you hold
+Shackle Key (the second player): 4, then F unlocks you from the chain; F next to a teammate locks back on
 Auto-walk: R     Pause and settings: Esc     Voice: just talk (proximity: close friends hear you)
 
 The Hollow Hires walk the route and stop to look round. If one SEES you it screams, the others answer and come running: run, or fight. A flashlight in its face stuns it; a Snubby round stuns it for 12 seconds (guns don't kill them; a bomb does). Crouching makes you harder to spot (pass behind them); loud noises bring them to look. Throw Squeaky Dennis and they go to him instead. If one grabs someone, stand next to them and BRACE. Break Rooms are safe.
@@ -490,6 +491,7 @@ func _process(delta: float) -> void:
 	# Item card: three slots, the selected one lit, plus the selected item's name, bar and hint.
 	for i in _slot_panels.size():
 		var id := me.slot_ids[i] if i < me.slot_ids.size() else ""
+		_slot_panels[i].visible = i < Player.ITEM_SLOTS or id != ""  # the key's slot only for whoever carries it
 		var sel := i == me.selected_slot
 		var d := ItemRegistry.get_data(id) if id != "" else null
 		_slot_names[i].text = "%d  %s" % [i + 1, (d.display_name if d != null else (id if id != "" else "-"))]
@@ -558,7 +560,11 @@ func _process(delta: float) -> void:
 	var chain_t := 0.0
 	# Chain tension.
 	var chain := get_tree().get_first_node_in_group("chain") as ChainSystem
-	if chain != null and not chain.segments.is_empty():
+	var off_line := me.is_unchained()
+	if off_line:
+		_chain_label.text = "OFF THE CHAIN"
+		_chain_label.add_theme_color_override("font_color", UiTheme.YELLOW)
+	elif chain != null and not chain.segments.is_empty():
 		var t := chain.tension_for(me)
 		chain_t = t
 		if t > 0.98:
@@ -576,7 +582,7 @@ func _process(delta: float) -> void:
 	var meters_a := 1.0
 	if Settings.hud_mode == 2:
 		meters_a = 0.0
-	elif Settings.hud_mode == 0 and not (me.noise > METER_NOISE or hunted or chain_t > 0.8 or _help.visible):
+	elif Settings.hud_mode == 0 and not (me.noise > METER_NOISE or hunted or chain_t > 0.8 or off_line or _help.visible):
 		meters_a = 0.0
 	_meters.modulate.a = lerpf(_meters.modulate.a, meters_a, clampf(delta * (6.0 if meters_a > 0.5 else 1.5), 0.0, 1.0))
 	var aimed := me.held_item_id in ["pistol", "bomb", "decoy", "popper", "wrench"]

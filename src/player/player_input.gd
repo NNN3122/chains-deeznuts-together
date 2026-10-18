@@ -59,7 +59,7 @@ var _jump_count: int = 0
 var _drop_count: int = 0
 var _use_count: int = 0
 var _slot_count: int = 0
-var _slot_request: int = 0  # 1..3 the slot last asked for, 0 none; wheel: 4 next, 5 previous
+var _slot_request: int = 0  # 1..3 the slot last asked for, 0 none; wheel: 4 next, 5 previous; 6 the key slot
 var _reload_count: int = 0
 var _cursor_moved_at: int = -100000  # msec of the last mouse motion
 
@@ -110,6 +110,8 @@ func _input(event: InputEvent) -> void:
 				_request_slot(2)
 			elif event.is_action("slot_3"):
 				_request_slot(3)
+			elif event.is_action("slot_4"):
+				_request_slot(6)  # the Shackle Key's own slot
 			elif event.is_action("auto_run"):
 				auto_run = not auto_run
 				GameState.post_message_local("Auto-walk %s (R)" % ("ON" if auto_run else "OFF"), 1.5)

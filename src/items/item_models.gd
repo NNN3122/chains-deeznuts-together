@@ -52,6 +52,14 @@ static func build(id: String) -> Node3D:
 			_box(root, Vector3(0.36, 0.42, 0.06), Vector3(0.0, 0.0, -0.08), _m(Color(0.6, 0.12, 0.08), 0.5))
 			_cyl(root, 0.05, 0.07, 0.1, Vector3(-0.11, -0.3, 0.0), _m(Color(0.15, 0.15, 0.15), 0.4, 0.8), false)
 			_cyl(root, 0.05, 0.07, 0.1, Vector3(0.11, -0.3, 0.0), _m(Color(0.15, 0.15, 0.15), 0.4, 0.8), false)
+		"shackle_key":
+			# A heavy old cuff key on a ring: the bow, the shank, the bit at the tip (-Z).
+			var brass := _m(Color(0.72, 0.55, 0.22), 0.35, 0.85)
+			_cyl(root, 0.035, 0.035, 0.012, Vector3(0.0, 0.0, 0.06), brass, false)
+			_cyl(root, 0.02, 0.02, 0.014, Vector3(0.0, 0.0, 0.06), _m(Color(0.05, 0.05, 0.05), 0.5), false)
+			_cyl(root, 0.008, 0.008, 0.12, Vector3(0.0, 0.0, -0.02), brass, true)
+			_box(root, Vector3(0.012, 0.035, 0.03), Vector3(0.0, -0.018, -0.07), brass)
+			_cyl(root, 0.05, 0.05, 0.006, Vector3(0.0, 0.0, 0.11), _m(Color(0.35, 0.35, 0.37), 0.3, 0.9), false)
 		"wrench":
 			# A long steel pipe wrench: a worn grip, the shaft, an open jaw at the striking end (-Z).
 			var steel := _m(Color(0.55, 0.56, 0.6), 0.35, 0.9)

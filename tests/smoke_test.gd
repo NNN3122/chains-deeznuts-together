@@ -85,6 +85,7 @@ func _run_host() -> void:
 	await _test_grab_release()
 	await _test_wrench()
 	await _test_hire_attacks()
+	await _test_shackle_key()
 	await _test_forced()
 	await _test_scares()
 	await _test_crouch()
@@ -133,6 +134,54 @@ func _test_stamina() -> void:
 	Player.debug_infinite_stamina = true
 	_place(spawn_at, PI)
 	await _wait(0.3)
+
+
+## The Shackle Key: only the second player clocks in with it, in its own slot, and can't drop it.
+## F unlocks you from the Line (the chain closes up without you); F again only next to a teammate
+## locks you back on; a regroup puts everyone back on. Exercised on the host (given one for the test).
+func _test_shackle_key() -> void:
+	var mate_player := _mate as Player
+	_check("only the second player clocks in with the Shackle Key", not _host.has_item("shackle_key") and (mate_player == null or (mate_player.join_index == Player.KEY_HOLDER and mate_player.has_item("shackle_key") and mate_player.slots[Player.KEY_SLOT] != null)), "host %s, mate %s" % [_host.has_item("shackle_key"), mate_player.has_item("shackle_key") if mate_player != null else "none"])
+	_host.server_give_item(ItemRegistry.get_data("shackle_key").create_logic())
+	var key := _host.find_item("shackle_key") as ShackleKey
+	var in_own_slot := key != null and _host.slots[Player.KEY_SLOT] == key and _host.selected_slot != Player.KEY_SLOT
+	_host.select_slot(Player.KEY_SLOT)
+	_host.server_drop_item(true)
+	var kept := _host.has_item("shackle_key")
+	_check("the key sits in its own slot (4) and can't be dropped", in_own_slot and kept, "own slot %s, kept %s" % [in_own_slot, kept])
+	var spawn_at: Vector3 = _level.test_points["spawn"]
+	_place(spawn_at, PI)
+	await _wait(0.4)
+	var chain := _chain()
+	var segs0 := chain.segments.size()
+	key._tick(0.1, true, true)
+	await _wait(0.2)
+	var off := _host.unchained and _host.is_unchained() and chain.segments.size() == segs0 - 1
+	_host.teleport_to(spawn_at + Vector3(0.0, 0.0, 3.6), PI)
+	await _wait(ShackleKey.COOLDOWN + 0.2)
+	key._tick(0.1, true, true)
+	await _wait(0.2)
+	var refused := _host.unchained
+	_host.teleport_to(spawn_at + Vector3(1.0, 0.0, 0.0), PI)
+	for b in Net.get_chain_bodies():
+		if b != _host:
+			b.teleport_to(spawn_at, PI)
+	await _wait(ShackleKey.COOLDOWN + 0.2)
+	key._tick(0.1, true, true)
+	await _wait(0.2)
+	var back := not _host.unchained and chain.segments.size() == segs0
+	_check("F unlocks you from the Line; away from everyone it won't lock back on; next to a teammate it does", off and refused and back, "off %s (segments %d -> %d), refused %s, back %s" % [off, segs0, chain.segments.size(), refused, back])
+	_host.set_unchained(true)
+	GameState.call("_do_regroup", "test")
+	await _wait(0.4)
+	_check("a regroup puts everyone back on the Line", not _host.unchained, "")
+	# Hand the test key back: the host doesn't carry one in a real run.
+	_host.slots[Player.KEY_SLOT].queue_free()
+	_host.slots[Player.KEY_SLOT] = null
+	_host.select_slot(0)
+	_host.call("_refresh_slot_ids")
+	_place(spawn_at, PI)
+	await _wait(1.0)
 
 
 ## The Hire's other attacks: a tackle puts you down and then it takes you by the throat; a charge
@@ -565,7 +614,7 @@ func _test_items() -> void:
 	var fourth := _host.server_give_item(popper)
 	if not fourth:
 		popper.free()  # refused: nobody owns it (a pickup would free it the same way)
-	_check("three slots fill; a fourth item is refused", not fourth and _host.free_slot() < 0 and _host.slot_ids.size() == 3 and "" not in _host.slot_ids, "fourth %s, slots %s" % [fourth, _host.slot_ids])
+	_check("three loot slots fill; a fourth item is refused (slot 4 is only the Shackle Key's)", not fourth and _host.free_slot() < 0 and _host.slot_ids.size() == Player.SLOTS and "" not in _host.slot_ids.slice(0, Player.ITEM_SLOTS), "fourth %s, slots %s" % [fourth, _host.slot_ids])
 	_host.select_slot(0)
 	await _press_use()
 	var light_on := _host.held_item_id == "flashlight" and _host.held_item.is_active

@@ -47,7 +47,11 @@ const NOISE_JUMP: float = 18.0
 const NOISE_LAND: float = 30.0
 const DRINK_BOOST_TIME: float = 8.0
 const DRINK_CRASH_TIME: float = 5.0
-const SLOTS: int = 3
+const SLOTS: int = 4  # three for loot, and KEY_SLOT
+const ITEM_SLOTS: int = 3  # the ones pickups go in
+const KEY_SLOT: int = 3  # the Shackle Key's own (the second player clocks in with it; 4 selects it)
+const KEY_HOLDER: int = 1  # join index that clocks in with the Shackle Key: the second player
+const SFLAG_UNCHAINED: int = 2048  # off the Line (the Shackle Key)
 const SLIDE_MIN_SPEED: float = 4.5  # m/s: you have to be sprinting for Ctrl to drop you into a slide (a walk is 4.2)
 const SLIDE_SPEED: float = 8.4  # m/s at the start of a slide (a sprint is 7)
 const SLIDE_TIME: float = 1.0  # s the slide carries before it ends
@@ -102,7 +106,7 @@ var synced_yaw: float = 0.0
 var synced_pitch: float = 0.0
 var synced_flags: int = 0
 var held_item_id: String = ""  # the selected slot's item
-var slot_ids: PackedStringArray = ["", "", ""]
+var slot_ids: PackedStringArray = ["", "", "", ""]
 var selected_slot: int = 0
 var item_charge: float = 0.0
 var ammo_text: String = ""  # "8 / 24" for guns, "" otherwise
@@ -110,6 +114,7 @@ var noise: float = 0.0
 var buff_state: int = 0  # 0 normal, 1 energy drink boost, 2 crash
 var stamina: float = 1.0  # server, replicated: 0..1 of a sprint left
 var _winded: bool = false  # server: ran dry; no sprint until WINDED_UNTIL
+var unchained: bool = false  # server: unlocked from the Line with the Shackle Key
 var _knock_t: float = 0.0  # server: s left without control after a monster's hit
 var _downed: bool = false  # server: flat on the floor for it
 var _flung: bool = false  # server: in flight, and a wall will hurt
@@ -135,7 +140,7 @@ var _reload_taps: int = 0
 var state: State = State.NORMAL
 var body_yaw: float = 0.0
 var ignore_gravity_this_tick: bool = false
-var slots: Array[ItemBase] = [null, null, null]
+var slots: Array[ItemBase] = [null, null, null, null]
 var grabbed_by: Node = null
 var _grab_origin: Vector3 = Vector3.ZERO  # where the grab caught you: a spot known to be clear
 var _orphan_grab_t: float = 0.0  # seconds held by something that no longer says it holds you
@@ -270,6 +275,9 @@ func _ready() -> void:
 		_setup_cameras()
 	if multiplayer.is_server():
 		_grant_starting_kit()
+		_grant_key()
+		# A layoff puts everyone back on the Line: nobody is left unchained at a checkpoint.
+		GameState.layoff_started.connect(func(_c: int, _r: String) -> void: set_unchained(false))
 
 
 func _build_flashlight() -> void:
@@ -729,9 +737,12 @@ func _apply_input(move: Vector2, yaw: float, pitch: float, flags: int) -> void:
 			1, 2, 3:
 				select_slot(req - 1)
 			4:
-				select_slot((selected_slot + 1) % SLOTS)
+				select_slot(_wheel_slot(1))
 			5:
-				select_slot((selected_slot + SLOTS - 1) % SLOTS)
+				select_slot(_wheel_slot(-1))
+			6:
+				if slots[KEY_SLOT] != null:
+					select_slot(KEY_SLOT)
 	var reload := (flags >> RELOAD_SEQ_SHIFT) & 0xFF
 	if reload != _last_reload_seq:
 		_reload_taps += (reload - _last_reload_seq) & 0xFF
@@ -795,6 +806,8 @@ func _server_tick(delta: float) -> void:
 		f |= SFLAG_SLIDING
 	if _winded:
 		f |= SFLAG_WINDED
+	if unchained:
+		f |= SFLAG_UNCHAINED
 	if _knock_t > 0.0 and state == State.NORMAL:
 		f |= SFLAG_KNOCKED
 		if _downed:
@@ -1294,8 +1307,39 @@ func find_item(id: String) -> ItemBase:
 	return null
 
 
+## The mouse wheel walks the loot slots, and the key's slot too when you carry it.
+func _wheel_slot(step: int) -> int:
+	var n := SLOTS if slots[KEY_SLOT] != null else ITEM_SLOTS
+	return (mini(selected_slot, n - 1) + step + n) % n
+
+
+## Server: off the Line (or back on it). The chain is rebuilt on every peer from SFLAG_UNCHAINED.
+func set_unchained(on: bool) -> void:
+	if unchained == on:
+		return
+	unchained = on
+	if on:
+		synced_flags |= SFLAG_UNCHAINED
+	else:
+		synced_flags &= ~SFLAG_UNCHAINED
+
+
+## Every peer: is this body off the Line? (The server knows; clients read the replicated flag.)
+func is_unchained() -> bool:
+	return unchained if multiplayer.is_server() else (synced_flags & SFLAG_UNCHAINED) != 0
+
+
+## The second player to clock in carries the Shackle Key, in its own slot.
+func _grant_key() -> void:
+	if join_index != KEY_HOLDER or has_item("shackle_key"):
+		return
+	var data := ItemRegistry.get_data("shackle_key")
+	if data != null:
+		server_give_item(data.create_logic())
+
+
 func free_slot() -> int:
-	for i in slots.size():
+	for i in ITEM_SLOTS:
 		if slots[i] == null:
 			return i
 	return -1
@@ -1319,6 +1363,16 @@ func _grant_starting_kit() -> void:
 func server_give_item(item: ItemBase) -> bool:
 	if state == State.GRABBED:
 		return false
+	# The Shackle Key has a slot of its own and never takes the one in your hand.
+	if item.data.id == "shackle_key":
+		if slots[KEY_SLOT] != null:
+			return false
+		slots[KEY_SLOT] = item
+		item.name = "Item_%d_%s" % [KEY_SLOT, item.data.id]
+		add_child(item)
+		item.on_equip(self)
+		_refresh_slot_ids()
+		return true
 	# Ammo goes straight into a carried gun instead of taking a slot.
 	if item.has_method("merge_into") and bool(item.call("merge_into", self)):
 		return true
@@ -1354,6 +1408,8 @@ func server_drop_item(spawn_pickup: bool = true) -> void:
 	var item := held_item
 	if item == null:
 		return
+	if selected_slot == KEY_SLOT:
+		return  # the key is yours for the run
 	var id := item.data.id
 	item.on_unequip()
 	item.queue_free()
@@ -1372,7 +1428,7 @@ func server_drop_item(spawn_pickup: bool = true) -> void:
 
 ## Drops everything (a layoff does not: items survive respawns, only grabs make you drop).
 func server_drop_all(spawn_pickups: bool = true) -> void:
-	for k in slots.size():
+	for k in ITEM_SLOTS:
 		if slots[k] != null:
 			select_slot(k)
 			server_drop_item(spawn_pickups)

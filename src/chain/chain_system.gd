@@ -86,7 +86,11 @@ func _ready() -> void:
 
 
 func _physics_process(delta: float) -> void:
-	var bodies := Net.get_chain_bodies()
+	# Whoever unlocked their cuff (the Shackle Key) is off the Line: the chain closes up without them.
+	var bodies: Array[ChainBody] = []
+	for b in Net.get_chain_bodies():
+		if not (b is Player and (b as Player).is_unchained()):
+			bodies.append(b)
 	_rebuild_topology(bodies)
 	_update_wraps(bodies)
 	if multiplayer.is_server():

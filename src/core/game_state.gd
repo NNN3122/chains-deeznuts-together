@@ -205,6 +205,8 @@ func _do_regroup(requester: String) -> void:
 	var level := get_tree().get_first_node_in_group("level")
 	if level != null and level.has_method("regroup"):
 		level.call("regroup", requester)
+		for p in Net.get_players():
+			p.set_unchained(false)  # back at the checkpoint, everyone is on the Line
 
 
 ## Server only. Everyone made it into the elevator.
@@ -270,6 +272,7 @@ func _setup_input_map() -> void:
 	_add_keys("slot_1", [KEY_1])
 	_add_keys("slot_2", [KEY_2])
 	_add_keys("slot_3", [KEY_3])
+	_add_keys("slot_4", [KEY_4])
 	_add_keys("toggle_camera", [KEY_V])
 	_add_keys("auto_run", [KEY_R])
 	_add_keys("help", [KEY_H, KEY_F1])
