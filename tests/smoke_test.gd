@@ -916,8 +916,10 @@ func _test_hires() -> void:
 		await _wait(0.1)
 		_host._apply_input(Vector2.ZERO, yaw, pitch, _seq << Player.JUMP_SEQ_SHIFT)
 		await _wait(0.35)
-	_check("two Snubby rounds drop a Hire", h.is_dead() and h.hits >= 2, "hits %d, state %d" % [h.hits, h.hstate])
+	var stun_left: float = h.get("_t")
+	_check("Snubby rounds don't kill a Hire: each one stuns it for 12 seconds", not h.is_dead() and h.hits >= 2 and h.hstate == HollowHire.HState.STUNNED and stun_left > HollowHire.SHOT_STUN - 1.0, "hits %d, state %d, %.1f s of stun left" % [h.hits, h.hstate, stun_left])
 	_host.server_drop_item(false)
+	h.blast()  # only a bomb puts one down
 	var before := h.global_position
 	_level.debug_force_hire_respawn(0)
 	await _wait(0.3)

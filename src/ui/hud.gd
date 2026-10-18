@@ -13,7 +13,7 @@ Use item: F or left click     Drop: G     Camera: V     Reload: T
 Items: 1 / 2 / 3 or the mouse wheel picks which of your three you hold
 Auto-walk: R     Pause and settings: Esc     Voice: just talk (proximity: close friends hear you)
 
-The Hollow Hires walk the route and stop to look round. If one SEES you it screams, the others answer and come running: run, or fight. A flashlight in its face stuns it, two Snubby rounds drop it. Crouching makes you harder to spot (pass behind them); loud noises bring them to look. Throw Squeaky Dennis and they go to him instead. If one grabs someone, stand next to them and BRACE. Break Rooms are safe.
+The Hollow Hires walk the route and stop to look round. If one SEES you it screams, the others answer and come running: run, or fight. A flashlight in its face stuns it; a Snubby round stuns it for 12 seconds (guns don't kill them; a bomb does). Crouching makes you harder to spot (pass behind them); loud noises bring them to look. Throw Squeaky Dennis and they go to him instead. If one grabs someone, stand next to them and BRACE. Break Rooms are safe.
 The route is loud: jammed doors open to a sprint, the fire alarm releases B3's lift, the hatch over B2's shaft stays open 25 s. When the power stutters out, that's what the flashlight is for.
 Upstairs in the pizzeria: Pappy only moves while nobody looks at him and no camera shows him. Stand at a security desk for cameras (F flips them), hold Ctrl at a shutter to keep it down."""
 
@@ -68,8 +68,8 @@ var _voice_label: Label
 
 ## One-time tips the first time you reach each climb: [test point, co-op text, solo text].
 const HINTS: Array = [
-	["spawn", "YOU'RE CHAINED TOGETHER (%.0f m of slack). Find the way up through the maze. You each have a flashlight (F) and a wrench (2): crack whatever grabs a teammate. One thing in a vest walks this floor: if it SEES you, run, or fight (light in its face, two shots). Upstairs, a scream brings the others." % 4.3,
-		"YOU'RE CHAINED TO THE BALLAST (%.0f m of slack). Find the way up through the maze. You have a flashlight (F) and a wrench (2) that fixes what breaks. One thing in a vest walks this floor: if it SEES you, run, or fight (light in its face, two shots). Upstairs, a scream brings the others." % 4.3],
+	["spawn", "YOU'RE CHAINED TOGETHER (%.0f m of slack). Find the way up through the maze. You each have a flashlight (F) and a wrench (2): crack whatever grabs a teammate. One thing in a vest walks this floor: if it SEES you, run, or fight (light in its face, or a shot stuns it for a while). Upstairs, a scream brings the others." % 4.3,
+		"YOU'RE CHAINED TO THE BALLAST (%.0f m of slack). Find the way up through the maze. You have a flashlight (F) and a wrench (2) that fixes what breaks. One thing in a vest walks this floor: if it SEES you, run, or fight (light in its face, or a shot stuns it for a while). Upstairs, a scream brings the others." % 4.3],
 	["door0", "JAMMED DOOR: sprint into it and it bangs open. Everything on the floor will come to look. Be through and gone, or ready.",
 		"JAMMED DOOR: sprint into it and it bangs open. Everything on the floor will come to look. Your Ballast gets dragged through after you."],
 	["crates_start", "CLIMB: walk into the crate and tap Space. Do the same at each ledge.",

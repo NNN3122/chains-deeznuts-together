@@ -6,8 +6,9 @@ extends Node3D
 ## flashlight is on) screams, the lights gutter, and it runs you down faster than you can walk.
 ## Caught, you're pinned: teammates brace beside you, a flashlight in its face, or a shot gets
 ## it off; nobody comes in a few seconds and the Line is laid off. A flashlight held on its face
-## stuns it for a moment (then it's wise to the trick for a few seconds); two Snubby rounds or a
-## bomb drop it for good, and the floor sends a replacement in from somewhere you aren't looking.
+## stuns it for a moment (then it's wise to the trick for a few seconds); a Snubby round stuns
+## it for twelve (a gun never kills it); a bomb drops it for good, and the floor sends a
+## replacement in from somewhere you aren't looking.
 ## Loud noises draw them over to look. Break Rooms are safe: they stop at the door.
 ## They walk the route: every floor's first Hire keeps to the rooms round the way up, the rest
 ## lean toward the green-sign path, so you meet one. At the end of a walk they stop and sweep
@@ -54,7 +55,7 @@ const BURN_RANGE: float = 15.0
 const BURN_ANGLE: float = 0.45
 const STUN_TIME: float = 3.0
 const STUN_IMMUNE: float = 4.0  # s after a stun during which the light does nothing
-const HITS_TO_DIE: int = 2
+const SHOT_STUN: float = 12.0  # s a Snubby round leaves it reeling (the user: a gun stuns it, it never kills it)
 const DEAD_LINGER: float = 20.0
 const HEAR_RADIUS: float = 22.0
 const INVESTIGATE_NOISE: float = 20.0  # effective loudness that turns its head
@@ -880,17 +881,14 @@ func stun(seconds: float) -> void:
 	_fx("hire_gurgle", 0.0, 1.4)
 
 
-## Snubby hit (server): one while it holds someone frees them; two kill it.
+## Snubby hit (server): a gun doesn't kill it. It reels for SHOT_STUN, and lets go of whoever it
+## held. Only a bomb puts one down.
 func take_hit() -> void:
 	if hstate == HState.DEAD:
 		return
 	hits += 1
 	_fx("thump", -6.0, 1.7)
-	if hits >= HITS_TO_DIE:
-		die()
-	elif hstate == HState.GRAB:
-		release(false)
-		stun(1.5)
+	stun(SHOT_STUN)
 
 
 func blast() -> void:
