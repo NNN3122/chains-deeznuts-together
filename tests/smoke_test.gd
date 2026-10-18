@@ -1766,10 +1766,11 @@ func _test_route() -> void:
 		var yaw := atan2(-d.x, -d.y)
 		var edge := o2.dot(d) + prev.edge_along(d)  # the edge you leave from, as a coordinate along d
 		var near := edge + r.gap  # this roof's near edge
-		var start := arena.origin + Vector3(r.cross.x, prev.top + 0.1, r.cross.y) - d3 * 5.0  # on its raised part, if it has one
+		# 4 m of run-up, the partner a metre behind: both still on the raised part (5.6 m or more deep).
+		var start := arena.origin + Vector3(r.cross.x, prev.top + 0.1, r.cross.y) - d3 * 4.0
 		_host.teleport_to(start, yaw)
 		if _mate != null:
-			_mate.teleport_to(start - d3 * 2.2, yaw)
+			_mate.teleport_to(start - d3 * 1.0, yaw)
 		_bot(Vector2.ZERO, yaw, 0)
 		await _wait(0.4)
 		# Where to take off: the edge for a jump or a leap, then each chimney stack's far edge.
@@ -1785,9 +1786,12 @@ func _test_route() -> void:
 		var landed := false
 		var mate_p := _mate as Player
 		var mate_landed := mate_p == null
+		var trail := ""
 		for k in 140:
 			await _wait(0.05)
 			var along := Vector2(_host.global_position.x, _host.global_position.z).dot(d)
+			if k % 10 == 0:
+				trail += "[%.1f %.1f %s %d] " % [along - near, _host.global_position.y - arena.origin.y, "F" if _host.is_on_floor() else "a", _host.state]
 			var tap := false
 			if jumped < takeoffs.size() and along > takeoffs[jumped] - 0.8:
 				tap = true
@@ -1817,6 +1821,7 @@ func _test_route() -> void:
 		if not landed or arena.roof_at(_host.global_position) != i or not mate_landed:
 			var h_along := Vector2(_host.global_position.x, _host.global_position.z).dot(d)
 			failed += "roof %d (%s, heading %s) not reached: host at %s on roof %d (%.1f m past the near edge, roof y %.1f, top %.1f), mate landed %s; " % [i, HordeArena.LINK_NAMES[r.link], d, _host.global_position, arena.roof_at(_host.global_position), h_along - near, r.y, r.top, mate_landed]
+			failed += "prev %d y %.1f top %.1f tier %s unit %s steps %d gap %.1f trail %s; " % [i - 1, prev.y, prev.top, prev.tier, prev.tier_unit, r.climb_steps, r.gap, trail]
 	_check("every link of the route can be crossed by running, jumping, walking and climbing, whichever way it turns, with the partner on the chain (no layoffs)", failed == "" and GameState.wipes == wipes0, failed + "wipes %d -> %d" % [wipes0, GameState.wipes])
 	# The raised parts: from where you land, up onto the part you leave from (one mantle, or a
 	# unit and then a mantle when it's taller), the partner hauled up behind.
@@ -1894,7 +1899,7 @@ func _test_route() -> void:
 	_check("the fire escape climbs, landing by landing, onto the helipad (the partner hauled up on the chain)", on_pad, "host at %s (pad at %s), reached landing %d of %d" % [_host.global_position, arena.test_points["helipad"], highest, steps.size()])
 
 
-## The district: eleven roofs laid out from the seed with jumpable links, the field knowing
+## The district: ROOF_COUNT roofs laid out from the seed with jumpable links, the field knowing
 ## roof from street, a run-and-jump across the first gap, a Weaver swinging a gap and climbing
 ## the tower, and a Jumper crossing to the roof you're on.
 func _test_district() -> void:
@@ -1918,7 +1923,7 @@ func _test_district() -> void:
 		var lo_r := minf(r.rect.position.dot(side), r.rect.end.dot(side))
 		var hi_r := maxf(r.rect.position.dot(side), r.rect.end.dot(side))
 		var inside := t > lo_p + 2.0 and t < hi_p - 2.0 and t > lo_r + 2.0 and t < hi_r - 2.0
-		var ok := inside and r.y >= 0.0 and r.y <= 14.0 + HordeArena.TOWER_RISE and r.dir.y <= 0.0
+		var ok := inside and r.y >= 0.0 and r.y <= HordeArena.ROOF_TOP_MAX + HordeArena.TOWER_RISE and r.dir.y <= 0.0
 		if r.dir != HordeArena.NORTH:
 			turns += 1
 		heights.append(r.y)
@@ -1934,15 +1939,15 @@ func _test_district() -> void:
 				why += "roof %d sits on roof %d; " % [i, j]
 		match r.link:
 			HordeArena.Link.JUMP:
-				ok = ok and r.gap >= 2.9 and r.gap <= 4.0 and dy <= 0.3 and dy >= -2.7
+				ok = ok and r.gap >= 2.9 and r.gap <= 4.5 and dy <= 0.3 and dy >= -2.7
 			HordeArena.Link.LEAP:
-				ok = ok and r.gap >= 1.4 and r.gap <= 2.2 and dy >= 0.7 and dy <= 1.3
+				ok = ok and r.gap >= 1.7 and r.gap <= 2.5 and dy >= 0.8 and dy <= 1.3
 			HordeArena.Link.PLANK, HordeArena.Link.PIPE:
-				ok = ok and r.gap >= 4.4 and r.gap <= 7.6 and absf(dy) < 0.01
+				ok = ok and r.gap >= 5.4 and r.gap <= 9.1 and absf(dy) < 0.01
 			HordeArena.Link.DROP:
-				ok = ok and r.gap >= 1.7 and r.gap <= 2.7 and dy <= -3.3
+				ok = ok and r.gap >= 1.9 and r.gap <= 3.1 and dy <= -3.3
 			HordeArena.Link.CLIMB:
-				ok = ok and r.gap == 0.0 and dy >= 2.5 and dy <= (HordeArena.TOWER_RISE + 0.01 if i == arena.roofs.size() - 1 else 3.6)
+				ok = ok and r.gap == 0.0 and dy >= 2.5 and dy <= (HordeArena.TOWER_RISE + 0.01 if i == arena.roofs.size() - 1 else HordeArena.CLIMB_STEP * float(r.climb_steps) + 1.95)
 			HordeArena.Link.STONES:
 				ok = ok and r.stones.size() >= 2 and r.gap > 8.0 and dy <= 0.01
 		if not ok:
@@ -1950,7 +1955,7 @@ func _test_district() -> void:
 			why += "roof %d link %d heading %s gap %.1f dy %.1f inside %s; " % [i, r.link, r.dir, r.gap, dy, inside]
 	heights.sort()
 	var spread := heights[heights.size() - 2] - heights[0]  # the route's roofs, not the tower
-	_check("eleven roofs and the tower scattered at their own heights (not a line: %d turns, %.1f m between lowest and highest), every link within reach, the crossing inside both roofs and clear of vents, no roof on another" % [turns, spread], links_ok and arena.roofs.size() == HordeArena.ROOF_COUNT + 2 and turns >= 1 and spread > 3.0, why)
+	_check("%d roofs and the tower scattered at their own heights (not a line: %d turns, %.1f m between lowest and highest), every link within reach, the crossing inside both roofs and clear of vents, no roof on another" % [HordeArena.ROOF_COUNT, turns, spread], links_ok and arena.roofs.size() == HordeArena.ROOF_COUNT + 2 and turns >= 1 and spread > 8.0, why)
 	_check("no green route signs: nothing but the red light points the way", arena.find_children("*", "Label3D", true, false).filter(func(l: Node) -> bool: return (l as Label3D).modulate.g > 0.9 and (l as Label3D).modulate.r < 0.6).is_empty(), "")
 	var f := arena.field
 	var r1: HordeArena.Roof = arena.roofs[1]

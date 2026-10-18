@@ -30,7 +30,7 @@ const REGROUP_COOLDOWN_MS: int = 15000
 const FLOOR_NAME: String = "THE ROOF: CARROW HEIGHTS"
 const SCARE_POOL: Array = [["face", 3], ["crawler", 2], ["behind", 2], ["peek", 1], ["hands", 1], ["roof_drop", 1], ["roof_shadow", 2], ["roof_scrape", 2], ["roof_swarm", 1], ["breath", 1]]  # what a RoofDread build can end in
 const PAD_LOCAL: Vector3 = Vector3(0.0, 0.2, 34.0)
-const ROOF_COUNT: int = 11  # rooftops between the lot and the tower
+const ROOF_COUNT: int = 13  # rooftops between the lot and the tower (was 11: the user found it too easy)
 const TOWER_W: float = 18.0
 const TOWER_RISE: float = 10.5  # m the tower's helipad stands over the last roof (6 ledges)
 const STEP_H: float = 1.75  # m up per fire-escape ledge (a standing mantle reaches 2.1)
@@ -38,11 +38,11 @@ const FLYBY_SECONDS: float = 22.0  # repeat pass: a miss never strands the team
 const FLYBY_HEIGHT: float = 4.2  # above the pad, beyond a normal jump
 const FLYBY_WIDTH: float = 12.0
 const LOT_JUMPERS: int = 1  # Jumpers in front of the first of the swarm on the lot
-const JUMPER_ROOFS: Array[int] = [6]  # a Jumper waits on each of these roofs (rare: a scare, not a wall of spiders)
+const JUMPER_ROOFS: Array[int] = [7]  # a Jumper waits on each of these roofs (rare: a scare, not a wall of spiders)
 const SPIDER_ROOFS: Array[int] = [8]  # landing on these drops a spider in someone's face (a scare, not a fight)
 const ROUTE_X_LIMIT: float = 80.0  # m either side of the lot's centre the route may wander
 const LAYOUT_TRIES: int = 40  # whole-route attempts before the plain northward fallback
-const CHECKPOINT_ROOFS: Array[int] = [4, 8]  # a checkpoint on each of these, then the helipad
+const CHECKPOINT_ROOFS: Array[int] = [5, 10]  # a checkpoint on each of these, then the helipad
 const WAKE_RANGE: float = 55.0  # m: a Jumper further than this from everyone sleeps
 const MOON_DIR: Vector3 = Vector3(0.35, 0.42, -0.84)  # where the moon hangs (the sky shader agrees)
 const TASKS: Array[String] = [
@@ -75,6 +75,11 @@ const TIER_LOW: Vector2 = Vector2(1.5, 1.9)  # m: one mantle up from the roof
 const TIER_HIGH: Vector2 = Vector2(2.6, 3.2)  # m: a unit to climb first, then the mantle
 const TIER_DEPTH: Vector2 = Vector2(6.4, 7.4)  # m along the way out (room for the RUN_UP on top)
 const LANDING_LAMP_CHANCE: float = 0.45  # of roofs that get a lamp at all (the user: darker)
+const ROOF_TOP_MAX: float = 26.0  # m over the lot: the highest a route roof stands (was 14: roofs looked all one height)
+const CLIMB_STEP: float = 1.6  # m: each crate in a climb's stack (a mantle from the one below)
+const CLIMB_STEP_DEPTH: float = 1.4  # m each crate stands out from the wall
+const PLANK_W: float = 0.38  # m: a scaffold board, barely wider than a boot
+const PIPE_W: float = 0.36  # m
 const MANTLE_REACH: float = 2.0  # m: a tier this tall or less is one mantle (a standing mantle reaches 2.1)
 const SLOGANS: Array[String] = [
 	"DEEZ INDUSTRIAL FASTENERS\nHOLDING IT TOGETHER SINCE 1931",
@@ -90,6 +95,7 @@ class Roof:
 	var top: float = 0.0  # where you leave from: y, or the top of the raised part (the tier)
 	var tier: Rect2 = Rect2()  # the raised part of the roof along the edge you leave by (empty: none)
 	var tier_unit: Vector3 = Vector3.ZERO  # local: a unit to climb onto a tall tier (zero: none needed)
+	var climb_steps: int = 1  # CLIMB: crates stacked against the wall, each CLIMB_STEP taller
 	var link: int = Link.JUMP  # how you arrive from the previous roof
 	var dir: Vector2 = NORTH  # which way you travel to reach it (north, east or west; never back south)
 	var gap: float = 0.0  # m of street between the previous roof's edge and this roof's near edge
@@ -357,8 +363,9 @@ func _roll_roof(i: int, prev: Roof, last_link: int, last_dir: Vector2, plain: bo
 	# is a climb or a leap, down there a drop or a jump down, near enough a level crossing. The
 	# first is a plain jump off the lot; no two climbs, drops or stacks in a row.
 	var link := Link.JUMP
+	var want := 0.0
 	if i > 1:
-		var want := _rng.randf_range(0.0, 14.0)
+		want = _rng.randf_range(0.0, ROOF_TOP_MAX)
 		var roll := _rng.randf()
 		if want > prev_top + 2.5:
 			link = Link.CLIMB if roll < 0.55 else Link.LEAP
@@ -376,35 +383,37 @@ func _roll_roof(i: int, prev: Roof, last_link: int, last_dir: Vector2, plain: bo
 			link = Link.LEAP
 		if link == last_link and (link == Link.CLIMB or link == Link.DROP or link == Link.STONES):
 			link = Link.LEAP if link == Link.CLIMB else Link.JUMP
-		if (link == Link.CLIMB or link == Link.LEAP) and prev_top > 12.0:
+		if (link == Link.CLIMB or link == Link.LEAP) and prev_top > ROOF_TOP_MAX - 2.0:
 			link = Link.DROP if prev_top >= 4.0 else Link.JUMP
 	var gap := 0.0
 	var dy := 0.0
 	match link:
 		Link.JUMP:
-			gap = _rng.randf_range(3.0, 3.9)  # a sprint and a jump from the edge; a walk-off falls short
+			gap = _rng.randf_range(3.4, 4.4)  # a full sprint and a jump from the very edge; a walk-off falls short
 			dy = _rng.randf_range(-2.6, -0.6)  # always down a little: no two roofs the same height
 		Link.LEAP:
-			gap = _rng.randf_range(1.5, 2.1)
-			dy = _rng.randf_range(0.8, 1.2)  # jump up and catch the edge
+			gap = _rng.randf_range(1.8, 2.4)
+			dy = _rng.randf_range(0.9, 1.25)  # jump up and catch the edge
 		Link.PLANK:
-			gap = _rng.randf_range(5.5, 7.5)
+			gap = _rng.randf_range(6.5, 9.0)
 		Link.PIPE:
-			gap = _rng.randf_range(4.5, 6.5)
+			gap = _rng.randf_range(5.5, 8.0)
 		Link.DROP:
 			gap = _rng.randf_range(2.0, 3.0)
-			dy = _rng.randf_range(-5.5, -3.4)
+			dy = maxf(_rng.randf_range(-8.0, -3.4), -prev_top)  # a long way down
 		Link.CLIMB:
 			gap = 0.0
-			dy = _rng.randf_range(2.6, 3.5)
+			# One crate to three, stacked up the wall like steps; the roof a mantle above the top one.
+			r.climb_steps = clampi(int((want - prev_top) / (CLIMB_STEP * 1.6)) + 1, 1, 3) if want > prev_top else 1
+			dy = CLIMB_STEP * float(r.climb_steps) + _rng.randf_range(1.0, 1.9)
 		Link.STONES:
 			dy = _rng.randf_range(-0.6, 0.0)
 	var y := prev_top + dy
-	if y < 0.0 or y > 14.0:
+	if y < 0.0 or y > ROOF_TOP_MAX:
 		# Out of the band the Stack reads as the roof: a level jump instead.
 		link = Link.JUMP
 		gap = _rng.randf_range(3.0, 3.6)
-		y = clampf(prev_top + _rng.randf_range(-1.0, 0.0), 0.0, 14.0)
+		y = clampf(prev_top + _rng.randf_range(-1.0, 0.0), 0.0, ROOF_TOP_MAX)
 	r.link = link
 	r.dir = d
 	r.y = y
@@ -421,10 +430,10 @@ func _roll_roof(i: int, prev: Roof, last_link: int, last_dir: Vector2, plain: bo
 	var edge := prev.edge_along(d)
 	# Chimney stacks: two or three, each a running jump from the last.
 	if link == Link.STONES:
-		var n := _rng.randi_range(2, 3)
+		var n := _rng.randi_range(3, 4)
 		var a := edge
 		for k in n:
-			var g := _rng.randf_range(2.0, 2.4)
+			var g := _rng.randf_range(2.2, 2.8)
 			var top_y := prev_top + (y - prev_top) * float(k + 1) / float(n + 1) + _rng.randf_range(-0.3, 0.3)
 			var mid := a + g + STONE_DEPTH * 0.5
 			var c := d * mid + side * t
@@ -481,7 +490,7 @@ func _raise_tier(r: Roof, d: Vector2) -> void:
 		var h: float = t[1]
 		# Room between where you land and its face (and the unit in front of a tall one).
 		var margin := 4.2 if h > MANTLE_REACH else 2.0
-		if edge - dep - back < 3.2 or land > edge - dep - margin or r.y + h > 15.0:
+		if edge - dep - back < 3.2 or land > edge - dep - margin or r.y + h > ROOF_TOP_MAX + 1.0:
 			continue  # no room for it, or you would land on it
 		var side := _side(d)
 		var lo := minf(r.rect.position.dot(side), r.rect.end.dot(side))
@@ -763,21 +772,23 @@ func _build_roof(batch: LevelKit.BoxBatch, i: int) -> void:
 		Link.PLANK:
 			# A scaffold board, a hand's width wider than a boot, flush with both roofs.
 			var top := maxf(prev.top, r.y)
-			batch.add(_at(r.cross + d * (r.gap * 0.5), top - 0.07), _osize(d, r.gap + 1.8, 0.5, 0.14), "tank")
+			batch.add(_at(r.cross + d * (r.gap * 0.5), top - 0.07), _osize(d, r.gap + 1.8, PLANK_W, 0.14), "tank")
 		Link.PIPE:
 			# A ventilation duct laid across, its top flush with both roofs. Narrow, and ribbed.
 			var top := maxf(prev.top, r.y)
-			batch.add(_at(r.cross + d * (r.gap * 0.5), top - 0.25), _osize(d, r.gap + 1.6, 0.45, 0.5), "steel_dark")
+			batch.add(_at(r.cross + d * (r.gap * 0.5), top - 0.25), _osize(d, r.gap + 1.6, PIPE_W, 0.5), "steel_dark")
 			for k in int(r.gap / 1.2):
-				batch.add(_at(r.cross + d * (0.6 + 1.2 * float(k)), top - 0.25), _osize(d, 0.08, 0.51, 0.56), "steel", false)
+				batch.add(_at(r.cross + d * (0.6 + 1.2 * float(k)), top - 0.25), _osize(d, 0.08, PIPE_W + 0.06, 0.56), "steel", false)
 		Link.CLIMB:
-			# A unit against this roof's wall on the lower roof: a mantle up, then a mantle onto
-			# the roof. A drain pipe beside it, for the look.
-			var u2 := r.cross - d * 1.0
-			batch.add(_at(u2, prev.top + 0.8), _osize(d, 1.6, 2.4, 1.6), "steel")
-			batch.add(_at(u2, prev.top + 1.61), _osize(d, 1.0, 1.6, 0.04), "dark", false)
-			var us := _osize(d, 1.6, 2.4, 0.0)
-			_block(u2.x, u2.y, us.x, us.z)
+			# Crates stacked up this roof's wall like steps (the tallest against it), each a mantle
+			# from the one below, then a mantle onto the roof. A drain pipe beside them, for the look.
+			for j in r.climb_steps:
+				var ch := CLIMB_STEP * float(r.climb_steps - j)
+				var u2 := r.cross - d * (CLIMB_STEP_DEPTH * (float(j) + 0.5))
+				batch.add(_at(u2, prev.top + ch * 0.5), _osize(d, CLIMB_STEP_DEPTH, 2.4, ch), "steel" if j % 2 == 0 else "crate")
+				batch.add(_at(u2, prev.top + ch + 0.01), _osize(d, CLIMB_STEP_DEPTH - 0.4, 1.6, 0.04), "dark", false)
+				var us := _osize(d, CLIMB_STEP_DEPTH, 2.4, 0.0)
+				_block(u2.x, u2.y, us.x, us.z)
 			batch.add(_at(r.cross + side_in * 2.2 - d * 0.25, (prev.top + r.y) * 0.5), Vector3(0.25, r.y - prev.top, 0.25), "tank", false)
 		Link.STONES:
 			# Chimney stacks standing up out of the street, each a running jump from the last.
