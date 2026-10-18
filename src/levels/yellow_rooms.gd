@@ -65,7 +65,8 @@ const TASKS: Array = [
 	["Throw the HATCH RELEASE (hold Ctrl at it): 25 seconds", "Run to the SHELF SHAFT: jetpack, or stack up on a teammate", "Everyone up through the hatch before it slams"],
 	["Find the FREIGHT ELEVATOR", "Shoulder the jammed door open (sprint into it)", "Everyone inside before they catch you: it rides up to the pizzeria"],
 ]
-const HIRES_PER_FLOOR: Array[int] = [1, 1, 3, 3]  # B3 mixes one runner with the original ceiling hunter
+const HIRES_PER_FLOOR: Array[int] = [2, 2, 4, 4]  # one more each (the user: on 9 x 9 floors the one Hire never showed up); B3 also has the ceiling hunter
+const SENTRY_MIN_HIRES: int = 3  # a floor gets a sentry at the way up only when it has this many: with two, both roam where you are
 const RESPAWN_SECONDS: float = 45.0  # a dead Hire is replaced after this, out of sight
 const DOOR_FLOORS: Array[int] = [0, 3]  # floors with a jammed door on the route
 const ALARM_FLOOR: int = 1  # the lift floor: locked out until the fire alarm is pulled
@@ -865,7 +866,7 @@ func _build_hires(i: int) -> void:
 		h.level = self
 		h.floor_index = i
 		h.floor_y = float(i) * FLOOR_H
-		h.sentry = k == 0  # the first on each floor keeps to the rooms round the way up
+		h.sentry = k == 0 and HIRES_PER_FLOOR[i] >= SENTRY_MIN_HIRES  # keeps to the rooms round the way up
 		var c: Vector2i = spots[k % spots.size()]
 		h.position = cell_center(i, c) + Vector3(rng.randf_range(-1.0, 1.0), 0.0, rng.randf_range(-1.0, 1.0))
 		h.synced_yaw = rng.randf() * TAU  # the model turns, never the root: facing() reads the model
