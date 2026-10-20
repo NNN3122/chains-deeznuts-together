@@ -11,8 +11,8 @@ extends Node3D
 
 enum CState { WANDER, INVESTIGATE, HUNT, GRAB, RETREAT }
 
-const PLENUM_HEIGHT: float = 3.9
-const CEILING_HEIGHT: float = 3.2
+const CEILING_HEIGHT: float = YellowRooms.CEIL_H  # the office ceiling it moves above
+const PLENUM_HEIGHT: float = CEILING_HEIGHT + 0.3  # in the void over the tiles, under the next floor's slab
 const WANDER_SPEED: float = 1.6
 const INVESTIGATE_SPEED: float = 3.0
 const HUNT_SPEED: float = 4.8  # walking is 4.2: walking away barely works; running is loud
@@ -23,10 +23,10 @@ const HUNT_THRESHOLD: float = 38.0
 const TRACK_THRESHOLD: float = 11.0
 const LOSE_TRACK_TIME: float = 4.0
 const GRAB_RADIUS: float = 1.25
-const LIFT_SPEED: float = 1.0  # m/s with nobody holding on
+const LIFT_SPEED: float = 1.4  # m/s with nobody holding on (1.0 under the old 3.2 m ceiling; KILL_LIFT grew with it)
 const HOLD_RESIST: float = 3.0  # e.g. one braced teammate (2) + one standing (1)
 const RESIST_RADIUS: float = 7.0
-const KILL_LIFT: float = 1.9
+const KILL_LIFT: float = CEILING_HEIGHT - 1.3  # lifted until the head is in the ceiling (1.9 under the old 3.2 m one)
 const GIVE_UP_TIME: float = 3.0  # seconds held at a standstill before it lets go
 const BURN_TO_RELEASE: float = 0.9
 const BURN_TO_RETREAT: float = 1.6

@@ -13,8 +13,12 @@ enum LState { SHAMBLE, WINDUP, LUNGE, RECOVER, GRAB, STUNNED, DEAD, SWING, CLIMB
 const IDLE_CALL_EVERY: Vector2 = Vector2(7.0, 14.0)  # s between its hisses while it scuttles
 const IDLE_CALL_REACH: float = 22.0  # m
 
-const SHAMBLE_SPEED: float = 1.3  # m/s
+const SHAMBLE_SPEED: float = 1.3  # m/s (a slow drift toward a noise)
+const STALK_SPEED: float = 4.4  # m/s after a player while nobody is looking at it (a walk is 4.2): look away and it comes
+const STARE_ANGLE: float = 0.5  # rad off the middle of someone's view: they're looking at it
+const STARE_RANGE: float = 36.0  # m
 const SIGHT_RANGE: float = 42.0
+const REAR_UP: float = 1.6  # m it lifts its head to look over an edge or a crate
 const LUNGE_MIN: float = 2.6  # m: closer than this it just claws (grabs) instead of jumping
 const LUNGE_MAX: float = 6.2  # m: it crouches when a player is inside this
 const WINDUP_TIME: float = 0.6
@@ -63,6 +67,11 @@ var lunges: int = 0  # stat, replicated so clients can react too
 var swing_from: Vector3 = Vector3.ZERO  # the thread: where the swing left from...
 var swing_to: Vector3 = Vector3.ZERO  # ...and where it lands (the anchor is over the middle)
 var swings: int = 0  # stat
+var stared: bool = false  # replicated: someone is looking straight at it (it freezes, its neck jerks)
+var _jerk_t: float = 0.0  # every peer: the stop-motion crawl
+var _neck_t: float = 0.0
+var _neck: Vector3 = Vector3.ZERO  # the head's wrong angle, held between snaps
+var _breath_t: float = 3.0
 
 # Server.
 var _target: Player = null
@@ -105,7 +114,7 @@ func _enter_tree() -> void:
 	var sync := MultiplayerSynchronizer.new()
 	sync.name = "Sync"
 	var cfg := SceneReplicationConfig.new()
-	for prop in ["synced_position", "synced_yaw", "lstate", "hunt_peer", "grab_peer", "burn_fraction", "hits", "lunges", "swing_from", "swing_to", "swings"]:
+	for prop in ["synced_position", "synced_yaw", "lstate", "hunt_peer", "grab_peer", "burn_fraction", "hits", "lunges", "swing_from", "swing_to", "swings", "stared"]:
 		var path := NodePath(".:" + prop)
 		cfg.add_property(path)
 		cfg.property_set_replication_mode(path, SceneReplicationConfig.REPLICATION_MODE_ALWAYS)
@@ -194,7 +203,9 @@ func _physics_process(delta: float) -> void:
 
 func _server_tick(delta: float) -> void:
 	if (debug_frozen or asleep) and lstate != LState.GRAB:
+		stared = false
 		return
+	stared = _anyone_looking()
 	match lstate:
 		LState.SHAMBLE:
 			_tick_shamble(delta)
@@ -251,6 +262,26 @@ func _tick_shamble(delta: float) -> void:
 	_walk_toward(p.global_position, delta)
 
 
+## Server: is any player looking straight at it (its body near the middle of their view, nothing
+## in between)? While they are, it doesn't take a step.
+func _anyone_looking() -> bool:
+	var space := get_world_3d().direct_space_state
+	var chest := chest_point()
+	for p in Net.get_players():
+		if p.state == Player.State.GRABBED:
+			continue
+		var eye := p.eye_position()
+		var to := chest - eye
+		if to.length() > STARE_RANGE or to.length() < 0.1:
+			continue
+		if p.aim_direction().angle_to(to) > STARE_ANGLE:
+			continue
+		var q := PhysicsRayQueryParameters3D.create(eye, chest, ChainBody.LAYER_WORLD)
+		if space.intersect_ray(q).is_empty():
+			return true
+	return false
+
+
 func _walk_toward(target: Vector3, delta: float) -> void:
 	var to := target - global_position
 	to.y = 0.0
@@ -258,7 +289,9 @@ func _walk_toward(target: Vector3, delta: float) -> void:
 		return
 	var dir := to.normalized()
 	_face_dir(dir, delta)
-	var step := dir * minf(SHAMBLE_SPEED * delta, to.length())
+	if stared:
+		return  # someone is looking right at it: it stops dead and looks back
+	var step := dir * minf(STALK_SPEED * delta, to.length())
 	var space := get_world_3d().direct_space_state
 	var q := PhysicsRayQueryParameters3D.create(chest_point(), chest_point() + step.normalized() * 0.6, ChainBody.LAYER_WORLD)
 	if not space.intersect_ray(q).is_empty():
@@ -270,6 +303,13 @@ func _walk_toward(target: Vector3, delta: float) -> void:
 	var ahead := global_position + dir * 1.1
 	var ground := _ground_under(ahead)
 	if ground < -1.0e8:
+		# Not an edge but a wall close in front (the chest ray falls short of it at the top of a
+		# leaning slab): up the face, if that's where they are.
+		var qw := PhysicsRayQueryParameters3D.create(global_position + Vector3.UP * 0.4, ahead + Vector3.UP * 0.4, ChainBody.LAYER_WORLD)
+		if not space.intersect_ray(qw).is_empty():
+			if target.y - global_position.y > 1.0:
+				_start_climb()
+			return
 		var land := _find_landing(dir, target)
 		if land.y > -1.0e8:
 			_start_swing(land)
@@ -329,7 +369,7 @@ func _find_landing(dir: Vector3, target: Vector3) -> Vector3:
 				seen_gap = true
 			elif seen_gap and (hit["normal"] as Vector3).y > 0.7:
 				var y := (hit["position"] as Vector3).y
-				if absf(y - global_position.y) < 12.0:
+				if absf(y - global_position.y) < 20.0:  # a thread up a wall to a roof far above, too
 					return Vector3(p.x, y, p.z)
 			k += 1.0
 	return Vector3(0.0, -1.0e9, 0.0)
@@ -592,10 +632,13 @@ func _pick_target() -> Player:
 		var d := p.global_position.distance_to(global_position)
 		if d > SIGHT_RANGE or d >= best_d:
 			continue
-		var q := PhysicsRayQueryParameters3D.create(chest_point(), p.eye_position(), ChainBody.LAYER_WORLD)
-		if space.intersect_ray(q).is_empty():
-			best = p
-			best_d = d
+		# From its chest, or reared up on its back legs (it sees over a lip, a crate, a roof's edge).
+		for lift: float in [0.0, REAR_UP]:
+			var q := PhysicsRayQueryParameters3D.create(chest_point() + Vector3.UP * lift, p.eye_position(), ChainBody.LAYER_WORLD)
+			if space.intersect_ray(q).is_empty():
+				best = p
+				best_d = d
+				break
 	return best
 
 
@@ -734,6 +777,15 @@ func _update_visuals(delta: float) -> void:
 		LState.RECOVER:
 			body_y = BODY_H * 0.7
 	var k := 1.0 - exp(-14.0 * delta)
+	# Crawling, it moves like a film with frames missing: the pose holds, then snaps to where it
+	# should be. Stared at, it holds much longer and only twitches.
+	if lstate == LState.SHAMBLE:
+		_jerk_t -= delta
+		if _jerk_t > 0.0:
+			k = 0.0
+		else:
+			k = 1.0
+			_jerk_t = randf_range(0.3, 0.9) if stared else randf_range(0.05, 0.13)
 	_body.position.y = lerpf(_body.position.y, body_y + (0.02 * sin(t * 2.1) if lstate == LState.SHAMBLE else 0.0), k)
 	_body.rotation.x = lerpf(_body.rotation.x, pitch, k)
 	# Legs: a sweeping gait in two sets, coiled under for the wind-up, flung wide in the jump,
@@ -784,14 +836,33 @@ func _update_visuals(delta: float) -> void:
 		root.rotation.y = lerpf(root.rotation.y, fan + sweep, k)
 		knee.rotation.z = lerpf(knee.rotation.z, -s * bend, k)
 	# The head: the eye cluster brightens before the jump; the fangs work.
-	var eye_e := 2.5
+	# The eyes: a dim red you could miss, brighter while you stare at it, blazing as it coils.
+	var eye_e := 0.6
 	if lstate == LState.WINDUP:
-		eye_e = 8.0
+		eye_e = 9.0
 	elif lstate == LState.DEAD:
 		eye_e = 0.0
-	for e in _eyes:
-		(e.material_override as StandardMaterial3D).emission_energy_multiplier = eye_e
-	_head.rotation.x = 0.15 * sin(t * 1.9) + (0.3 * absf(sin(t * 25.0)) if lstate == LState.WINDUP else 0.0)
+	elif stared:
+		eye_e = 2.4
+	if not _eyes.is_empty():
+		(_eyes[0].material_override as StandardMaterial3D).emission_energy_multiplier = eye_e  # one material for all of them
+	# The neck: it snaps the head to a wrong angle and holds it, then snaps again; faster while
+	# someone's looking at it.
+	_neck_t -= delta
+	if _neck_t <= 0.0:
+		_neck_t = randf_range(0.12, 0.5) if stared else randf_range(0.5, 1.7)
+		_neck = Vector3(randf_range(-0.35, 0.25), randf_range(-0.45, 0.45), randf_range(-0.95, 0.95))
+		if stared and Net.get_local_player() != null and Net.get_local_player().global_position.distance_to(head_point()) < 14.0:
+			Sfx.play_at(self, "click", head_point(), -6.0, randf_range(0.3, 0.45), 16.0)  # a joint cracking
+	_head.rotation = _neck + Vector3(0.3 * absf(sin(t * 25.0)) if lstate == LState.WINDUP else 0.0, 0.0, 0.0)
+	# Close, unseen, coming: breathing, wet, right there.
+	_breath_t -= delta
+	if _breath_t <= 0.0:
+		_breath_t = randf_range(2.5, 5.0)
+		var me := Net.get_local_player()
+		if lstate == LState.SHAMBLE and not stared and not asleep and me != null and me.global_position.distance_to(head_point()) < 13.0:
+			Sfx.play_at(self, "whisper", head_point(), 0.0, randf_range(0.42, 0.52), 16.0)
+			Sfx.caption(self, "wet breathing, too close", head_point())
 	# Captions: the screech has its own; the scuttle gets one when it's near.
 	_caption_t -= delta
 	if _caption_t <= 0.0 and lstate == LState.SHAMBLE and walking:

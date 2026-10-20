@@ -260,7 +260,7 @@ func animate(delta: float, vel: Vector3, facing: float, grounded: bool, bracing:
 	var run := clampf((speed - 4.6) / 2.2, 0.0, 1.0) if grounded else 0.0
 	_walk = walk
 	# Distance-driven gait: one cycle = two steps.
-	var stride := lerpf(1.35, 2.3, run)
+	var stride := lerpf(1.35, 3.0, run)  # a sprint is long strides at ~4.7 steps a second, not a fast walk
 	var prev_phase := _phase
 	_phase += signf(new_fwd if absf(new_fwd) > 0.2 else speed) * speed * delta * TAU / stride
 	if grounded and walk > 0.25 and not grabbed:
@@ -300,15 +300,34 @@ func animate(delta: float, vel: Vector3, facing: float, grounded: bool, bracing:
 	var hip_r := -s * amp_hip
 	var knee_l_t := -(0.06 * walk + amp_knee * maxf(0.0, c) + 0.18 * walk * maxf(0.0, -c))
 	var knee_r_t := -(0.06 * walk + amp_knee * maxf(0.0, -c) + 0.18 * walk * maxf(0.0, c))
-	var pelvis_pos := _pelvis_base + Vector3(0.025 * s * walk * (1.0 - run * 0.6), lerpf(0.022, 0.05, run) * walk * cos(2.0 * _phase) - 0.02 * walk, 0.0)
-	var pelvis_rot := Vector3(0.0, 0.13 * s * walk, 0.03 * c * walk)
+	# A walk vaults over the planted leg (highest mid-step); a run is lowest mid-stance and floats
+	# between footfalls, so the bounce flips sign as it turns into a sprint.
+	var bounce := lerpf(0.022, -0.055, run) * cos(2.0 * _phase)
+	var pelvis_pos := _pelvis_base + Vector3(0.025 * s * walk * (1.0 - run * 0.6), bounce * walk - 0.02 * walk - 0.035 * run, 0.0)
+	var pelvis_rot := Vector3(0.0, lerpf(0.13, 0.19, run) * s * walk, 0.03 * c * walk)
 	var lean_fwd := clampf(_accel * 0.025, -0.15, 0.15) + 0.05 * walk + 0.16 * run
-	var spine_rot := Vector3(-lean_fwd, -0.17 * s * walk, clampf(-_turn_rate * 0.045 * clampf(speed / 4.0, 0.0, 1.5), -0.28, 0.28))
+	var spine_rot := Vector3(-lean_fwd, -lerpf(0.17, 0.26, run) * s * walk, clampf(-_turn_rate * 0.045 * clampf(speed / 4.0, 0.0, 1.5), -0.28, 0.28))
 	var arm_amp := lerpf(0.38, 0.85, run) * walk
 	var sh_l := Vector3(-s * arm_amp, 0.0, -0.09 - 0.05 * run)
 	var sh_r := Vector3(s * arm_amp, 0.0, 0.09 + 0.05 * run)
 	var el_l := 0.2 + lerpf(0.12, 1.35, run) * walk + 0.22 * walk * maxf(0.0, s)
 	var el_r := 0.2 + lerpf(0.12, 1.35, run) * walk + 0.22 * walk * maxf(0.0, -s)
+	var sprint := run * walk
+	if sprint > 0.0:
+		# A sprinter's stride: the knee driven high in front, a short push-off behind, the heel
+		# whipped up under the hip as the thigh comes through, arms pumping from the shoulder bent
+		# at a right angle (the hand rising toward the chin in front, past the hip behind).
+		hip_l = lerpf(hip_l, 1.2 * maxf(0.0, s) - 0.5 * maxf(0.0, -s), sprint)
+		hip_r = lerpf(hip_r, 1.2 * maxf(0.0, -s) - 0.5 * maxf(0.0, s), sprint)
+		var kick := cos(_phase + 0.97)  # peaks just after the thigh's back-most point
+		var rec_l := pow(maxf(0.0, kick), 1.4)
+		var rec_r := pow(maxf(0.0, -kick), 1.4)
+		knee_l_t = lerpf(knee_l_t, -(0.22 + 1.95 * rec_l + 0.35 * maxf(0.0, s)), sprint)
+		knee_r_t = lerpf(knee_r_t, -(0.22 + 1.95 * rec_r + 0.35 * maxf(0.0, -s)), sprint)
+		sh_l.x = lerpf(sh_l.x, 1.05 * maxf(0.0, -s) - 0.65 * maxf(0.0, s), sprint)
+		sh_r.x = lerpf(sh_r.x, 1.05 * maxf(0.0, s) - 0.65 * maxf(0.0, -s), sprint)
+		el_l = lerpf(el_l, 1.45 + 0.35 * maxf(0.0, -s), sprint)
+		el_r = lerpf(el_r, 1.45 + 0.35 * maxf(0.0, s), sprint)
 	# Idle life: breathing, weight shift, the odd glance around.
 	var idle := 1.0 - walk
 	pelvis_pos.x += 0.015 * sin(_t * 0.55) * idle
@@ -410,7 +429,7 @@ func animate(delta: float, vel: Vector3, facing: float, grounded: bool, bracing:
 	var arms_on := not (_first_person and grabbed)
 	shoulder_l.visible = arms_on
 	shoulder_r.visible = arms_on
-	var k_leg := 1.0 - exp(-24.0 * delta)
+	var k_leg := 1.0 - exp(-lerpf(24.0, 36.0, run) * delta)  # a sprint's quick heel kick would be smoothed away
 	var k_arm := 1.0 - exp(-15.0 * delta)
 	var k_body := 1.0 - exp(-12.0 * delta)
 	var k_head := 1.0 - exp(-9.0 * delta)

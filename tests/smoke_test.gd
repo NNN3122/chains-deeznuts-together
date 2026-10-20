@@ -461,9 +461,12 @@ func _test_keyboard() -> void:
 		await _wait(0.02)
 		_key(KEY_W, false, false)
 		await _wait(0.03)
+	var z_let_go := _host.global_position.z
 	await _wait(0.5)
 	var stream_walk := _host.global_position.z - z1
-	_check("Remote Controls turn a stream of 30 ms taps into a held key", _host.input.flicker_seen and stream_walk > 1.2, "flicker %s, walked %.2f m" % [_host.input.flicker_seen, stream_walk])
+	_check("Remote Controls turn a stream of 30 ms taps into a held key", _host.input.flicker_seen and stream_walk > 1.0, "flicker %s, walked %.2f m" % [_host.input.flicker_seen, stream_walk])
+	var after_walk := _host.global_position.z - z_let_go
+	_check("...and when the stream stops you stop within a step (no long grace once the hold is proven)", after_walk < 1.6, "%.2f m after the last tap" % after_walk)
 	# Remote Controls look: plain mouse movement turns the view, no button held.
 	var yaw0 := _host._yaw
 	_mouse_move(Vector2(120.0, 0.0))
@@ -483,6 +486,17 @@ func _test_keyboard() -> void:
 	Settings.remote_mode = was_remote
 	_host.bot_controlled = true
 	_bot(Vector2.ZERO, 0.0, 0)
+	# A sprint that turns round plants a foot: the old way's speed dies like a stop.
+	_place(spawn, PI)
+	await _wait(0.4)
+	_bot(Vector2(0.0, 1.0), PI, Player.FLAG_RUN)  # +z, into the room
+	await _wait(0.7)
+	var run_v := _host.velocity.z
+	_bot(Vector2(0.0, -1.0), PI, Player.FLAG_RUN)
+	await _wait(0.35)
+	var back_v := -_host.velocity.z
+	_bot(Vector2.ZERO, PI, 0)
+	_check("a sprint reversed is going the other way within 0.35 s (no skating on)", run_v > 4.5 and back_v > 0.5, "%.2f m/s, then %.2f m/s back" % [run_v, back_v])
 
 
 func _test_climb() -> void:
@@ -821,7 +835,7 @@ func _test_hires() -> void:
 	var far := start + Vector3(0.0, 0.0, 3.2)
 	# Seen: it screams and runs you down; unrescued, a layoff.
 	_place(start, PI)
-	_park_mate(start + Vector3(8.0, 0.0, 0.0))
+	_park_mate_clear()
 	await _wait(0.3)
 	h.debug_reset(far, 0.0)  # facing -z: at the host
 	h.debug_frozen = false
@@ -893,7 +907,7 @@ func _test_hires() -> void:
 	await _wait(0.3)
 	# Squeaky Dennis: the whole floor goes to him and stands over him for as long as he squeaks.
 	_place(start, PI)
-	_park_mate(start + Vector3(8.0, 0.0, 0.0))
+	_park_mate_clear()
 	await _wait(0.3)
 	h.debug_reset(start + Vector3(4.0, 0.0, 3.0), -PI * 0.5)  # same room, far side, facing +x: away from you
 	_give("decoy")
@@ -917,7 +931,7 @@ func _test_hires() -> void:
 	await _wait(0.3)
 	# Crouching doesn't hide you at close range.
 	_place(start, PI)
-	_park_mate(start + Vector3(8.0, 0.0, 0.0))
+	_park_mate_clear()
 	_bot(Vector2.ZERO, PI, Player.FLAG_BRACE)
 	await _wait(0.4)
 	h.debug_reset(far, 0.0)
@@ -931,7 +945,7 @@ func _test_hires() -> void:
 	_check("one looking the other way doesn't see you", h.hstate != HollowHire.HState.CHASE, "state %d" % h.hstate)
 	# The flashlight in its face stuns it (and it is wise to it for a few seconds after).
 	_place(start, PI)
-	_park_mate(start + Vector3(8.0, 0.0, 0.0))
+	_park_mate_clear()
 	await _wait(0.3)
 	h.debug_reset(far, 0.0)
 	_give("flashlight")
@@ -1816,36 +1830,48 @@ func _test_route() -> void:
 		var edge := o2.dot(d) + prev.edge_along(d)  # the edge you leave from, as a coordinate along d
 		var near := edge + r.gap  # this roof's near edge
 		# 4 m of run-up, the partner a metre behind: both still on the raised part (5.6 m or more deep).
-		var start := arena.origin + Vector3(r.cross.x, prev.top + 0.1, r.cross.y) - d3 * 4.0
+		# (Behind a leaning slab, not on it: it runs back from the wall r.ramp m.)
+		var start := arena.origin + Vector3(r.cross.x, prev.top + 0.1, r.cross.y) - d3 * maxf(4.0, r.ramp + 1.2)
 		_host.teleport_to(start, yaw)
 		if _mate != null:
 			_mate.teleport_to(start - d3 * 1.0, yaw)
 		_bot(Vector2.ZERO, yaw, 0)
 		await _wait(0.4)
+		if r.link == HordeArena.Link.FACADE:
+			failed += await _climb_facade(i)
+			continue
 		# Where to take off: the edge for a jump or a leap, then each chimney stack's far edge.
+		# Girders and a snapped plank are walked, with a hop at each gap; the rest are sprinted.
 		var takeoffs: Array[float] = []
-		if r.link == HordeArena.Link.JUMP or r.link == HordeArena.Link.LEAP or r.link == HordeArena.Link.STONES:
+		if r.link == HordeArena.Link.JUMP or r.link == HordeArena.Link.LEAP or r.link == HordeArena.Link.STONES or r.link == HordeArena.Link.GIRDERS:
 			takeoffs.append(edge)
 		for s in r.stones:
 			takeoffs.append(o2.dot(d) + Vector2(s.x, s.z).dot(d) + HordeArena.STONE_DEPTH * 0.5)
-		var run := not takeoffs.is_empty() or r.link == HordeArena.Link.DROP
+		for g in r.girders.size():
+			takeoffs.append(o2.dot(d) + Vector2(r.girders[g].x, r.girders[g].z).dot(d) + r.girder_len[g] * 0.5)
+		if r.link == HordeArena.Link.PLANK and r.plank_break != Vector2.ZERO:
+			takeoffs.append(edge + r.plank_break.x)
+		var run := r.link == HordeArena.Link.JUMP or r.link == HordeArena.Link.LEAP or r.link == HordeArena.Link.STONES or r.link == HordeArena.Link.DROP
 		var flags := Player.FLAG_RUN if run else 0
+		# Jump in the last half metre at a sprint (0.35 m a poll), the last 0.3 m at a walk: the long
+		# jumps are sized to a take-off from the very edge.
+		var early := 0.5 if run else 0.3
 		var jumped := 0
 		var mate_jumped := 0
 		var landed := false
 		var mate_p := _mate as Player
 		var mate_landed := mate_p == null
 		var trail := ""
-		for k in 140:
+		for k in 240:
 			await _wait(0.05)
 			var along := Vector2(_host.global_position.x, _host.global_position.z).dot(d)
 			if k % 10 == 0:
 				trail += "[%.1f %.1f %s %d] " % [along - near, _host.global_position.y - arena.origin.y, "F" if _host.is_on_floor() else "a", _host.state]
 			var tap := false
-			if jumped < takeoffs.size() and along > takeoffs[jumped] - 0.8:
+			if jumped < takeoffs.size() and along > takeoffs[jumped] - early and _host.is_on_floor() and _host.state == Player.State.NORMAL:
 				tap = true
 				jumped += 1
-			elif r.link == HordeArena.Link.CLIMB and k % 6 == 0 and along < near + 0.3:
+			elif r.link == HordeArena.Link.CLIMB and k % 6 == 0 and along < near + 0.3 and (r.ramp <= 0.0 or along > edge - 0.9):
 				tap = true  # Space into the unit, then the roof
 			if not landed and arena.roof_at(_host.global_position) == i and _host.is_on_floor() and along > near + 2.4:
 				landed = true  # clear of the edge: the teammate is coming over behind
@@ -1854,10 +1880,10 @@ func _test_route() -> void:
 			if mate_p != null:
 				var m_along := Vector2(mate_p.global_position.x, mate_p.global_position.z).dot(d)
 				var mtap := false
-				if mate_jumped < takeoffs.size() and m_along > takeoffs[mate_jumped] - 0.8:
+				if mate_jumped < takeoffs.size() and m_along > takeoffs[mate_jumped] - early and mate_p.is_on_floor() and mate_p.state == Player.State.NORMAL:
 					mtap = true
 					mate_jumped += 1
-				elif r.link == HordeArena.Link.CLIMB and k % 6 == 3 and m_along < near + 0.3:
+				elif r.link == HordeArena.Link.CLIMB and k % 6 == 3 and m_along < near + 0.3 and (r.ramp <= 0.0 or m_along > edge - 0.9):
 					mtap = true
 				if not mate_landed and arena.roof_at(mate_p.global_position) == i and mate_p.is_on_floor() and m_along > near + 0.6:
 					mate_landed = true
@@ -1894,20 +1920,75 @@ func _test_route() -> void:
 			_mate.teleport_to(at - od * 1.5, tyaw)
 		await _wait(0.3)
 		var up := false
+		var ttrail := ""
 		for k in 120:
 			await _wait(0.05)
+			if k % 8 == 0:
+				ttrail += "[%.1f %.1f %s %d] " % [(Vector2(_host.global_position.x, _host.global_position.z) - Vector2(arena.origin.x, arena.origin.z)).dot(r.out_dir), _host.global_position.y - arena.origin.y, "F" if _host.is_on_floor() else "a", _host.state]
 			_bot(r.out_dir, tyaw, 0, k % 6 == 0)
 			if _mate is Player:
 				_drive_mate(r.out_dir, 0, k % 6 == 3)
-			if _host.is_on_floor() and _host.global_position.y > arena.origin.y + r.top - 0.3:
+			if _host.global_position.y > arena.origin.y + r.top - 0.3:  # up (a buffered jump off the top is still up)
 				up = true
 				break
 		_bot(Vector2.ZERO, tyaw, 0)
 		_drive_mate(Vector2.ZERO, 0, false)
 		await _wait(0.3)
 		if not up:
-			tier_fail += "roof %d tier %.1f m%s: host at %s; " % [i, r.top - r.y, " (unit)" if has_unit else "", _host.global_position]
+			tier_fail += "roof %d tier %.1f m%s (roof y %.1f, unit %s, inner %.1f, heap %s): host at %s state %d knocked %s; trail %s; " % [i, r.top - r.y, " (unit)" if has_unit else "", r.y, r.tier_unit, inner, r.barrier, _host.global_position, _host.state, _host.is_knocked(), ttrail]
 	_check("the roofs stand at their own heights: most have a raised part to climb before the next crossing (%d of them), and each can be climbed with the partner on the chain" % tiers, tier_fail == "" and tiers >= 3, tier_fail)
+	# The heaps of fallen slabs across the walk: up over the top and down the other side.
+	var heap_fail := ""
+	var heaps := 0
+	for i in range(1, arena.roofs.size() - 1):
+		var r: HordeArena.Roof = arena.roofs[i]
+		if r.barrier.size.x <= 0.0:
+			continue
+		heaps += 1
+		var od2 := r.out_dir
+		var bside := arena._side(od2)
+		var b0 := minf(r.barrier.position.dot(od2), r.barrier.end.dot(od2))
+		var b1 := maxf(r.barrier.position.dot(od2), r.barrier.end.dot(od2))
+		# Across the heap where the walk over the roof crosses it (landing, run-up, way out): the
+		# dressing keeps off that walk, not off any other line over the heap.
+		var e2 := Vector2(r.enter.x, r.enter.z)
+		var x2 := Vector2(r.exit.x, r.exit.z)
+		var rn2 := x2 - od2 * HordeArena.RUN_UP
+		var mid_b := r.barrier.get_center().dot(od2)
+		var pick := e2
+		for seg: Array in [[e2, rn2], [rn2, x2]]:
+			var pa: Vector2 = seg[0]
+			var pb: Vector2 = seg[1]
+			var da := pa.dot(od2)
+			var db := pb.dot(od2)
+			if absf(db - da) > 0.01 and (mid_b - da) * (mid_b - db) <= 0.0:
+				pick = pa.lerp(pb, (mid_b - da) / (db - da))
+				break
+		var s3 := od2 * (b0 - 1.6) + bside * pick.dot(bside)
+		var byaw := atan2(-od2.x, -od2.y)
+		var bat := arena.origin + Vector3(s3.x, r.y + 0.1, s3.y)
+		_host.teleport_to(bat, byaw)
+		if _mate != null:
+			_mate.teleport_to(bat - Vector3(od2.x, 0.0, od2.y) * 1.2, byaw)
+		await _wait(0.3)
+		var over := false
+		for k in 120:
+			await _wait(0.05)
+			var al_now := (Vector2(_host.global_position.x, _host.global_position.z) - Vector2(arena.origin.x, arena.origin.z)).dot(od2)
+			_bot(od2, byaw, 0, k % 6 == 0 and al_now < b0 + 0.2)  # Space at the heap's face, not on top of it (that leaps onto what's beyond)
+			if _mate is Player:
+				_drive_mate(od2, 0, k % 6 == 3)
+			var al := (Vector2(_host.global_position.x, _host.global_position.z) - Vector2(arena.origin.x, arena.origin.z)).dot(od2)
+			if _host.is_on_floor() and al > b1 + 0.6:  # past it (an air grab off its top may land you on the raised part beyond: that's past it too)
+				over = true
+				break
+		_bot(Vector2.ZERO, byaw, 0)
+		_drive_mate(Vector2.ZERO, 0, false)
+		await _wait(0.3)
+		if not over:
+			var al_h := (Vector2(_host.global_position.x, _host.global_position.z) - Vector2(arena.origin.x, arena.origin.z)).dot(od2)
+			heap_fail += "roof %d heap %.1f m high (along %.1f..%.1f, roof y %.1f): host along %.1f y %.1f state %d knocked %s floor %s, mate %s; " % [i, r.barrier_h, b0, b1, arena.origin.y + r.y, al_h, _host.global_position.y, _host.state, _host.is_knocked(), _host.is_on_floor(), _mate.global_position if _mate != null else Vector3.ZERO]
+	_check("heaps of fallen slabs lie across most roofs (%d of them), and each can be climbed over with the partner on the chain" % heaps, heap_fail == "" and heaps >= 3, heap_fail)
 	# And the fire escape: landing by landing up the tower to the helipad, the way a player does it
 	# (walk into the side of the next landing and tap Space; off the last one onto the pad).
 	var steps: Array[Vector3] = arena.escape_steps
@@ -1948,6 +2029,132 @@ func _test_route() -> void:
 	_check("the fire escape climbs, landing by landing, onto the helipad (the partner hauled up on the chain)", on_pad, "host at %s (pad at %s), reached landing %d of %d" % [_host.global_position, arena.test_points["helipad"], highest, steps.size()])
 
 
+## The collapse up to roof i, the way a player climbs it: a run and a jump over the alley onto the
+## first slab, then along each slab to its end and Space to grab the next, and from the top one a
+## mantle onto the roof. The teammate (co-op) follows; a Ballast is hauled. "" when it made it.
+func _climb_facade(i: int) -> String:
+	var arena := _arena
+	var r: HordeArena.Roof = arena.roofs[i]
+	var prev: HordeArena.Roof = arena.roofs[i - 1]
+	var d := r.dir
+	var side := arena._side(d)
+	var edge := prev.edge_along(d)
+	var stage := -1  # -1: still on the roof below; s: standing on slab s
+	var trail := ""
+	var done := false
+	for k in 500:
+		await _wait(0.05)
+		var lp := _host.global_position - arena.origin
+		var l2 := Vector2(lp.x, lp.z)
+		if _host.is_on_floor():
+			for s in r.ledges.size():
+				var c := Vector2(r.ledges[s].x, r.ledges[s].z)
+				if absf(lp.y - r.ledges[s].y) < 0.35 and absf((l2 - c).dot(side)) < r.ledge_w[s] * 0.5 + 0.15 and absf((l2 - c).dot(d)) < r.ledge_out[s] * 0.5 + 0.15:
+					stage = maxi(stage, s)
+		if k % 10 == 0:
+			trail += "[%d %.1f %.1f %s] " % [stage, (l2.dot(side)), lp.y, "F" if _host.is_on_floor() else "a"]
+		if arena.roof_at(_host.global_position) == i and _host.is_on_floor() and lp.y > r.y - 0.3:
+			done = true
+			break
+		var move := Vector2.ZERO
+		var flags := 0
+		var tap := false
+		if stage < 0:
+			# Across the roof below at a run, toward the first slab; jump at the edge.
+			var to := Vector2(r.ledges[0].x, r.ledges[0].z) - l2
+			move = to.normalized() if to.length() > 0.2 else d
+			flags = Player.FLAG_RUN
+			tap = _host.is_on_floor() and l2.dot(d) > edge - 0.5
+		elif stage == r.ledges.size() - 1:
+			move = d  # into the wall: the roof is a mantle up
+			tap = k % 6 == 0
+		else:
+			# Along this slab to its end toward the next, kept in from the slab's outer edge; Space
+			# while standing at the end.
+			var c := Vector2(r.ledges[stage].x, r.ledges[stage].z)
+			var nx := Vector2(r.ledges[stage + 1].x, r.ledges[stage + 1].z)
+			var s_dir := signf((nx - c).dot(side))
+			var end_c := c.dot(side) + s_dir * r.ledge_w[stage] * 0.5
+			var off_d := (l2 - c).dot(d)
+			var to_end := s_dir * (end_c - l2.dot(side))  # m left to the end
+			move = (side * s_dir - d * clampf(off_d, -0.5, 0.5)).normalized() * (0.3 if to_end < 0.9 else 1.0)  # ease up to the end
+			tap = _host.is_on_floor() and to_end < 0.3
+		_bot(move, atan2(-move.x, -move.y) if move.length() > 0.1 else atan2(-d.x, -d.y), flags, tap)
+		if _mate is Player:
+			var mt := Vector2(_host.global_position.x - _mate.global_position.x, _host.global_position.z - _mate.global_position.z)
+			_drive_mate(mt.normalized() if mt.length() > 1.4 else Vector2.ZERO, 0, k % 6 == 3)
+	# Up: keep walking in from the edge, hauling up whoever is still hanging down the wall.
+	for k in 30:
+		await _wait(0.05)
+		_bot(d, atan2(-d.x, -d.y), 0)
+	_bot(Vector2.ZERO, atan2(-d.x, -d.y), 0)
+	_drive_mate(Vector2.ZERO, 0, false)
+	await _wait(0.8)
+	if done and arena.roof_at(_host.global_position) == i:
+		return ""
+	return "roof %d (the collapse, %d slabs, %.1f m up, alley %.1f): host at %s on roof %d, reached slab %d; trail %s; " % [i, r.ledges.size(), r.y - prev.top, r.gap, _host.global_position, arena.roof_at(_host.global_position), stage, trail]
+
+
+## Over one of the nest roofs (a hand's breadth past the edge still counts: a mite on the lip).
+func _on_a_nest(arena: HordeArena, p: Vector3) -> bool:
+	for k in arena.nests:
+		if arena.roofs[k].rect.grow(0.8).has_point(Vector2(p.x - arena.origin.x, p.z - arena.origin.z)):
+			return true
+	return false
+
+
+## A nest roof: landing on it floods it with mites out of its burst vents; they never leave that
+## roof; and standing in them pulls you down.
+func _test_nest() -> void:
+	var arena := _arena
+	_horde.debug_frozen = true
+	for l in arena.launchers:
+		l.debug_frozen = true
+	await _wait(1.6)  # a layoff from the test before lands first
+	var k: int = arena.nests[0]
+	var r: HordeArena.Roof = arena.roofs[k]
+	var spot := arena.origin + arena.landing_spot(k) + Vector3(0.0, 0.1, 0.0)
+	# Re-arm it: earlier tests woke every nest and cleared the map. Back to "nobody has been here".
+	for i in _horde.count:
+		if _horde.tiny[i] == 1:
+			_horde.state[i] = Horde.AState.GONE
+	var rounds0 := arena.rounds_spawned
+	arena.rounds_spawned = k + 1
+	arena._rounds_done = k + 1
+	r.reached = false
+	_place(spot, 0.0)
+	for i in 30:
+		await _wait(0.1)
+		if arena.rounds_spawned >= k + 2:
+			break
+	await _wait(0.3)
+	var mites := 0
+	for i in _horde.count:
+		if _horde.tiny[i] == 1 and _horde.state[i] != Horde.AState.DEAD and _horde.state[i] != Horde.AState.GONE and arena.roof_under(_horde.agent_position(i)) == k:
+			mites += 1
+	_check("a nest roof floods with mites as you land on it (%d of them; nests on roofs %s)" % [mites, arena.nests], mites >= 40 and arena.rounds_spawned >= k + 2, "rounds %d" % arena.rounds_spawned)
+	# Loose for a few seconds: they come for you, and stay on their roof.
+	var wipes0 := GameState.wipes
+	_horde.debug_frozen = false
+	var pulled := false
+	for i in 120:
+		await _wait(0.1)
+		_bot(Vector2.ZERO, 0.0, 0)
+		if GameState.wipes > wipes0:
+			pulled = true
+			break
+	_horde.debug_frozen = true
+	var off := 0
+	for i in _horde.count:
+		if _horde.tiny[i] == 1 and _horde.state[i] != Horde.AState.DEAD and _horde.state[i] != Horde.AState.GONE and not _on_a_nest(arena, _horde.agent_position(i)):
+			off += 1
+	_check("the mites keep to their roof", off == 0, "%d off it" % off)
+	_check("stand in a nest and they pull you down", pulled, "mauls %d" % _horde.mauls)
+	await _wait(1.6)
+	_horde.clear_near(arena.origin + r.center(), 60.0)
+	arena.rounds_spawned = maxi(rounds0, arena.rounds_spawned)  # as far as the run had got before the re-arm
+
+
 ## The district: ROOF_COUNT roofs laid out from the seed with jumpable links, the field knowing
 ## roof from street, a run-and-jump across the first gap, a Weaver swinging a gap and climbing
 ## the tower, and a Jumper crossing to the roof you're on.
@@ -1960,6 +2167,9 @@ func _test_district() -> void:
 	var links_ok := true
 	var why := ""
 	var turns := 0
+	var long_jumps := 0
+	var facades := 0
+	var broken := 0
 	var heights: Array[float] = []
 	for i in range(1, arena.roofs.size()):
 		var r: HordeArena.Roof = arena.roofs[i]
@@ -1988,23 +2198,52 @@ func _test_district() -> void:
 				why += "roof %d sits on roof %d; " % [i, j]
 		match r.link:
 			HordeArena.Link.JUMP:
-				ok = ok and r.gap >= 2.9 and r.gap <= 4.5 and dy <= 0.3 and dy >= -2.7
+				# Off the lot an easy one; after that within JUMP_SLACK of a sprint jump's full reach.
+				var full := HordeArena.sprint_reach(dy)
+				ok = ok and dy <= 0.01 and dy >= -2.7 and r.gap <= full - HordeArena.JUMP_SLACK.x + 0.01 and (i == 1 or r.gap >= full - HordeArena.JUMP_SLACK.y - 0.01)
+				if i > 1:
+					long_jumps += 1
 			HordeArena.Link.LEAP:
-				ok = ok and r.gap >= 1.7 and r.gap <= 2.5 and dy >= 0.8 and dy <= 1.3
+				ok = ok and r.gap >= 2.7 and r.gap <= 3.7 and dy >= 1.3 and dy <= 2.0
 			HordeArena.Link.PLANK, HordeArena.Link.PIPE:
-				ok = ok and r.gap >= 5.4 and r.gap <= 9.1 and absf(dy) < 0.01
+				ok = ok and r.gap >= 6.4 and r.gap <= 11.1 and absf(dy) < 0.01
+				if r.plank_break != Vector2.ZERO:
+					broken += 1
+					var b := r.plank_break.y - r.plank_break.x
+					ok = ok and b >= HordeArena.PLANK_BREAK.x - 0.01 and b <= HordeArena.PLANK_BREAK.y + 0.01 and r.plank_break.x > 2.0 and r.plank_break.y < r.gap - 2.0
 			HordeArena.Link.DROP:
-				ok = ok and r.gap >= 1.9 and r.gap <= 3.1 and dy <= -3.3
+				ok = ok and r.gap >= 2.9 and r.gap <= 4.1 and dy <= -3.3
 			HordeArena.Link.CLIMB:
-				ok = ok and r.gap == 0.0 and dy >= 2.5 and dy <= (HordeArena.TOWER_RISE + 0.01 if i == arena.roofs.size() - 1 else HordeArena.CLIMB_STEP * float(r.climb_steps) + 1.95)
+				ok = ok and r.gap == 0.0 and dy >= 2.5 and dy <= (HordeArena.TOWER_RISE + 0.01 if i == arena.roofs.size() - 1 else HordeArena.CLIMB_STEP * float(r.climb_steps) + 2.05)
 			HordeArena.Link.STONES:
-				ok = ok and r.stones.size() >= 2 and r.gap > 8.0 and dy <= 0.01
+				ok = ok and r.stones.size() >= 3 and r.gap > 15.0 and dy <= 0.01
+			HordeArena.Link.FACADE:
+				# Slab to slab up a wall: each a standing grab above the last, never over the one
+				# below, the top one a mantle under the roof.
+				facades += 1
+				ok = ok and r.gap >= HordeArena.FACADE_GAP.x - 0.01 and r.gap <= HordeArena.FACADE_GAP.y + 0.01 and dy >= HordeArena.FAR_UP.x - 0.01 and r.ledges.size() >= 2
+				var below := prev.top
+				for s in r.ledges.size():
+					var rise := r.ledges[s].y - below
+					ok = ok and rise >= HordeArena.LEDGE_RISE.x - 0.01 and rise <= HordeArena.LEDGE_RISE.y + 0.01
+					if s > 0:
+						var apart := absf((Vector2(r.ledges[s].x, r.ledges[s].z) - Vector2(r.ledges[s - 1].x, r.ledges[s - 1].z)).dot(side))
+						ok = ok and apart >= (r.ledge_w[s] + r.ledge_w[s - 1]) * 0.5 + HordeArena.LEDGE_SIDE_GAP.x - 0.01
+					below = r.ledges[s].y
+				var lip := r.y - below
+				ok = ok and lip >= 1.19 and lip <= 1.96
+			HordeArena.Link.GIRDERS:
+				# Each gap a walking jump, each gap plus its beam past a sprint jump's reach.
+				ok = ok and r.girders.size() >= 4 and dy <= 0.01
+				for g in r.girder_len.size():
+					ok = ok and r.girder_len[g] >= HordeArena.GIRDER_LEN.x - 0.01
 		if not ok:
 			links_ok = false
 			why += "roof %d link %d heading %s gap %.1f dy %.1f inside %s; " % [i, r.link, r.dir, r.gap, dy, inside]
 	heights.sort()
 	var spread := heights[heights.size() - 2] - heights[0]  # the route's roofs, not the tower
-	_check("%d roofs and the tower scattered at their own heights (not a line: %d turns, %.1f m between lowest and highest), every link within reach, the crossing inside both roofs and clear of vents, no roof on another" % [HordeArena.ROOF_COUNT, turns, spread], links_ok and arena.roofs.size() == HordeArena.ROOF_COUNT + 2 and turns >= 1 and spread > 8.0, why)
+	print("[smoke] links: %s; %d long jumps, %d snapped planks, %d collapses; heights %s" % [", ".join(PackedStringArray(arena.roofs.slice(1).map(func(r: HordeArena.Roof) -> String: return HordeArena.LINK_NAMES[r.link]))), long_jumps, broken, facades, heights])
+	_check("%d roofs and the tower scattered at their own heights (not a line: %d turns, %.1f m between lowest and highest), every link within reach, the crossing inside both roofs and clear of vents, no roof on another" % [HordeArena.ROOF_COUNT, turns, spread], links_ok and arena.roofs.size() == HordeArena.ROOF_COUNT + 2 and turns >= 1 and spread > 20.0, why)
 	_check("no green route signs: nothing but the red light points the way", arena.find_children("*", "Label3D", true, false).filter(func(l: Node) -> bool: return (l as Label3D).modulate.g > 0.9 and (l as Label3D).modulate.r < 0.6).is_empty(), "")
 	var f := arena.field
 	var r1: HordeArena.Roof = arena.roofs[1]
@@ -2051,7 +2290,7 @@ func _test_district() -> void:
 	# A Weaver on the roof behind you swings the gap on a thread. (None come in waves now; the
 	# crowd tech still supports them, so the test brings one.)
 	var wk := 2
-	while wk < arena.roofs.size() - 2 and (arena.roofs[wk].link == HordeArena.Link.CLIMB or arena.roofs[wk].link == HordeArena.Link.STONES):
+	while wk < arena.roofs.size() - 2 and (arena.roofs[wk].link == HordeArena.Link.CLIMB or arena.roofs[wk].link == HordeArena.Link.STONES or arena.roofs[wk].link == HordeArena.Link.GIRDERS or arena.roofs[wk].link == HordeArena.Link.FACADE):
 		wk += 1  # a link with open street to swing across
 	var r2: HordeArena.Roof = arena.roofs[wk]
 	var r_from: HordeArena.Roof = arena.roofs[wk - 1]
@@ -2065,23 +2304,44 @@ func _test_district() -> void:
 		await _agent_crosses_and_climbs(k, wk, r_from, d2)
 	_horde.debug_frozen = true
 	# The route's Jumper crosses from its roof to you on the next (a thread, or up the wall).
+	# A roof whose next crossing has open air to swing over (a jump, a leap, a plank or a pipe): the
+	# route's Jumper is brought there. (Where it waits, roof 7, the next can be a 16 m wall.)
 	var jk: int = HordeArena.JUMPER_ROOFS[0]
+	for k in range(2, arena.roofs.size() - 2):
+		var lk: int = arena.roofs[k + 1].link
+		if lk == HordeArena.Link.JUMP or lk == HordeArena.Link.LEAP or lk == HordeArena.Link.PLANK or lk == HordeArena.Link.PIPE:
+			jk = k
+			break
 	var jumper: Launcher = arena.launchers[HordeArena.LOT_JUMPERS]
 	var r3: HordeArena.Roof = arena.roofs[jk]
 	var r4: HordeArena.Roof = arena.roofs[jk + 1]
 	var d4 := Vector3(r4.dir.x, 0.0, r4.dir.y)
 	var there := arena.origin + r4.enter
 	var deep := absf(r4.rect.size.dot(r4.dir))  # how far the roof runs the way you came in
-	_host.teleport_to(there + d4 * minf(8.0, deep - 3.0), 0.0)  # out of lunge range: it has to cross first
+	# Out of lunge range: it has to cross first. Up a climb (a wall up to 6.8 m) it has to SEE you to
+	# come up the face, so you stand at the lip.
+	var room4 := deep - 3.0
+	if r4.tier.size.x > 0.0:
+		# Not inside its raised part: in front of it.
+		room4 = minf(r4.tier.position.dot(r4.dir), r4.tier.end.dot(r4.dir)) - Vector2(r4.enter.x, r4.enter.z).dot(r4.dir) - 0.8
+	# (Just past where you land: further in there may be the raised part or a heap of slabs.)
+	var stand4 := there - d4 * 1.0 if r4.link == HordeArena.Link.CLIMB else there + d4 * clampf(minf(room4, 0.6), 0.3, 4.0)
+	_host.teleport_to(stand4, 0.0)
 	if _mate != null:
-		_mate.teleport_to(_host.global_position + Vector3(1.5, 0.0, -1.0), 0.0)
+		_mate.teleport_to(stand4 + d4 * (1.0 if r4.link == HordeArena.Link.CLIMB else -1.0), 0.0)  # on the roof, not in its raised part
 	_bot(Vector2.ZERO, 0.0, 0)
 	await _wait(0.3)
-	jumper.debug_reset(arena.origin + r3.exit - d4 * 2.0)
+	# At the edge: from further back the lip hides a roof far below or far above, and it only
+	# goes after someone it can see.
+	var back4 := 0.0
+	if r4.link == HordeArena.Link.CLIMB:
+		# Behind the slab heap or the leaning slab's foot, not inside them (exit is 1.6 m from the wall).
+		back4 = (r4.ramp + 1.0 if r4.ramp > 0.0 else HordeArena.CLIMB_STEP_DEPTH * float(r4.climb_steps) + 0.4) - 1.6
+	jumper.debug_reset(arena.origin + r3.exit - d4 * back4)
 	jumper.debug_frozen = false
 	var crossed := false
 	var how := ""
-	for i in 100:
+	for i in 170:  # a crossing of stumps is several swings
 		await _wait(0.1)
 		if jumper.lstate == Launcher.LState.SWING:
 			how = "swing"
@@ -2089,8 +2349,10 @@ func _test_district() -> void:
 			how = "jump"
 		elif jumper.lstate == Launcher.LState.CLIMB and how == "":
 			how = "climb"
-		if how != "" and arena.roof_at(jumper.global_position) == jk + 1:
+		if arena.roof_at(jumper.global_position) == jk + 1:
 			crossed = true
+			if how == "":
+				how = "walk"  # over a plank or a duct
 			break
 	jumper.debug_frozen = true
 	_check("the Jumper on the roof behind crosses to yours (link: %s)" % HordeArena.LINK_NAMES[r4.link], crossed and how != "", "crossed %s by %s, state %d, at roof %d" % [crossed, how, jumper.lstate, arena.roof_at(jumper.global_position)])
@@ -2137,19 +2399,49 @@ func _agent_crosses_and_climbs(k: int, wk: int, r_from: HordeArena.Roof, d2: Vec
 	_host.teleport_to(pad + Vector3(0.0, 0.0, 3.0), 0.0)
 	if _mate != null:
 		_mate.teleport_to(pad + Vector3(1.5, 0.0, 1.0), 0.0)
-	_horde.place(agent, arena.origin + Vector3(tower.rect.get_center().x + 4.0, last.y, tower.rect.end.y + 1.5))
-	await _wait(0.6)
-	_horde.debug_frozen = false
+	# At the foot of the tower's face. Whether the flow field leads up the face from a given spot
+	# depends on the layout (the fire-escape landings are floors too), so it tries a few along the
+	# foot: on the last roof, under the tower, and passes when it climbs from one of them.
+	var spots: Array[float] = [tower.rect.get_center().x + 4.0]
+	var lo_x := maxf(tower.rect.position.x, last.rect.position.x) + 1.2
+	var hi_x := minf(tower.rect.end.x, last.rect.end.x) - 1.2
+	var fx := lo_x
+	while fx <= hi_x and spots.size() < 5:
+		var clear := absf(fx - arena._escape_x()) > 1.6  # the dumpster at the foot
+		for s in arena.escape_steps:
+			if absf(fx - s.x) < arena._escape_step_w(tower) * 0.5 + 0.6:
+				clear = false
+		if clear:
+			spots.append(fx)
+			fx += 3.0
+		else:
+			fx += 0.5
+	# Up the face to the pad, or (the leap reaches 12-13 m) up the fire escape landing by landing:
+	# either counts once it's well up the tower.
 	var climbed := false
 	var up := false
-	for i in 80:
-		await _wait(0.1)
-		if _horde.state[agent] == Horde.AState.CLIMB:
-			climbed = true
-		if climbed and _horde.state[agent] != Horde.AState.CLIMB and _horde.py[agent] > pad.y - 0.5:
-			up = true
+	var risen := 0.0
+	for foot_x in spots:
+		_horde.debug_frozen = true
+		_horde.place(agent, arena.origin + Vector3(foot_x, last.y, tower.rect.end.y + 1.5))
+		await _wait(0.4)
+		_horde.debug_frozen = false
+		climbed = false
+		for i in 60:
+			await _wait(0.1)
+			risen = maxf(risen, _horde.py[agent] - (arena.origin.y + last.y))
+			if _horde.state[agent] == Horde.AState.CLIMB:
+				climbed = true
+			if climbed and _horde.state[agent] != Horde.AState.CLIMB and _horde.py[agent] > pad.y - 0.5:
+				up = true
+				break
+			if not climbed and i >= 45:
+				break  # not going anywhere from here
+		if up:
 			break
-	_check("a %s below the helipad climbs the tower's face up to it" % label, climbed and up, "climbed %s, up %s, state %d, y %.1f (pad %.1f)" % [climbed, up, _horde.state[agent], _horde.py[agent], pad.y])
+	var ok := climbed and up
+	ok = ok or risen > HordeArena.TOWER_RISE * 0.55
+	_check("a %s below the helipad gets up the tower after you (its face or the fire escape)" % label, ok, "climbed %s, up %s, rose %.1f m, state %d, y %.1f (pad %.1f)" % [climbed, up, risen, _horde.state[agent], _horde.py[agent], pad.y])
 	_horde.debug_frozen = true
 	_horde.clear_near(_horde.agent_position(agent), 3.0)
 
@@ -2168,7 +2460,7 @@ func _run_arena(arena: HordeArena) -> void:
 	await _wait(0.6)
 	var bodies := Net.get_chain_bodies()
 	_mate = bodies[1] if bodies.size() > 1 else null
-	_check("arena built: field, the first wave of the swarm (a smaller one now), the Jumpers, the route, loot", _horde.count >= 50 and _horde.count <= 100 and _horde.count < arena.horde_count and arena.launchers.size() == HordeArena.LOT_JUMPERS + HordeArena.JUMPER_ROOFS.size() and arena.field.cell_count() > 9000 and arena.roofs.size() == HordeArena.ROOF_COUNT + 2 and get_tree().get_nodes_in_group("pickups").size() >= 10,
+	_check("arena built: field, a handful of the swarm (the user: less of them), the Jumpers, the route, loot, the nests", _horde.count >= 5 and _horde.count <= 20 and arena.nests.size() == HordeArena.NEST_COUNT and _horde.count < arena.horde_count and arena.launchers.size() == HordeArena.LOT_JUMPERS + HordeArena.JUMPER_ROOFS.size() and arena.field.cell_count() > 9000 and arena.roofs.size() == HordeArena.ROOF_COUNT + 2 and get_tree().get_nodes_in_group("pickups").size() >= 10,
 		"agents %d, launchers %d, cells %d, pickups %d" % [_horde.count, arena.launchers.size(), arena.field.cell_count(), get_tree().get_nodes_in_group("pickups").size()])
 	var chain := _chain()
 	_check("chain links every body", chain != null and chain.segments.size() == bodies.size() - 1, "%d segments" % (chain.segments.size() if chain != null else -1))
@@ -2181,9 +2473,11 @@ func _run_arena(arena: HordeArena) -> void:
 	await _test_horde_field()
 	await _test_horde()
 	await _test_launcher()
+	await _test_stare()
 	await _test_horde_perf()
 	await _test_district()
 	await _test_route()
+	await _test_nest()
 	await _test_lot_clear()
 	_finish()
 
@@ -2228,7 +2522,10 @@ func _test_roof_dread() -> void:
 	var beacon_mat := LevelKit.mat("beacon") as StandardMaterial3D
 	_check("the roof's night is dark and fogged; the tower's red light ignores the fog", env.ambient_light_energy <= 0.08 and env.fog_density >= 0.03 and beacon_mat.disable_fog and lot.beacon != null and lot.beacon.omni_range >= 40.0, "ambient %.3f, fog %.3f" % [env.ambient_light_energy, env.fog_density])
 	_check("the ScareDirector's timer leaves the roof to its own pacing", bool(lvl.call("paces_own_scares", _host.global_position)), "")
-	var spot := lot.origin + lot.roofs[2].center() + Vector3(0.0, 0.1, 0.0)
+	dread._cool = 999.0  # nothing builds while the test sets up
+	dread._build_t = -1.0  # and nothing left building from before
+	var r2d: HordeArena.Roof = lot.roofs[2]
+	var spot := lot.origin + r2d.enter + Vector3(r2d.dir.x, 0.0, r2d.dir.y) * 1.5 + Vector3(0.0, 0.1, 0.0)  # where you land: never up on its raised part
 	_place(spot, 0.0)
 	await _wait(0.5)
 	dread._glimpse_t = 999.0
@@ -2317,6 +2614,9 @@ func _mean_z() -> float:
 func _test_horde() -> void:
 	var spawn: Vector3 = _arena.test_points["spawn"]
 	_horde.debug_frozen = true
+	if _horde.count < 30:
+		# The lot only has a handful now (the user: "less of them"): these checks borrow by index.
+		_horde.spawn_group(30 - _horde.count, Rect2(spawn.x - 40.0, spawn.z - 75.0, 80.0, 20.0), 777)
 	# Three on the chain stop the team.
 	_host.teleport_to(spawn, 0.0)
 	if _mate != null:
@@ -2445,6 +2745,40 @@ func _test_horde() -> void:
 			dived = true
 	_check("a Flitter circles overhead, dives at you, and never takes the chain", high > 2.5 and dived and _horde.state[bat] != Horde.AState.GRAB and _horde.grab_a[bat] < 0, "height %.1f, dived %s, state %d" % [high, dived, _horde.state[bat]])
 	_horde.debug_frozen = true
+
+
+## The Jumper doesn't move while you look straight at it; look away and it comes, faster than you
+## walk.
+func _test_stare() -> void:
+	var spawn: Vector3 = _arena.test_points["spawn"]
+	_horde.debug_frozen = true
+	await _wait(1.6)  # a layoff from the test before lands first
+	var l := _arena.launchers[0]
+	_host.teleport_to(spawn, 0.0)
+	if _mate != null:
+		_mate.teleport_to(spawn + Vector3(1.0, 0.0, 1.5), 0.0)
+	l.debug_reset(spawn + Vector3(0.0, 0.0, -16.0))
+	await _wait(0.3)
+	var look := l.chest_point() - _host.eye_position()
+	var at_it := atan2(-look.x, -look.z)
+	var down := atan2(look.y, Vector2(look.x, look.z).length())
+	l.debug_frozen = false
+	var d0 := l.global_position.distance_to(_host.global_position)
+	var held := true
+	for i in 15:
+		_host._apply_input(Vector2.ZERO, at_it, down, 0)
+		await _wait(0.1)
+		held = held and l.stared
+	var d1 := l.global_position.distance_to(_host.global_position)
+	_check("looked at, the Jumper doesn't take a step (it stares back)", held and absf(d1 - d0) < 0.3, "stared %s, %.1f -> %.1f m" % [held, d0, d1])
+	for i in 15:
+		_host._apply_input(Vector2.ZERO, at_it + PI, 0.0, 0)  # turn your back on it
+		await _wait(0.1)
+	var d2 := l.global_position.distance_to(_host.global_position)
+	l.debug_frozen = true
+	_check("look away and it comes, faster than you walk", not l.stared and d1 - d2 > 4.0, "%.1f -> %.1f m in 1.5 s" % [d1, d2])
+	l.debug_reset(_arena.launcher_homes[0])
+	_bot(Vector2.ZERO, 0.0, 0)
 
 
 func _test_launcher() -> void:
@@ -2704,6 +3038,14 @@ func _park_mate(_far: Vector3) -> void:
 	if _mate == null:
 		return
 	_mate.teleport_to(_host.global_position + Vector3(0.0, 0.0, -2.2), 0.0)
+
+
+## The partner just past a Hire's RESCUE_RADIUS behind the host, still on the chain: "nobody
+## helping" holds whatever the room size (the 6 m rooms used to put a wall between them).
+func _park_mate_clear() -> void:
+	if _mate == null:
+		return
+	_mate.teleport_to(_host.global_position + Vector3(0.0, 0.0, -(HollowHire.RESCUE_RADIUS + 0.9)), 0.0)
 
 
 func _bot(move: Vector2, yaw: float, flags: int, jump: bool = false) -> void:

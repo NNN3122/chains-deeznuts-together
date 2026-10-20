@@ -10,6 +10,7 @@ const RUN_SPEED: float = 7.0
 const SNEAK_SPEED: float = 2.0  # holding Ctrl: brace against the chain AND creep quietly
 const GROUND_ACCEL: float = 11.0  # m/s^2 speeding up: a body has weight
 const GROUND_DECEL: float = 26.0  # m/s^2 stopping: let go of the key and you stop within a step
+const GROUND_TURN_DECEL: float = 34.0  # m/s^2 bleeding off the part of your speed that isn't where you now steer: a sprint turns, it doesn't drift (the user: "it adds a couple of steps")
 const AIR_ACCEL: float = 8.0
 const TURN_SPEED: float = 9.0  # rad/s the body can swing round to face where it's going
 const JUMP_VELOCITY: float = 7.5  # with gravity 18 -> ~1.55 m jump
@@ -45,6 +46,7 @@ const NOISE_SNEAK: float = 3.0
 const NOISE_DRAGGED: float = 26.0  # scraping along the carpet on the end of the Line
 const NOISE_JUMP: float = 18.0
 const NOISE_LAND: float = 30.0
+const HARD_LAND_SPEED: float = 18.0  # m/s falling (about 9 m): land harder and you're knocked flat for a second or two
 const DRINK_BOOST_TIME: float = 8.0
 const DRINK_CRASH_TIME: float = 5.0
 const SLOTS: int = 4  # three for loot, and KEY_SLOT
@@ -900,10 +902,18 @@ func _tick_normal(delta: float) -> void:
 		elif (input_flags & FLAG_RUN) != 0 and not _winded:
 			target_speed = RUN_SPEED
 		target_speed *= _speed_multiplier() * (1.0 - drag)
-		var accel := AIR_ACCEL
-		if on_floor:
-			accel = GROUND_ACCEL if wish.length() > 0.1 else GROUND_DECEL
-		horizontal = horizontal.move_toward(wish * target_speed, accel * delta)
+		if on_floor and wish.length() > 0.1:
+			# Split the speed into along the new heading and across it. The across part (and any of
+			# it still going backwards) dies like a stop; only the along part has to build up, so a
+			# change of direction at a sprint plants a foot instead of skating the old way.
+			var dir := wish.normalized()
+			var along := horizontal.dot(dir)
+			var across := (horizontal - dir * along).move_toward(Vector3.ZERO, GROUND_TURN_DECEL * delta)
+			var want_along := wish.length() * target_speed
+			along = move_toward(along, want_along, (GROUND_ACCEL if along < want_along and along >= 0.0 else GROUND_DECEL) * delta)
+			horizontal = dir * along + across
+		else:
+			horizontal = horizontal.move_toward(wish * target_speed, (GROUND_DECEL if on_floor else AIR_ACCEL) * delta)
 	var sprinting := on_floor and _slide_t <= 0.0 and (input_flags & FLAG_RUN) != 0 and not _winded \
 			and wish.length() > 0.1 and horizontal.length() > WALK_SPEED * 1.05
 	_tick_stamina(delta, sprinting, horizontal.length())
@@ -932,6 +942,11 @@ func _tick_normal(delta: float) -> void:
 	var landed := is_on_floor() and not _was_on_floor
 	if landed and _fall_speed > 9.0:
 		add_noise(NOISE_LAND)
+	if landed and _fall_speed > HARD_LAND_SPEED and multiplayer.is_server():
+		# A long drop (about 9 m and more) puts you on the floor for a moment: climb down the
+		# wreckage instead, or eat it with whatever's behind you.
+		knock(Vector3.ZERO, clampf(0.9 + (_fall_speed - HARD_LAND_SPEED) * 0.12, 0.9, 2.2), true)
+		rpc_slammed.rpc(global_position, _fall_speed)
 	if is_on_floor():
 		_fall_speed = 0.0
 	_was_on_floor = is_on_floor()

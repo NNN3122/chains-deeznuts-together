@@ -38,6 +38,9 @@ const FLYBY_SECONDS: float = 22.0  # repeat pass: a miss never strands the team
 const FLYBY_HEIGHT: float = 4.2  # above the pad, beyond a normal jump
 const FLYBY_WIDTH: float = 12.0
 const LOT_JUMPERS: int = 1  # Jumpers in front of the first of the swarm on the lot
+const LOT_ROACHES: Vector2 = Vector2(10.0, 6.0)  # the lot's two waves (were 70 and 45: the user, "less of them")
+const NEST_COUNT: int = 3  # roofs where the mites pour out, one in each third of the route
+const MITES_PER_NEST: int = 150
 const JUMPER_ROOFS: Array[int] = [7]  # a Jumper waits on each of these roofs (rare: a scare, not a wall of spiders)
 const SPIDER_ROOFS: Array[int] = [8]  # landing on these drops a spider in someone's face (a scare, not a fight)
 const ROUTE_X_LIMIT: float = 80.0  # m either side of the lot's centre the route may wander
@@ -59,27 +62,59 @@ const TASK_PAD: int = 4
 const TASK_ABOARD: int = 5
 ## How you get onto a roof from the one before it. LEAP: a running jump UP onto a higher roof.
 ## STONES: a wide gap with chimney stacks standing in it, jumped one after another.
-enum Link { JUMP, PLANK, DROP, CLIMB, PIPE, LEAP, STONES }
-const LINK_NAMES: Array[String] = ["a jump", "a plank", "a drop", "a climb", "a pipe", "a leap up", "the stacks"]
+## GIRDERS: the bare steel of a half-built floor, narrow beams with gaps between, a WALKING jump
+## FACADE: a much taller building whose floors burst out of its face: slab to slab up the wall.
+## each (a sprint jump, about 5.8 m, flies past the next one).
+enum Link { JUMP, PLANK, DROP, CLIMB, PIPE, LEAP, STONES, GIRDERS, FACADE }
+const LINK_NAMES: Array[String] = ["a jump", "a plank", "a drop", "a climb", "a pipe", "a leap up", "the stacks", "the girders", "the collapse"]
 const NORTH: Vector2 = Vector2(0.0, -1.0)
 const EAST: Vector2 = Vector2(1.0, 0.0)
 const WEST: Vector2 = Vector2(-1.0, 0.0)
-const STONE_DEPTH: float = 4.2  # m along the run, each chimney stack's top: a sprint jump (about 5.8 m) taken anywhere in the last metre of one lands on the next
-const STONE_WIDTH: float = 1.6  # m across
+const STONE_DEPTH: float = 3.8  # m along the run, each chimney stack's top: a gap plus this stays past a sprint jump's reach (about 5.8 m, 6.2 to a stack a little lower) taken from the very edge
+const STONE_WIDTH: float = 1.3  # m across
+const STONE_GAP: Vector2 = Vector2(2.6, 3.2)  # m between stacks: a sprint jump each, no walking it (wider and a solo Ballast falls in and hangs)
+const JUMP_SLACK: Vector2 = Vector2(0.55, 0.95)  # m a jump's gap is short of a clean sprint jump's full reach from the very edge (the air mantle saves a near miss)
+const GIRDER_W: float = 0.45  # m: wide enough for a boot, not for a stumble
+const GIRDER_LEN: Vector2 = Vector2(2.6, 3.2)  # m along the run: a gap plus this stays past a walking jump's reach (about 3.5 m, 3.8 to a lower beam)
+const GIRDER_GAP: Vector2 = Vector2(1.3, 1.9)  # m between them: a walking jump (about 3.5 m reach); a sprint overshoots
+const PLANK_BREAK: Vector2 = Vector2(1.4, 2.0)  # m missing from the middle of a broken board: jump it, on the board
+const PLANK_BREAK_CHANCE: float = 0.5  # of the fallen beams (not the poles)
+const POLE_CHANCE: float = 0.5  # of planks: a toppled utility pole, round: centre your feet or slide off
+const POLE_R: float = 0.2  # m
+const MAIN_R: float = 0.3  # m: PIPE is a split water main, round too
+const GIRDER_PITCH: Vector2 = Vector2(0.09, 0.19)  # rad (5-11 degrees) each beam leans, up or down, along the run
+const STONE_TILT: float = 0.09  # rad: a stump's top leans up to this to one side
+const RAMP_LIP: Vector2 = Vector2(1.2, 1.55)  # m from the top of a leaning slab up to the roof: a mantle off a slope
+const RAMP_ANGLE: Vector2 = Vector2(0.62, 0.75)  # rad (35-43 degrees: walkable is under 45)
+const FIRE_ENERGY: float = 1.1  # a smouldering fire's light, before its size
 const OPENING_HALF: float = 2.0  # m either side of a crossing left open in the knee-high parapet
 const RUN_UP: float = 5.5  # m of clear roof kept straight back from each exit: room to sprint at the edge
 # Buildings: most roofs are two-level, a raised part (a setback, an upper floor) along the side
 # you leave by, so you land low and have to get up onto it before the next crossing.
 const TIER_CHANCE: float = 0.85
-const TIER_LOW: Vector2 = Vector2(1.5, 1.9)  # m: one mantle up from the roof
+const TIER_LOW: Vector2 = Vector2(1.7, 2.0)  # m: one mantle up from the roof (a standing mantle reaches 2.1)
 const TIER_HIGH: Vector2 = Vector2(2.6, 3.2)  # m: a unit to climb first, then the mantle
 const TIER_DEPTH: Vector2 = Vector2(6.4, 7.4)  # m along the way out (room for the RUN_UP on top)
 const LANDING_LAMP_CHANCE: float = 0.45  # of roofs that get a lamp at all (the user: darker)
-const ROOF_TOP_MAX: float = 26.0  # m over the lot: the highest a route roof stands (was 14: roofs looked all one height)
+const ROOF_TOP_MAX: float = 48.0  # m over the lot: the highest a route roof stands (14, then 26: the user wanted far bigger differences)
+const FAR_CHANCE: float = 0.65  # of crossings that aim for a roof far above or below this one
+const FAR_UP: Vector2 = Vector2(6.0, 16.0)  # m: a climb up the collapse
+const FAR_DOWN: Vector2 = Vector2(5.0, 13.0)  # m: a long way down
+const FACADE_GAP: Vector2 = Vector2(2.0, 3.0)  # m of alley between you and the taller building
+const LEDGE_RISE: Vector2 = Vector2(1.5, 1.8)  # m from one burst-out slab to the next: a standing grab (2.1), and the slab two up (they zigzag) leaves 2.4 m of headroom
+const LEDGE_W: Vector2 = Vector2(1.8, 2.6)  # m along the face
+const LEDGE_OUT: Vector2 = Vector2(1.6, 2.0)  # m it sticks out of the wall
+const LEDGE_SIDE_GAP: Vector2 = Vector2(0.2, 0.45)  # m of nothing between one slab and the next along the face: from the last half metre of the end, Space grabs the next (a grab reaches 0.85 m)
+const LEDGE_THICK: float = 0.6  # m: a floor slab and its beam
+const DROP_LEDGE_BELOW: float = 7.0  # m: a drop further than this gets a slab jutting out halfway down
+const BARRIER_CHANCE: float = 0.9  # of roofs with a heap of fallen slabs across the walk (where it fits)
+const BARRIER_H: Vector2 = Vector2(1.3, 1.9)  # m: a mantle over it
+const BARRIER_DEPTH: Vector2 = Vector2(1.2, 2.0)  # m along the walk
+const BARRIER_SLOT: float = 1.0  # m left free at one end, by the parapet: squeeze past at the edge instead
 const CLIMB_STEP: float = 1.6  # m: each crate in a climb's stack (a mantle from the one below)
-const CLIMB_STEP_DEPTH: float = 1.4  # m each crate stands out from the wall
-const PLANK_W: float = 0.38  # m: a scaffold board, barely wider than a boot
-const PIPE_W: float = 0.36  # m
+const CLIMB_STEP_DEPTH: float = 1.1  # m each crate stands out from the wall
+const PLANK_W: float = 0.36  # m: a scaffold board, barely wider than a boot
+const PIPE_W: float = 0.32  # m
 const MANTLE_REACH: float = 2.0  # m: a tier this tall or less is one mantle (a standing mantle reaches 2.1)
 const SLOGANS: Array[String] = [
 	"DEEZ INDUSTRIAL FASTENERS\nHOLDING IT TOGETHER SINCE 1931",
@@ -105,6 +140,21 @@ class Roof:
 	var exit: Vector3  # where you leave for the next roof (just inside this roof's far edge)
 	var out_dir: Vector2 = NORTH  # which way you leave it
 	var stones: Array[Vector3] = []  # STONES: the centre of each stack's top, in order
+	var girders: Array[Vector3] = []  # GIRDERS: the centre of each beam's top, in order
+	var girder_len: Array[float] = []  # GIRDERS: each beam's length along the run
+	var plank_break: Vector2 = Vector2.ZERO  # PLANK: the missing stretch, as m out from the edge you leave (zero: a whole beam)
+	var pole: bool = false  # PLANK: a toppled utility pole (round) instead of a fallen I-beam
+	var stone_tilt: Array[Vector3] = []  # STONES: each stump's top, tilted (euler, rad)
+	var girder_pitch: Array[float] = []  # GIRDERS: each beam's slope along the run (rad, + rises)
+	var ramp: float = 0.0  # CLIMB: m (flat) of collapsed slab leaning on the wall; 0 = a heap of fallen slabs to climb
+	var ramp_angle: float = 0.0  # CLIMB: the slab's slope (rad)
+	var ledges: Array[Vector3] = []  # FACADE: the top centre of each slab burst out of this roof's near face, bottom first
+	var ledge_w: Array[float] = []  # FACADE: each one's width along the face
+	var ledge_out: Array[float] = []  # FACADE: how far each sticks out
+	var climb_t: float = 0.0  # FACADE: across the run, where the top slab is (the parapet is open there)
+	var drop_ledge: Vector3 = Vector3.ZERO  # DROP: a slab jutting out of the taller face halfway down (zero: none)
+	var barrier: Rect2 = Rect2()  # a heap of fallen slabs across the walk (empty: none)
+	var barrier_h: float = 0.0
 	var vents: Array[Vector3] = []  # the swarm's spawn spots
 	var reached: bool = false
 	func center() -> Vector3:
@@ -152,9 +202,13 @@ var _supply_t: float = 0.0
 var lamps: Array[OmniLight3D] = []  # every sodium lamp up here (RoofDread drives their energy)
 var beacon: OmniLight3D  # the tower's red light
 var dread: RoofDread
+var nests: Array[int] = []  # the roofs crawling with mites (_pick_nests, from the seed)
 var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
 var _route_bounds: Rect2  # local x, z of every route roof and the tower, for the city round them
 var _been_up: Dictionary = {}  # instance id -> true for every chain body that has stood up here
+var _bars: int = 0  # round bars built (their names)
+var fires: Array[OmniLight3D] = []  # every peer: lights in the burning wreckage (RoofDread flickers them)
+var _ember_mat: StandardMaterial3D
 
 
 func _enter_tree() -> void:
@@ -186,6 +240,7 @@ func _ready() -> void:
 	spawn_position = origin + PAD_LOCAL
 	_rng.seed = SEED + seed_value * 3 + 11
 	_lay_out_route()
+	_pick_nests()
 	# The field covers the lot and the whole route; everything is the street until a roof is laid.
 	var fx0 := minf(-SIZE * 0.5, _route_bounds.position.x) - 6.0
 	var fx1 := maxf(SIZE * 0.5, _route_bounds.end.x) + 6.0
@@ -216,8 +271,8 @@ func _ready() -> void:
 		if k < roofs.size() - 1:
 			var jr := roofs[k]
 			var home := jr.enter.lerp(jr.center(), 0.4)
-			if jr.tier.grow(1.5).has_point(Vector2(home.x, home.z)):
-				home = jr.enter  # never up inside the raised part
+			if jr.tier.grow(1.5).has_point(Vector2(home.x, home.z)) or jr.barrier.grow(1.5).has_point(Vector2(home.x, home.z)):
+				home = jr.enter  # never up inside the raised part or the heap of slabs
 			homes.append(Vector3(home.x, jr.y, home.z))
 	for i in homes.size():
 		var l := Launcher.new()
@@ -253,6 +308,12 @@ func _ready() -> void:
 				key = "leap"
 			Link.STONES:
 				key = "stones"
+			Link.GIRDERS:
+				key = "girders"
+			Link.JUMP:
+				key = "long_jump" if i > 1 else ""
+			Link.FACADE:
+				key = "facade"
 		# The first of each kind of crossing: where you stand before it (the previous roof's exit).
 		if key != "" and not test_points.has(key):
 			test_points[key] = origin + roofs[i - 1].exit + Vector3(0.0, 0.1, 0.0)
@@ -266,10 +327,17 @@ func _ready() -> void:
 	var cp := checkpoint_index
 	for k in CHECKPOINT_ROOFS:
 		cp += 1
-		var c := roofs[k].center()
+		var c := landing_spot(k)  # by where you land: a respawn inside a raised part or a heap would trap you
 		add_child(Checkpoint.create("Checkpoint%d" % cp, cp, origin + c + Vector3(0.0, 0.1, 0.0), 0.0, "Roof %d of %d. Keep going north: the tower with the red light is the way out." % [k, ROOF_COUNT]))
 	cp += 1
 	add_child(Checkpoint.create("Checkpoint%d" % cp, cp, origin + tower_top + Vector3(-5.0, 0.1, 5.0), 0.0, "Take a jetpack. Hold F / left click and steer into the helicopter's open cabin. Missed it? Land, refuel, try the next pass."))
+
+
+## Local: a clear spot on roof k, a little in from where you land (never inside its raised part or
+## under a heap of slabs).
+func landing_spot(k: int) -> Vector3:
+	var r := roofs[k]
+	return r.enter + Vector3(r.dir.x, 0.0, r.dir.y) * 1.5
 
 
 func helipad_checkpoint_index() -> int:
@@ -359,61 +427,93 @@ func _roll_roof(i: int, prev: Roof, last_link: int, last_dir: Vector2, plain: bo
 	if i > 1 and not plain and _rng.randf() < TIER_CHANCE:
 		_raise_tier(prev, d)
 	var prev_top := prev.top
-	# The link follows a height this roof would like to be (random anywhere in the band): up there
-	# is a climb or a leap, down there a drop or a jump down, near enough a level crossing. The
-	# first is a plain jump off the lot; no two climbs, drops or stacks in a row.
+	# The link follows a height this roof would like to be: most of the time far above or below this
+	# one (FAR_CHANCE: the user wanted big differences), else anywhere in the band. Far up is the
+	# collapse (slab to slab up a burst-out facade), up a little a climb or a leap, down a drop or
+	# a jump down, near enough a level crossing. The first is a plain jump off the lot; no two
+	# climbs, drops, collapses or stacks in a row.
 	var link := Link.JUMP
 	var want := 0.0
 	if i > 1:
 		want = _rng.randf_range(0.0, ROOF_TOP_MAX)
+		if _rng.randf() < FAR_CHANCE:
+			var up := _rng.randf() < 0.5
+			if prev_top < FAR_DOWN.x + 1.0:
+				up = true
+			elif prev_top > ROOF_TOP_MAX - FAR_UP.x:
+				up = false
+			want = prev_top + (_rng.randf_range(FAR_UP.x, FAR_UP.y) if up else -_rng.randf_range(FAR_DOWN.x, FAR_DOWN.y))
 		var roll := _rng.randf()
-		if want > prev_top + 2.5:
-			link = Link.CLIMB if roll < 0.55 else Link.LEAP
+		if want > prev_top + FAR_UP.x and prev_top + FAR_UP.x <= ROOF_TOP_MAX:
+			link = Link.FACADE if roll < 0.85 else Link.CLIMB
+		elif want > prev_top + 2.5:
+			link = Link.CLIMB if roll < 0.5 else Link.LEAP
 		elif want < prev_top - 3.0 and prev_top >= 4.0:
-			link = Link.DROP if roll < 0.65 else Link.JUMP
-		elif roll < 0.25:
+			link = Link.DROP if roll < 0.75 else Link.JUMP
+		elif roll < 0.2:
 			link = Link.JUMP
-		elif roll < 0.45:
+		elif roll < 0.35:
 			link = Link.PLANK
-		elif roll < 0.6:
+		elif roll < 0.45:
 			link = Link.PIPE
-		elif roll < 0.8:
+		elif roll < 0.65:
 			link = Link.STONES
+		elif roll < 0.85:
+			link = Link.GIRDERS
 		else:
 			link = Link.LEAP
-		if link == last_link and (link == Link.CLIMB or link == Link.DROP or link == Link.STONES):
-			link = Link.LEAP if link == Link.CLIMB else Link.JUMP
+		if link == last_link and (link == Link.CLIMB or link == Link.DROP or link == Link.STONES or link == Link.GIRDERS or link == Link.FACADE):
+			link = Link.LEAP if link == Link.CLIMB or link == Link.FACADE else Link.JUMP
 		if (link == Link.CLIMB or link == Link.LEAP) and prev_top > ROOF_TOP_MAX - 2.0:
 			link = Link.DROP if prev_top >= 4.0 else Link.JUMP
 	var gap := 0.0
 	var dy := 0.0
 	match link:
 		Link.JUMP:
-			gap = _rng.randf_range(3.4, 4.4)  # a full sprint and a jump from the very edge; a walk-off falls short
-			dy = _rng.randf_range(-2.6, -0.6)  # always down a little: no two roofs the same height
+			if i == 1:
+				# Off the lot: the one easy jump, to learn the run-up.
+				gap = _rng.randf_range(3.4, 4.4)
+				dy = _rng.randf_range(-2.6, -0.6)
+			else:
+				# Sized to a full sprint jump from the very edge, short of it by JUMP_SLACK: take off
+				# late, or slow, and you're hanging off the far face by your fingers (the air mantle).
+				dy = _rng.randf_range(-1.8, -0.4)
+				gap = sprint_reach(dy) - _rng.randf_range(JUMP_SLACK.x, JUMP_SLACK.y)
 		Link.LEAP:
-			gap = _rng.randf_range(1.8, 2.4)
-			dy = _rng.randf_range(0.9, 1.25)  # jump up and catch the edge
+			gap = _rng.randf_range(2.8, 3.6)
+			dy = _rng.randf_range(1.4, 1.9)  # a sprint, a jump up, and you catch the edge
 		Link.PLANK:
-			gap = _rng.randf_range(6.5, 9.0)
+			gap = _rng.randf_range(8.0, 11.0)
+			# A toppled pole (round) or a fallen I-beam, sometimes torn in two with a gap to hop.
+			r.pole = _rng.randf() < POLE_CHANCE
+			if not r.pole and _rng.randf() < PLANK_BREAK_CHANCE:
+				var b := _rng.randf_range(PLANK_BREAK.x, PLANK_BREAK.y)
+				var s0 := _rng.randf_range(gap * 0.35, gap * 0.65 - b)
+				r.plank_break = Vector2(s0, s0 + b)
 		Link.PIPE:
-			gap = _rng.randf_range(5.5, 8.0)
+			gap = _rng.randf_range(6.5, 9.5)
 		Link.DROP:
-			gap = _rng.randf_range(2.0, 3.0)
-			dy = maxf(_rng.randf_range(-8.0, -3.4), -prev_top)  # a long way down
+			gap = _rng.randf_range(3.0, 4.0)  # a run off the edge, not a step
+			# A long way down: as far as the roof it wanted, 3.4 m at least, the band's floor at most.
+			dy = maxf(clampf(want - prev_top, -FAR_DOWN.y, -3.4), -prev_top)
+		Link.FACADE:
+			gap = _rng.randf_range(FACADE_GAP.x, FACADE_GAP.y)
+			dy = minf(clampf(want - prev_top, FAR_UP.x, FAR_UP.y), ROOF_TOP_MAX - prev_top)
 		Link.CLIMB:
 			gap = 0.0
-			# One crate to three, stacked up the wall like steps; the roof a mantle above the top one.
+			# One crate to three, stacked up the wall like steps; the roof nearly a full mantle above
+			# the top one.
 			r.climb_steps = clampi(int((want - prev_top) / (CLIMB_STEP * 1.6)) + 1, 1, 3) if want > prev_top else 1
-			dy = CLIMB_STEP * float(r.climb_steps) + _rng.randf_range(1.0, 1.9)
-		Link.STONES:
+			dy = CLIMB_STEP * float(r.climb_steps) + _rng.randf_range(1.5, 2.0)
+		Link.STONES, Link.GIRDERS:
 			dy = _rng.randf_range(-0.6, 0.0)
 	var y := prev_top + dy
 	if y < 0.0 or y > ROOF_TOP_MAX:
 		# Out of the band the Stack reads as the roof: a level jump instead.
 		link = Link.JUMP
-		gap = _rng.randf_range(3.0, 3.6)
+		r.plank_break = Vector2.ZERO
 		y = clampf(prev_top + _rng.randf_range(-1.0, 0.0), 0.0, ROOF_TOP_MAX)
+		gap = sprint_reach(y - prev_top) - _rng.randf_range(JUMP_SLACK.x, JUMP_SLACK.y)
 	r.link = link
 	r.dir = d
 	r.y = y
@@ -428,21 +528,50 @@ func _roll_roof(i: int, prev: Roof, last_link: int, last_dir: Vector2, plain: bo
 	if i == 1:
 		t = _rng.randf_range(-20.0, 20.0)
 	var edge := prev.edge_along(d)
-	# Chimney stacks: two or three, each a running jump from the last.
+	# A climb: a floor slab that came down and leans on this roof's wall, when there's room on the
+	# roof below for its slope (35-43 degrees), the roof a mantle above its top end. Else a heap of
+	# fallen slabs stepped up the wall.
+	if link == Link.CLIMB:
+		var lip := _rng.randf_range(RAMP_LIP.x, RAMP_LIP.y)
+		var ang := _rng.randf_range(RAMP_ANGLE.x, RAMP_ANGLE.y)
+		var run := (y - prev_top - lip) / tan(ang)
+		var room := edge - Vector2(prev.enter.x, prev.enter.z).dot(d)
+		if prev.tier.size.x > 0.0:
+			room = absf(prev.tier.size.x if d.x != 0.0 else prev.tier.size.y)
+		if y - prev_top - lip > 0.8 and run <= room - 2.6:
+			r.ramp = run
+			r.ramp_angle = ang
+	# Chimney stacks: three or four, narrow, each a sprint jump from the last.
 	if link == Link.STONES:
 		var n := _rng.randi_range(3, 4)
 		var a := edge
 		for k in n:
-			var g := _rng.randf_range(2.2, 2.8)
-			var top_y := prev_top + (y - prev_top) * float(k + 1) / float(n + 1) + _rng.randf_range(-0.3, 0.3)
+			var g := _rng.randf_range(STONE_GAP.x, STONE_GAP.y)
+			var top_y := prev_top + (y - prev_top) * float(k + 1) / float(n + 1) + _rng.randf_range(-0.15, 0.15)
 			var mid := a + g + STONE_DEPTH * 0.5
 			var c := d * mid + side * t
 			r.stones.append(Vector3(c.x, top_y, c.y))
+			r.stone_tilt.append(Vector3(0.0, 0.0, _rng.randf_range(-STONE_TILT, STONE_TILT)))  # leaning sideways (tilted along the run, a landing at a sprint skips off it)
 			a += g + STONE_DEPTH
-		gap = a - edge + _rng.randf_range(2.0, 2.4)
+		gap = a - edge + _rng.randf_range(STONE_GAP.x, STONE_GAP.y)
+	# Girders: four to six narrow beams, a walking jump between each (and onto the first, and off
+	# the last).
+	if link == Link.GIRDERS:
+		var n := _rng.randi_range(4, 6)
+		var a := edge
+		for k in n:
+			var g := _rng.randf_range(GIRDER_GAP.x, GIRDER_GAP.y)
+			var l := _rng.randf_range(GIRDER_LEN.x, GIRDER_LEN.y)
+			var top_y := prev_top + (y - prev_top) * float(k + 1) / float(n + 1) + _rng.randf_range(-0.12, 0.12)
+			var c := d * (a + g + l * 0.5) + side * t
+			r.girders.append(Vector3(c.x, top_y, c.y))
+			r.girder_len.append(l)
+			r.girder_pitch.append(_rng.randf_range(GIRDER_PITCH.x, GIRDER_PITCH.y) * (1.0 if _rng.randf() < 0.5 else -1.0))
+			a += g + l
+		gap = a - edge + _rng.randf_range(GIRDER_GAP.x, GIRDER_GAP.y)
 	r.gap = gap
 	var w := _rng.randf_range(9.0, 20.0)  # across the way you came
-	var depth := _rng.randf_range(10.0, 17.0)  # along it (deep enough, mostly, for a raised part at the far end)
+	var depth := _rng.randf_range(12.0, 20.0)  # along it (deep enough for a raised part at the far end and a heap of slabs before it)
 	var center_t := t + _rng.randf_range(-(w * 0.5 - 3.5), w * 0.5 - 3.5)
 	var near := edge + gap
 	r.rect = _rect_from(d, near, near + depth, center_t - w * 0.5, center_t + w * 0.5)
@@ -450,10 +579,22 @@ func _roll_roof(i: int, prev: Roof, last_link: int, last_dir: Vector2, plain: bo
 	r.cross_x = r.cross.x
 	var land := d * (near + 1.6) + side * t
 	r.enter = Vector3(land.x, r.y, land.y)
-	# Clear of everything: other roofs by 4 m, and the gap you cross free of anything but street.
+	if link == Link.FACADE:
+		_burst_floors(r, prev_top, d, near, t, center_t - w * 0.5 + 1.0, center_t + w * 0.5 - 1.0)
+		land = d * (near + 1.6) + side * r.climb_t
+		r.enter = Vector3(land.x, r.y, land.y)
+	elif link == Link.DROP and dy < -DROP_LEDGE_BELOW:
+		# Halfway down the taller wall, a slab of floor jutting out: drop to it, then down again.
+		var out := _rng.randf_range(LEDGE_OUT.x, LEDGE_OUT.y)
+		var dl := d * (edge + out * 0.5) + side * t
+		r.drop_ledge = Vector3(dl.x, prev_top + dy * 0.5, dl.y)
+	# Clear of everything: other roofs by 4 m, and the gap you cross free of anything but street
+	# (the whole width of a facade you climb).
 	if absf(r.rect.position.x) > ROUTE_X_LIMIT or absf(r.rect.end.x) > ROUTE_X_LIMIT:
 		return null
 	var lane := _rect_from(d, edge, near, t - 2.5, t + 2.5)
+	if link == Link.FACADE:
+		lane = _rect_from(d, edge, near, center_t - w * 0.5, center_t + w * 0.5)
 	for k in roofs.size():
 		var o := roofs[k]
 		if o == prev:
@@ -472,6 +613,47 @@ func _roll_roof(i: int, prev: Roof, last_link: int, last_dir: Vector2, plain: bo
 	prev.exit = Vector3(leave.x, prev_top, leave.y)
 	prev.out_dir = d
 	return r
+
+
+## FACADE: the floors of the taller building r burst out of its near face (its edge at `near`
+## along d): slabs zigzagging up the wall between lo and hi across the run, the first a jump over
+## the alley from the roof below, each next one LEDGE_RISE up and a short gap along the face (stand
+## on the end, grab the next), the top one a mantle under the roof. They alternate sides, so the
+## slab two up is straight over you with 2.4 m and more of headroom, never over the end you grab.
+func _burst_floors(r: Roof, prev_top: float, d: Vector2, near: float, t: float, lo: float, hi: float) -> void:
+	var side := _side(d)
+	var dy := r.y - prev_top
+	var n := 2
+	var rise := LEDGE_RISE.x
+	for k in range(2, 14):
+		n = k
+		rise = clampf((dy - 1.55) / float(k), LEDGE_RISE.x, LEDGE_RISE.y)
+		var lip := dy - float(k) * rise
+		if lip >= 1.2 and lip <= 1.95:
+			break
+	# Two columns, one slab width each and one gap between: the zigzag goes exactly back and forth
+	# (with a width per slab it drifted off the side of the building on a tall climb).
+	var wa := _rng.randf_range(LEDGE_W.x, LEDGE_W.y)
+	var wb := _rng.randf_range(LEDGE_W.x, LEDGE_W.y)
+	var g := _rng.randf_range(LEDGE_SIDE_GAP.x, LEDGE_SIDE_GAP.y)
+	var sep := wa * 0.5 + wb * 0.5 + g
+	var ca := clampf(t, lo + wa * 0.5, hi - wa * 0.5)  # the first, in line with the crossing
+	var s := 1.0 if _rng.randf() < 0.5 else -1.0
+	if ca + s * sep > hi - wb * 0.5 or ca + s * sep < lo + wb * 0.5:
+		s = -s
+	if ca + s * sep > hi - wb * 0.5 or ca + s * sep < lo + wb * 0.5:
+		ca = lo + wa * 0.5  # no room either way from there: start at one end
+		s = 1.0
+	var cb := ca + s * sep
+	for k in n:
+		var lw := wa if k % 2 == 0 else wb
+		var at := ca if k % 2 == 0 else cb
+		var out := _rng.randf_range(LEDGE_OUT.x, LEDGE_OUT.y)
+		var c := d * (near - out * 0.5) + side * at
+		r.ledges.append(Vector3(c.x, prev_top + rise * float(k + 1), c.y))
+		r.ledge_w.append(lw)
+		r.ledge_out.append(out)
+	r.climb_t = ca if (n - 1) % 2 == 0 else cb
 
 
 ## Raises the part of roof r along its edge facing d by a tier: a band the whole width of the roof,
@@ -500,6 +682,17 @@ func _raise_tier(r: Roof, d: Vector2) -> void:
 		return
 
 
+## m a flat-out sprint jump from the very edge carries before it comes down dy m lower (dy < 0)
+## or higher: Player's sprint, jump speed and gravity.
+static func sprint_reach(dy: float) -> float:
+	var v := Player.JUMP_VELOCITY
+	var g := Player.GRAVITY
+	var under := v * v - 2.0 * g * dy
+	if under < 0.0:
+		return 0.0  # it never gets that high
+	return Player.RUN_SPEED * (v + sqrt(under)) / g
+
+
 ## The axis across a direction of travel.
 func _side(d: Vector2) -> Vector2:
 	return Vector2(1.0, 0.0) if d.x == 0.0 else Vector2(0.0, 1.0)
@@ -518,14 +711,18 @@ func _rect_from(d: Vector2, a0: float, a1: float, t0: float, t1: float) -> Rect2
 func _finish_route() -> void:
 	for i in range(1, ROOF_COUNT + 1):
 		var r := roofs[i]
+		if _rng.randf() < BARRIER_CHANCE:
+			_place_barrier(r)
 		for k in 2:
 			var best := r.center()
-			var best_d := -1.0
-			for _try in 10:
+			var best_d := -1.0e9
+			# (Ten tries used to fall back on the roof's centre, often right on the walk across it,
+			# when every try hit a raised part covering most of the roof.)
+			for _try in 30:
 				var p := Vector3(_rng.randf_range(r.rect.position.x + 1.6, r.rect.end.x - 1.6), r.y, _rng.randf_range(r.rect.position.y + 1.6, r.rect.end.y - 1.6))
 				var dd := _lane_distance(r, p)
-				if r.tier.grow(1.0).has_point(Vector2(p.x, p.z)):
-					dd = -1.0  # not up on the raised part: the swarm comes out of the roof you land on
+				if r.tier.grow(1.0).has_point(Vector2(p.x, p.z)) or r.barrier.grow(1.2).has_point(Vector2(p.x, p.z)):
+					dd = minf(dd, 1.0) - 2.0  # up on the raised part only if nothing else: the swarm comes out of the roof you land on
 				for v in r.vents:
 					dd = minf(dd, p.distance_to(v))
 				if dd > best_d:
@@ -533,10 +730,38 @@ func _finish_route() -> void:
 					best = p
 				if dd > 3.5:
 					break
+			if best_d < 1.3 and not r.vents.is_empty():
+				continue  # nowhere off the walk for a second one: one vent will do
+			if r.tier.grow(1.0).has_point(Vector2(best.x, best.z)):
+				best.y = r.top
 			r.vents.append(best)
 	_route_bounds = roofs[1].rect
 	for i in range(2, roofs.size()):
 		_route_bounds = _route_bounds.merge(roofs[i].rect)
+
+
+## A heap of fallen slabs across roof r's walk, between where you land and the raised part (or the
+## run-up to the edge you leave by): the roof's whole width but a BARRIER_SLOT at one end. Nothing
+## if there isn't room for it with space either side.
+func _place_barrier(r: Roof) -> void:
+	var od := r.out_dir
+	var side := _side(od)
+	var a0 := Vector2(r.enter.x, r.enter.z).dot(od) + 1.8
+	var a1 := Vector2(r.exit.x, r.exit.z).dot(od) - RUN_UP - 0.6
+	if r.tier.size.x > 0.0:
+		a1 = minf(r.tier.position.dot(od), r.tier.end.dot(od)) - (4.2 if r.tier_unit != Vector3.ZERO else 2.0)
+	var dep := _rng.randf_range(BARRIER_DEPTH.x, BARRIER_DEPTH.y)
+	if a1 - a0 < dep:
+		return
+	var a := _rng.randf_range(a0, a1 - dep)
+	var lo := minf(r.rect.position.dot(side), r.rect.end.dot(side)) + 0.4
+	var hi := maxf(r.rect.position.dot(side), r.rect.end.dot(side)) - 0.4
+	if _rng.randf() < 0.5:
+		lo += BARRIER_SLOT
+	else:
+		hi -= BARRIER_SLOT
+	r.barrier = _rect_from(od, a, a + dep, lo, hi)
+	r.barrier_h = _rng.randf_range(BARRIER_H.x, BARRIER_H.y)
 
 
 ## How far a point on a roof is from the walk across it: from where you land to a straight
@@ -722,6 +947,70 @@ func _osize(d: Vector2, along: float, across: float, h: float) -> Vector3:
 	return Vector3(across, h, along) if d.x == 0.0 else Vector3(along, h, across)
 
 
+## A basis laying a piece's length (its Z) along d (an axis direction), tilted by pitch (rad,
+## positive rises toward d), its Y up off the surface.
+func _run_basis(d: Vector2, pitch: float) -> Basis:
+	var d3 := Vector3(d.x, 0.0, d.y)
+	var along := (d3 * cos(pitch) + Vector3.UP * sin(pitch)).normalized()
+	var up := (Vector3.UP * cos(pitch) - d3 * sin(pitch)).normalized()
+	return Basis(up.cross(along), up, along)
+
+
+## Collision only, any way round (a leaning slab, a tilted beam): what a sculpted piece is drawn over.
+func _solid(batch: LevelKit.BoxBatch, center: Vector3, size: Vector3, basis: Basis) -> void:
+	batch.shapes.append([Transform3D(basis, center), size])
+
+
+## A round bar across a gap (a fallen pole, a water main): a cylinder laid along d. Round, so a
+## foot off its top slides off.
+func _round_bar(center: Vector3, d: Vector2, length: float, radius: float) -> void:
+	var body := StaticBody3D.new()
+	body.name = "Bar%d" % _bars
+	_bars += 1
+	body.collision_layer = ChainBody.LAYER_WORLD
+	body.collision_mask = 0
+	var cs := CollisionShape3D.new()
+	var cyl := CylinderShape3D.new()
+	cyl.radius = radius
+	cyl.height = length
+	cs.shape = cyl
+	var b := _run_basis(d, 0.0)
+	cs.transform = Transform3D(Basis(b.x, b.z, -b.y), center)  # a cylinder stands along its Y
+	body.add_child(cs)
+	root.add_child(body)
+
+
+## Something still burning in the wreckage: a glowing heap and a low, flickering orange light
+## (RoofDread flickers it). It lights the broken edges round it, and not much else.
+func _fire(at: Vector3, size: float, heap_too: bool = true) -> void:
+	if heap_too:
+		var heap := MeshInstance3D.new()
+		heap.mesh = RuinMeshes.mesh("ruin_embers")
+		if _ember_mat == null:
+			_ember_mat = StandardMaterial3D.new()
+			_ember_mat.vertex_color_use_as_albedo = true
+			_ember_mat.vertex_color_is_srgb = true
+			_ember_mat.roughness = 1.0
+			_ember_mat.emission_enabled = true
+			_ember_mat.emission = Color(1.0, 0.36, 0.08)
+			_ember_mat.emission_energy_multiplier = 2.2
+		heap.material_override = _ember_mat
+		heap.position = at
+		heap.scale = Vector3.ONE * size
+		root.add_child(heap)
+	var light := OmniLight3D.new()
+	light.light_color = Color(1.0, 0.45, 0.15)
+	light.light_energy = FIRE_ENERGY * size
+	light.light_volumetric_fog_energy = 2.0
+	light.omni_range = 6.5 * size + 1.5
+	light.omni_attenuation = 1.4
+	light.shadow_enabled = false
+	light.position = at + Vector3.UP * 0.5 * size
+	light.set_meta("base_energy", light.light_energy)
+	root.add_child(light)
+	fires.append(light)
+
+
 ## A Vector3 at height y over a ground point.
 func _at(p: Vector2, y: float) -> Vector3:
 	return Vector3(p.x, y, p.y)
@@ -747,7 +1036,7 @@ func _build_roof(batch: LevelKit.BoxBatch, i: int) -> void:
 	# The parapet: every edge, with an opening where you come in and where you leave. The last
 	# roof has none on its north edge: the tower and its fire escape stand there.
 	var in_edge := -r.dir
-	var in_t := r.cross.dot(_side(r.dir))
+	var in_t := r.climb_t if r.link == Link.FACADE else r.cross.dot(_side(r.dir))  # (a facade: where its top slab is)
 	var out_t := nxt.cross.dot(_side(nxt.dir))
 	for e: Vector2 in [NORTH, EAST, Vector2(0.0, 1.0), WEST]:
 		if last and e == NORTH:
@@ -762,46 +1051,171 @@ func _build_roof(batch: LevelKit.BoxBatch, i: int) -> void:
 		_build_tier(batch, r, nxt, key)
 	# Hazard paint where you leave, and where you land.
 	var side_in := _side(r.dir)
-	batch.add(_at(r.cross + r.dir * (r.gap + 0.25), r.y + 0.02), _osize(r.dir, 0.5, 4.0, 0.02), "hazard", false)
+	var land_at := r.cross + r.dir * (r.gap + 0.25)
+	if r.link == Link.FACADE:
+		land_at = r.dir * r.cross.dot(r.dir) + _side(r.dir) * r.climb_t + r.dir * (r.gap + 0.25)
+	batch.add(_at(land_at, r.y + 0.02), _osize(r.dir, 0.5, 4.0, 0.02), "hazard", false)
 	if not last:
 		var leave := nxt.cross - nxt.dir * 0.25
 		batch.add(_at(leave, r.top + 0.02), _osize(nxt.dir, 0.5, 4.0, 0.02), "hazard", false)
-	# The link from the previous roof.
+	# The link from the previous roof: wreckage (RuinMeshes, sculpted) over plain collision a
+	# little inside its broken edges.
 	var d := r.dir
+	var run0 := _run_basis(d, 0.0)
 	match r.link:
 		Link.PLANK:
-			# A scaffold board, a hand's width wider than a boot, flush with both roofs.
 			var top := maxf(prev.top, r.y)
-			batch.add(_at(r.cross + d * (r.gap * 0.5), top - 0.07), _osize(d, r.gap + 1.8, PLANK_W, 0.14), "tank")
+			var span := r.gap + 1.8
+			var mid := r.cross + d * (r.gap * 0.5)
+			if r.pole:
+				# A toppled utility pole, round: keep your feet on top of it or slide off.
+				var pc := _at(mid, top - POLE_R)
+				_round_bar(pc, d, span, POLE_R)
+				batch.add_prop("ruin_pole", RuinMeshes.fit("ruin_pole", pc, Vector3(POLE_R * 2.0, POLE_R * 2.0, span), run0))
+			else:
+				# A steel I-beam that fell across, its top flange the path; torn in two, sometimes,
+				# with a stretch of nothing to hop.
+				var pieces: Array[Vector2] = [Vector2(-0.9, r.gap + 0.9)]
+				if r.plank_break != Vector2.ZERO:
+					pieces = [Vector2(-0.9, r.plank_break.x), Vector2(r.plank_break.y, r.gap + 0.9)]
+				for k in pieces.size():
+					var p := pieces[k]
+					var pc := _at(r.cross + d * ((p.x + p.y) * 0.5), top - 0.18)
+					var psize := Vector3(PLANK_W, 0.36, p.y - p.x)
+					_solid(batch, pc, psize, run0)
+					# The torn end faces the break.
+					var b := run0 if k == 0 else run0 * Basis(Vector3.UP, PI)
+					batch.add_prop("ruin_beam", RuinMeshes.fit("ruin_beam", pc, psize + Vector3(0.06, 0.0, 0.0), b))
 		Link.PIPE:
-			# A ventilation duct laid across, its top flush with both roofs. Narrow, and ribbed.
+			# A water main torn out of the street and dropped across: round, and split along a seam.
 			var top := maxf(prev.top, r.y)
-			batch.add(_at(r.cross + d * (r.gap * 0.5), top - 0.25), _osize(d, r.gap + 1.6, PIPE_W, 0.5), "steel_dark")
-			for k in int(r.gap / 1.2):
-				batch.add(_at(r.cross + d * (0.6 + 1.2 * float(k)), top - 0.25), _osize(d, 0.08, PIPE_W + 0.06, 0.56), "steel", false)
+			var pc := _at(r.cross + d * (r.gap * 0.5), top - MAIN_R)
+			var span := r.gap + 1.6
+			_round_bar(pc, d, span, MAIN_R)
+			batch.add_prop("ruin_main", RuinMeshes.fit("ruin_main", pc, Vector3(MAIN_R * 2.0, MAIN_R * 2.0, span), run0))
 		Link.CLIMB:
-			# Crates stacked up this roof's wall like steps (the tallest against it), each a mantle
-			# from the one below, then a mantle onto the roof. A drain pipe beside them, for the look.
-			for j in r.climb_steps:
-				var ch := CLIMB_STEP * float(r.climb_steps - j)
-				var u2 := r.cross - d * (CLIMB_STEP_DEPTH * (float(j) + 0.5))
-				batch.add(_at(u2, prev.top + ch * 0.5), _osize(d, CLIMB_STEP_DEPTH, 2.4, ch), "steel" if j % 2 == 0 else "crate")
-				batch.add(_at(u2, prev.top + ch + 0.01), _osize(d, CLIMB_STEP_DEPTH - 0.4, 1.6, 0.04), "dark", false)
-				var us := _osize(d, CLIMB_STEP_DEPTH, 2.4, 0.0)
-				_block(u2.x, u2.y, us.x, us.z)
-			batch.add(_at(r.cross + side_in * 2.2 - d * 0.25, (prev.top + r.y) * 0.5), Vector3(0.25, r.y - prev.top, 0.25), "tank", false)
+			if r.ramp > 0.0:
+				# A floor slab that came down and leans on this roof's wall: run up it, mantle off it.
+				var ang := r.ramp_angle
+				var b := _run_basis(d, ang)
+				var psize := Vector3(2.4, 0.36, r.ramp / cos(ang))
+				var pc := _at(r.cross - d * (r.ramp * 0.5), prev.top + r.ramp * tan(ang) * 0.5) - b.y * 0.18
+				_solid(batch, pc, psize, b)
+				batch.add_prop("ruin_ramp", RuinMeshes.fit("ruin_ramp", pc, psize, b))
+				for s: float in [-1.0, 1.0]:
+					var heap := _at(r.cross - d * (r.ramp * 0.55) + side_in * s * 2.3, prev.top)
+					batch.add_prop("ruin_rubble", RuinMeshes.fit("ruin_rubble", heap, Vector3(1.6, 0.7, 1.8), run0 * Basis(Vector3.UP, s)))
+			else:
+				# Fallen floor slabs heaped against the wall like steps (the tallest against it), each a
+				# mantle from the one below, then a mantle onto the roof.
+				for j in r.climb_steps:
+					var ch := CLIMB_STEP * float(r.climb_steps - j)
+					var u2 := r.cross - d * (CLIMB_STEP_DEPTH * (float(j) + 0.5))
+					batch.add_solid(_at(u2, prev.top + ch * 0.5), _osize(d, CLIMB_STEP_DEPTH, 2.4, ch))
+					var us := _osize(d, CLIMB_STEP_DEPTH, 2.4, 0.0)
+					_block(u2.x, u2.y, us.x, us.z)
+					var layers := maxi(1, int(round(ch / 0.4)))
+					for q in layers:
+						var lh := ch / float(layers)
+						var askew := Basis.from_euler(Vector3(_rng.randf_range(-0.04, 0.04), _rng.randf_range(-0.14, 0.14), _rng.randf_range(-0.04, 0.04)))
+						var at := _at(u2 + d * _rng.randf_range(-0.08, 0.08), prev.top + lh * (float(q) + 0.5))
+						batch.add_prop("ruin_slab", RuinMeshes.fit("ruin_slab", at, Vector3(2.7, lh * 1.08, CLIMB_STEP_DEPTH + 0.3), run0 * askew))
+			batch.add(_at(r.cross + side_in * 2.2 - d * 0.25, (prev.top + r.y) * 0.5), Vector3(0.22, r.y - prev.top, 0.22), "steel_dark", false)  # a drain pipe
 		Link.STONES:
-			# Chimney stacks standing up out of the street, each a running jump from the last.
-			for s in r.stones:
-				var h := s.y - base
-				var fs := _osize(d, STONE_DEPTH, STONE_WIDTH, h)
-				batch.add(Vector3(s.x, base + h * 0.5, s.z), fs, "brick")
-				batch.add(Vector3(s.x, s.y + 0.04, s.z), _osize(d, STONE_DEPTH + 0.1, STONE_WIDTH + 0.1, 0.08), "concrete", false)
+			# What's left of chimneys and columns standing up out of the street: crumbled crowns,
+			# narrow, each top leaning its own way.
+			for k in r.stones.size():
+				var s := r.stones[k]
+				var tb := run0 * Basis.from_euler(r.stone_tilt[k])
+				var pkey := "ruin_chimney" if k % 2 == 0 else "ruin_stump"
+				var h := s.y - 0.4 - base
+				batch.add(Vector3(s.x, base + h * 0.5, s.z), _osize(d, STONE_DEPTH, STONE_WIDTH, h), "brick" if pkey == "ruin_chimney" else "concrete")
+				_solid(batch, s - tb.y * 0.2, Vector3(STONE_WIDTH, 0.4, STONE_DEPTH), tb)
+				batch.add_prop(pkey, RuinMeshes.fit(pkey, s - tb.y * 0.35, Vector3(STONE_WIDTH + 0.12, 0.7, STONE_DEPTH + 0.12), tb))
+				var fs := _osize(d, STONE_DEPTH, STONE_WIDTH, 0.0)
+				field.set_floor_rect(Rect2(origin.x + s.x - fs.x * 0.5, origin.z + s.z - fs.z * 0.5, fs.x, fs.z), origin.y + s.y)
+		Link.GIRDERS:
+			# The steel of a floor that collapsed out from under it: I-beams left on broken columns,
+			# each leaning up or down, torn chunks of the slab still hanging off some.
+			for k in r.girders.size():
+				var s := r.girders[k]
+				var gl := r.girder_len[k]
+				var gb := _run_basis(d, r.girder_pitch[k])
+				var pc := s - gb.y * 0.18
+				_solid(batch, pc, Vector3(GIRDER_W, 0.36, gl), gb)
+				batch.add_prop("ruin_beam", RuinMeshes.fit("ruin_beam", pc, Vector3(GIRDER_W, 0.36, gl), gb if k % 2 == 0 else gb * Basis(Vector3.UP, PI)))
+				var col_top := s.y - 0.45
+				var h := col_top - base
+				batch.add(Vector3(s.x, base + h * 0.5, s.z), Vector3(0.5, h, 0.5), "concrete", false)
+				batch.add_prop("ruin_stump", RuinMeshes.fit("ruin_stump", Vector3(s.x, col_top - 0.2, s.z), Vector3(0.6, 0.45, 0.6), run0 * Basis(Vector3.UP, float(k))))
+				if k % 2 == 1:
+					var side_s := 1.0 if _rng.randf() < 0.5 else -1.0
+					var hang := s + Vector3(side_in.x, 0.0, side_in.y) * side_s * 0.95 + Vector3.DOWN * 0.75
+					batch.add_prop("ruin_slab", RuinMeshes.fit("ruin_slab", hang, Vector3(1.5, 0.26, 1.3), run0 * Basis.from_euler(Vector3(0.0, 0.0, 0.95 * side_s))))
+				var fs := _osize(d, gl, GIRDER_W, 0.0)
 				field.set_floor_rect(Rect2(origin.x + s.x - fs.x * 0.5, origin.z + s.z - fs.z * 0.5, fs.x, fs.z), origin.y + s.y)
 		_:
 			pass
+	# Holes blown in the facades: one in the face you cross toward (off to the side of where you
+	# land), maybe one in a side face; something still smouldering in some of them.
+	var faces: Array = []
+	if _rng.randf() < 0.75:
+		var off := (_rng.randf_range(2.6, 5.5)) * (1.0 if _rng.randf() < 0.5 else -1.0)
+		faces.append([-d, r.cross + d * r.gap + side_in * off])
+	if _rng.randf() < 0.5:
+		var sd := side_in * (1.0 if _rng.randf() < 0.5 else -1.0)
+		var along_r := _rng.randf_range(0.25, 0.75)
+		var p0 := Vector2(lerpf(r.rect.position.x, r.rect.end.x, along_r), lerpf(r.rect.position.y, r.rect.end.y, along_r))
+		faces.append([sd, p0 - sd * p0.dot(sd) + sd * r.edge_along(sd)])
+	for fc in faces:
+		var outward: Vector2 = fc[0]
+		var spot: Vector2 = fc[1]
+		var depth_down := _rng.randf_range(2.4, 7.5)
+		if r.y - depth_down < base + 3.0 or not r.rect.grow(0.1).has_point(spot):
+			continue
+		var o3 := Vector3(outward.x, 0.0, outward.y)
+		var bb := Basis(Vector3.UP.cross(o3), Vector3.UP, o3)
+		var sc := _rng.randf_range(0.8, 1.5)
+		var at := _at(spot, r.y - depth_down)
+		batch.add_prop("ruin_breach", RuinMeshes.fit("ruin_breach", at, RuinMeshes.NATIVE["ruin_breach"] * sc, bb))
+		if _rng.randf() < 0.6:
+			_fire(at + o3 * 0.45 * sc + Vector3.DOWN * 0.5 * sc, 0.7 * sc)
+	# Under every crossing, something burning down in the wreckage between the buildings: its glow
+	# comes up past the beams, stumps and poles, so you see their edges and the gaps between, and
+	# nothing up on the roofs.
+	if r.link != Link.CLIMB:
+		var under := (prev.top - 2.0) if r.link == Link.FACADE else maxf(prev.top, r.y) - 2.8  # (a facade: down in the alley)
+		_fire(_at(r.cross + d * (r.gap * 0.5), under), 1.25, false)
+	if _rng.randf() < 0.3:
+		var p := _spot(r, 1.0)
+		if p.y > -1.0e8:
+			_fire(p, 1.0)
+	# The edges round the crossing are broken: rubble either side of the gap in the parapet where
+	# you take off, and a chunk of this roof's lip hanging off beside where you land.
+	if r.link != Link.CLIMB:
+		for s: float in [-1.0, 1.0]:
+			var heap := _at(r.cross + side_in * s * (OPENING_HALF + 0.7) - d * 0.7, prev.top)
+			batch.add_prop("ruin_rubble", RuinMeshes.fit("ruin_rubble", heap, Vector3(1.1, 0.4, 1.0), run0 * Basis(Vector3.UP, s * 0.7)))
+		var hs := 1.0 if _rng.randf() < 0.5 else -1.0
+		var lip := _at(r.cross + d * (r.gap - 0.2) + side_in * hs * _rng.randf_range(2.8, 3.4), r.y - 0.55)
+		if r.link != Link.FACADE:
+			batch.add_prop("ruin_slab", RuinMeshes.fit("ruin_slab", lip, Vector3(1.6, 0.3, 1.4), _run_basis(-d, -0.7)))
+	if r.link == Link.FACADE:
+		_build_burst_floors(batch, r)
+	if r.drop_ledge != Vector3.ZERO:
+		# Halfway down the taller wall you drop from, a slab of its floor jutting out over the alley.
+		var out := 2.0 * (Vector2(r.drop_ledge.x, r.drop_ledge.z).dot(d) - prev.edge_along(d))
+		_ledge(batch, r.drop_ledge, d, out, 2.6, true)
+	if r.barrier.size.x > 0.0:
+		_build_barrier(batch, r)
 	# Dressing, kept off the walk from the landing to the way out.
 	for v in r.vents:
+		if nests.has(i):
+			# A nest: the vent burst open from inside, egg sacs round it. It looks wrong before it wakes.
+			batch.add_prop("ruin_nest", RuinMeshes.fit("ruin_nest", v, Vector3(1.9, 0.7, 1.9), Basis(Vector3.UP, _rng.randf() * TAU)))
+			batch.add_solid(v + Vector3(0.0, 0.15, 0.0), Vector3(1.2, 0.3, 1.2))
+			_block(v.x, v.z, 0.9, 0.9)
+			continue
 		batch.add(v + Vector3(0.0, 0.35, 0.0), Vector3(0.9, 0.7, 0.9), "steel_dark")
 		batch.add(v + Vector3(0.0, 0.72, 0.0), Vector3(0.7, 0.04, 0.7), "dark", false)
 		_block(v.x, v.z, 0.9, 0.9)
@@ -856,6 +1270,66 @@ func _build_roof(batch: LevelKit.BoxBatch, i: int) -> void:
 			_block(p.x, p.z, 6.0, 0.6)
 
 
+## One slab of floor burst out through a wall: top centre at `top`, sticking `out` m out of the wall
+## the way `outward` faces, `width` m along it, with the blown-out room behind it (and sometimes a
+## fire in there) and its rebar hanging.
+func _ledge(batch: LevelKit.BoxBatch, top: Vector3, outward: Vector2, out: float, width: float, burning: bool) -> void:
+	var o3 := Vector3(outward.x, 0.0, outward.y)
+	var fb := Basis(Vector3.UP.cross(o3), Vector3.UP, o3)  # +Z out of the wall
+	var c := top - Vector3.UP * LEDGE_THICK * 0.5
+	batch.add_solid(c, _osize(outward, out, width, LEDGE_THICK))
+	var tilt := Basis.from_euler(Vector3(_rng.randf_range(-0.02, 0.02), 0.0, _rng.randf_range(-0.04, 0.04)))
+	batch.add_prop("ruin_slab", RuinMeshes.fit("ruin_slab", c, Vector3(width + 0.25, LEDGE_THICK, out + 0.2), fb * tilt))
+	# The room it came out of, on the wall behind it.
+	var wall := top - o3 * (out * 0.5)
+	var sc := (width + 0.4) / RuinMeshes.NATIVE["ruin_breach"].x
+	var n: Vector3 = RuinMeshes.NATIVE["ruin_breach"] * sc
+	batch.add_prop("ruin_breach", RuinMeshes.fit("ruin_breach", wall + Vector3.UP * (n.y * 0.5 - 0.15), n, fb))
+	if burning:
+		_fire(top - o3 * (out * 0.5 - 0.45) + Vector3.UP * 0.05, 0.55)
+
+
+## FACADE: every slab up the wall, a glow down in the alley under them.
+func _build_burst_floors(batch: LevelKit.BoxBatch, r: Roof) -> void:
+	for k in r.ledges.size():
+		_ledge(batch, r.ledges[k], -r.dir, r.ledge_out[k], r.ledge_w[k], _rng.randf() < 0.4)
+		var lc := r.ledges[k]
+		var lw := r.ledge_w[k]
+		var fs := _osize(r.dir, r.ledge_out[k], lw, 0.0)
+		field.set_floor_rect(Rect2(origin.x + lc.x - fs.x * 0.5, origin.z + lc.z - fs.z * 0.5, fs.x, fs.z), origin.y + lc.y)
+
+
+## A heap of fallen slabs across the walk over the roof (the floor above it came down): a mantle
+## over the top, or the one squeeze past at the end by the parapet. Drawn as slabs piled askew,
+## the crowd climbs it.
+func _build_barrier(batch: LevelKit.BoxBatch, r: Roof) -> void:
+	var b := r.barrier
+	var h := r.barrier_h
+	var od := r.out_dir
+	var side := _side(od)
+	var c2 := b.get_center()
+	batch.add_solid(_at(c2, r.y + h * 0.5), Vector3(b.size.x, h, b.size.y))
+	field.set_floor_rect(Rect2(b.position + Vector2(origin.x, origin.z), b.size), origin.y + r.y + h)
+	var lo := minf(b.position.dot(side), b.end.dot(side))
+	var hi := maxf(b.position.dot(side), b.end.dot(side))
+	var dep := absf(b.size.dot(od))
+	var mid_a := c2.dot(od)
+	var pieces := maxi(1, int(round((hi - lo) / 2.1)))
+	var pw := (hi - lo) / float(pieces)
+	var layers := maxi(2, int(round(h / 0.36)))
+	var lh := h / float(layers)
+	var run0 := _run_basis(od, 0.0)
+	for p in pieces:
+		var across := lo + pw * (float(p) + 0.5)
+		for q in layers:
+			var askew := Basis.from_euler(Vector3(_rng.randf_range(-0.05, 0.05), _rng.randf_range(-0.3, 0.3), _rng.randf_range(-0.06, 0.06)))
+			var at := _at(od * (mid_a + _rng.randf_range(-0.15, 0.15)) + side * (across + _rng.randf_range(-0.2, 0.2)), r.y + lh * (float(q) + 0.5))
+			batch.add_prop("ruin_slab", RuinMeshes.fit("ruin_slab", at, Vector3(pw + 0.35, lh * 1.1, dep + 0.3), run0 * askew))
+	for s: float in [-1.0, 1.0]:
+		var heap := _at(od * (mid_a + s * (dep * 0.5 + 0.5)) + side * _rng.randf_range(lo + 1.0, hi - 1.0), r.y)
+		batch.add_prop("ruin_rubble", RuinMeshes.fit("ruin_rubble", heap, Vector3(1.3, 0.5, 1.2), run0 * Basis(Vector3.UP, s)))
+
+
 ## The raised part of a roof: a block of the building standing up along the edge you leave by,
 ## its own asphalt and knee-high parapet (open where you leave and on the side facing back, where
 ## you climb up), windows on its face, and the unit to climb first when it is too tall to mantle.
@@ -906,9 +1380,24 @@ func _parapet(batch: LevelKit.BoxBatch, r: Roof, e: Vector2, openings: Array[flo
 			if piece.y - (o + OPENING_HALF) > 0.3:
 				next.append(Vector2(o + OPENING_HALF, piece.y))
 		pieces = next
+	# Drawn as stretches of chipped, cracked coping, a fifth of them half fallen away (and lower to
+	# step over there); the crowd can't cross any of it.
+	var al3 := Vector3(along.x, 0.0, along.y)
+	var lb := Basis(Vector3.UP.cross(al3), Vector3.UP, al3)
 	for piece in pieces:
 		var mid := e * at + along * ((piece.x + piece.y) * 0.5)
-		_wall(batch, _at(mid, r.y + ROOF_PARAPET_H * 0.5), _osize(e, 0.4, piece.y - piece.x, ROOF_PARAPET_H))
+		var sz := _osize(e, 0.4, piece.y - piece.x, 0.0)
+		_block(mid.x, mid.y, sz.x, sz.z)
+		var n := maxi(1, int(round((piece.y - piece.x) / 1.6)))
+		var seg := (piece.y - piece.x) / float(n)
+		for k in n:
+			var m2 := e * at + along * (piece.x + seg * (float(k) + 0.5))
+			var broken := _rng.randf() < 0.2
+			var h := ROOF_PARAPET_H * (0.5 if broken else 1.0)
+			batch.add_solid(_at(m2, r.y + h * 0.5), _osize(e, 0.4, seg, h))
+			var key := "ruin_lip_broken" if broken else "ruin_lip"
+			var flip := lb if _rng.randf() < 0.5 else lb * Basis(Vector3.UP, PI)
+			batch.add_prop(key, RuinMeshes.fit(key, _at(m2, r.y + ROOF_PARAPET_H * 0.5), Vector3(0.4, ROOF_PARAPET_H, seg + 0.04), flip))
 
 
 ## A spot on a roof clear of the walk across it, its edges and its vents, or (0, -1e9, 0) after a few tries.
@@ -918,7 +1407,7 @@ func _spot(r: Roof, half: float) -> Vector3:
 		var z := _rng.randf_range(r.rect.position.y + 2.0 + half, r.rect.end.y - 2.0 - half)
 		var p := Vector3(x, r.y, z)
 		var ok := _lane_distance(r, p) > 3.0 + half
-		if r.tier.grow(half + 0.4).has_point(Vector2(x, z)):
+		if r.tier.grow(half + 0.4).has_point(Vector2(x, z)) or r.barrier.grow(half + 0.6).has_point(Vector2(x, z)):
 			ok = false
 		for v in r.vents:
 			if absf(x - v.x) < 1.2 + half and absf(z - v.z) < 1.2 + half:
@@ -1139,13 +1628,13 @@ func _build_city(batch: LevelKit.BoxBatch) -> void:
 			var w := rng.randf_range(14.0, 28.0)
 			var edge := _route_bounds.end.x if s > 0.0 else _route_bounds.position.x
 			var xc := edge + s * (rng.randf_range(9.0, 24.0) + w * 0.5)
-			var top := rng.randf_range(-16.0, 34.0)
+			var top := rng.randf_range(-16.0, ROOF_TOP_MAX + 10.0)  # as tall as the route gets, and taller
 			_backdrop(batch, rng, Vector3(xc, 0.0, zc), Vector3(w, top - base, d), top, base)
 		z -= d + rng.randf_range(3.0, 9.0)
 	# Beyond the tower: more of the city, so the end of the route isn't the end of the world.
 	for k in 6:
 		var w := rng.randf_range(18.0, 34.0)
-		var top := rng.randf_range(-10.0, 40.0)
+		var top := rng.randf_range(-10.0, ROOF_TOP_MAX + 22.0)
 		var xc := _route_bounds.get_center().x + rng.randf_range(-70.0, 70.0)
 		var zc := z_end - 14.0 - rng.randf_range(0.0, 60.0) - w * 0.5
 		_backdrop(batch, rng, Vector3(xc, 0.0, zc), Vector3(w, top - base, w), top, base)
@@ -1270,28 +1759,44 @@ func anyone_here() -> bool:
 
 # --- The waves -------------------------------------------------------------------------------------
 
-## Every wave, in the order they can be triggered, the same on every peer: the lot's first two
-## (a few hundred roaches, not a thousand: the user found the horde too thick), then a handful out
-## of each roof's vents as you land on it. Roaches climb walls and leap the gaps (Horde.CLIMBER),
-## so whatever is left behind follows you roof to roof. Spiders and bats never come in waves;
-## they're jump scares (roof_drop, roof_swarm). The helipad's entry is empty: it's the mark for
-## "everyone made it up". Each entry: [[count, weights, local rect], ...].
+## Every wave, in the order they can be triggered, the same on every peer. Few of them now (the
+## user: "less of them"): a handful of roaches on the lot, and the roofs empty but for the NESTS,
+## one in each third of the route (`nests`), where a flood of tiny mites (Horde mites: small,
+## quick, kept to their roof) pours out of the cracked-open vents as you land: you run. Spiders and
+## bats never come in waves; they're jump scares (roof_drop, roof_swarm). The helipad's entry is
+## empty: it's the mark for "everyone made it up". Each entry: [[count, weights, local rect, mites], ...].
 func _build_waves() -> void:
 	_waves.clear()
 	var scale := float(horde_count) / float(HORDE_COUNT)
-	# Halved again (the user: still too many): 70 and 45 on the lot, 2-4 out of each roof's vents.
-	_waves.append([[int(70.0 * scale), [1.0, 0.0, 0.0], Rect2(-44.0, -46.0, 88.0, 30.0)]])
-	_waves.append([[int(45.0 * scale), [1.0, 0.0, 0.0], Rect2(-48.0, -30.0, 96.0, 20.0)]])
-	var wrng := RandomNumberGenerator.new()
-	wrng.seed = SEED + seed_value * 7 + 3
+	_waves.append([[maxi(1, int(LOT_ROACHES.x * scale)), [1.0, 0.0, 0.0], Rect2(-44.0, -46.0, 88.0, 30.0), false]])
+	_waves.append([[maxi(1, int(LOT_ROACHES.y * scale)), [1.0, 0.0, 0.0], Rect2(-48.0, -30.0, 96.0, 20.0), false]])
 	for k in range(1, ROOF_COUNT + 1):
 		var groups: Array = []
 		var r := roofs[k]
-		var roaches := int(wrng.randi_range(2, 4) * scale)
-		for v in r.vents:  # out of the vents, not from under your feet
-			groups.append([roaches / r.vents.size(), [1.0, 0.0, 0.0], Rect2(v.x - 1.6, v.z - 1.6, 3.2, 3.2)])
+		if nests.has(k):
+			var mites := maxi(r.vents.size(), int(float(MITES_PER_NEST) * scale))
+			for v in r.vents:  # out of the cracked-open vents, not from under your feet
+				groups.append([mites / r.vents.size(), [1.0, 0.0, 0.0], Rect2(v.x - 1.4, v.z - 1.4, 2.8, 2.8), true])
 		_waves.append(groups)
 	_waves.append([])
+
+
+## The nest roofs: one in each third of the route (never the checkpoint roofs or the first), from the
+## run's seed.
+func _pick_nests() -> void:
+	nests.clear()
+	var nrng := RandomNumberGenerator.new()
+	nrng.seed = SEED + seed_value * 13 + 5
+	var third := float(ROOF_COUNT) / float(NEST_COUNT)
+	for n in NEST_COUNT:
+		var lo := maxi(2, int(third * float(n)) + 1)
+		var hi := mini(ROOF_COUNT - 1, int(third * float(n + 1)))
+		var picks: Array[int] = []
+		for k in range(lo, hi + 1):
+			if not CHECKPOINT_ROOFS.has(k) and not nests.has(k):
+				picks.append(k)
+		if not picks.is_empty():
+			nests.append(picks[nrng.randi_range(0, picks.size() - 1)])
 
 
 func wave_count() -> int:
@@ -1318,7 +1823,7 @@ func _tick_rounds() -> void:
 			var weights: Array[float] = []
 			for w in r[1]:
 				weights.append(float(w))
-			horde.spawn_group(int(r[0]), Rect2(area.position + Vector2(origin.x, origin.z), area.size), SEED + seed_value + _rounds_done * 7 + g * 131, weights)
+			horde.spawn_group(int(r[0]), Rect2(area.position + Vector2(origin.x, origin.z), area.size), SEED + seed_value + _rounds_done * 7 + g * 131, weights, r.size() > 3 and bool(r[3]))
 		_rounds_done += 1
 
 
@@ -1326,9 +1831,17 @@ func _tick_rounds() -> void:
 func _start_round(k: int) -> void:
 	if not multiplayer.is_server() or rounds_spawned >= k:
 		return
+	var from := rounds_spawned
 	rounds_spawned = k
-	if k == 2:
-		GameState.post_message("MORE OF THEM. Don't stand and fight: the gap, then the edge, then the next roof.", 4.0)
+	# A nest just woke (wave w is roof w - 1): the vents burst, everyone hears it.
+	var fx := Effects.find(self)
+	for w in range(from, k):
+		if nests.has(w - 1):
+			GameState.post_message("THE ROOF IS CRAWLING. RUN.", 3.0)
+			if fx != null:
+				for v in roofs[w - 1].vents:
+					fx.fx_sound.rpc("skitter", origin + v + Vector3.UP * 0.4, 8.0, 0.75)
+					fx.fx_sound.rpc("roach_chitter", origin + v + Vector3.UP * 0.4, 4.0, 1.6)
 
 
 ## Tests and the bench: everything at once.
@@ -1511,7 +2024,7 @@ func server_populate() -> void:
 	Net.spawn_pickup("drink", s + Vector3(5.0, 0.0, 1.0), 0)
 	# A little more along the way: ammo on every third roof, a bomb on the fifth, a drink midway.
 	for k in range(1, ROOF_COUNT + 1):
-		var c := roofs[k].center()
+		var c := landing_spot(k)  # by where you land: a roof's centre can be up inside its raised part or under a heap
 		if k % 3 == 0:
 			Net.spawn_pickup("ammo", origin + c + Vector3(1.5, 0.0, 0.0), 0)
 		if k == 5:

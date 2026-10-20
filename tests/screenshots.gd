@@ -49,7 +49,7 @@ func _ready() -> void:
 	var f0: Dictionary = _level.floors[0]
 	var cubicle := _find_cell(0, "cubicles")
 	if cubicle != Vector2i(-1, -1):
-		await _shot("03_cubicles", _level.cell_center(0, cubicle) + Vector3(0.0, 0.1, 2.4), 0.0, -0.1, false)
+		await _shot("03_cubicles", _level.cell_center(0, cubicle) + Vector3(0.0, 0.1, 3.2), 0.0, -0.1, true)
 		# The sculpted furniture: from the middle of the room toward a cubicle in a corner.
 		await _shot("03b_cubicle_props", _level.cell_center(0, cubicle) + Vector3(0.4, 0.1, 0.4), PI * 0.25, -0.3, true)
 		await _shot("03d_cubicle_props", _level.cell_center(0, cubicle) + Vector3(-0.4, 0.1, -0.4), -PI * 0.75, -0.3, true)
@@ -394,9 +394,12 @@ func _tour_arena(arena: HordeArena) -> void:
 	await _link_shot(arena, HordeArena.Link.LEAP, "66b_leap", -0.05, true)
 	await _link_shot(arena, HordeArena.Link.STONES, "66c_stacks", -0.2, true)
 	await _link_shot(arena, HordeArena.Link.DROP, "66d_drop", -0.45, true)
+	await _link_shot(arena, HordeArena.Link.GIRDERS, "66e_girders", -0.3, true)
+	await _link_shot(arena, HordeArena.Link.JUMP, "66f_long_jump", -0.2, true)
+	await _link_shot(arena, HordeArena.Link.FACADE, "66g_the_collapse", 0.45, false)
 	# A Weaver swinging the gap between roof 1 and roof 2, seen from roof 2.
 	var wk := 2
-	while wk < arena.roofs.size() - 2 and (arena.roofs[wk].link == HordeArena.Link.CLIMB or arena.roofs[wk].link == HordeArena.Link.STONES):
+	while wk < arena.roofs.size() - 2 and (arena.roofs[wk].link == HordeArena.Link.CLIMB or arena.roofs[wk].link == HordeArena.Link.STONES or arena.roofs[wk].link == HordeArena.Link.GIRDERS or arena.roofs[wk].link == HordeArena.Link.FACADE):
 		wk += 1
 	var r1: HordeArena.Roof = arena.roofs[wk - 1]
 	var r2: HordeArena.Roof = arena.roofs[wk]
@@ -470,7 +473,7 @@ func _tour_arena(arena: HordeArena) -> void:
 	var dr := arena.dread
 	dr._glimpse_t = 999.0
 	dr._cool = 999.0
-	_place_all(arena.origin + arena.roofs[3].center() + Vector3(0.0, 0.1, 0.0), 0.0)
+	_place_all(arena.origin + arena.roofs[3].enter + Vector3(arena.roofs[3].dir.x, 0.0, arena.roofs[3].dir.y) * 1.5 + Vector3(0.0, 0.1, 0.0), 0.0)
 	await _wait(0.5)
 	var gs := dr.glimpse_spot(_host)
 	if gs != Vector3.INF:
@@ -480,11 +483,25 @@ func _tour_arena(arena: HordeArena) -> void:
 	var edge: Vector3 = arena.test_points["lot_edge"] + Vector3(0.0, 0.0, 4.0)
 	var tw := arena.origin + arena.tower_top - edge
 	await _shot("73_beacon_from_the_lot", edge, atan2(-tw.x, -tw.z), 0.08, true)
+	# A nest: the mites pour out of the burst vents and come for you.
+	if not arena.nests.is_empty():
+		var nk: int = arena.nests[0]
+		var nr: HordeArena.Roof = arena.roofs[nk]
+		var at := arena.origin + arena.landing_spot(nk) + Vector3(0.0, 0.1, 0.0)
+		var vent: Vector3 = arena.origin + nr.vents[0]
+		var to_vent := vent - at
+		_place_all(at, atan2(-to_vent.x, -to_vent.z))
+		arena.debug_spawn_all_rounds()
+		horde.debug_frozen = false
+		await _wait(2.5)
+		horde.debug_frozen = true
+		await _shot_here("74_nest", atan2(-to_vent.x, -to_vent.z), -0.35, false)
+		await _shot_here("74b_nest_first_person", atan2(-to_vent.x, -to_vent.z), -0.45, true)
 
 
 ## The first link of a kind, seen from where you stand to take it.
 func _link_shot(arena: HordeArena, link: int, file: String, pitch: float, first_person: bool) -> void:
-	for i in range(1, arena.roofs.size() - 1):
+	for i in range(2 if link == HordeArena.Link.JUMP else 1, arena.roofs.size() - 1):  # roof 1's jump is the easy one
 		var r: HordeArena.Roof = arena.roofs[i]
 		if r.link != link:
 			continue

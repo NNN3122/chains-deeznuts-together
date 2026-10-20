@@ -34,7 +34,7 @@ const HIT_HEIGHTS: Array[float] = [0.75, 1.3, 1.1]  # m: the capsule a round has
 const CLIMB_MAXES: Array[float] = [2.6, 1.2, 0.0]  # m a pile lifts one, per kind: roaches climb roaches
 const CLIMBER: Array[bool] = [true, true, false]  # roaches and Weavers climb walls and cross the gaps between roofs
 const THREADED: Array[bool] = [false, true, false]  # Weavers cross on a thread; roaches leap it
-const SWING_RANGES: Array[float] = [9.0, 11.0, 0.0]  # m each kind looks across a gap for the next roof
+const SWING_RANGES: Array[float] = [12.0, 13.0, 0.0]  # m each kind looks across a gap for the next roof (planks run to 11 m now)
 const LEAP_ARC: float = 1.6  # m a roach leaping a gap rises over the straight line
 const LEAP_SPEED: float = 9.0  # m/s along a roach's leap
 const CLIMB_SPEED: float = 3.4  # m/s up a wall face
@@ -58,6 +58,11 @@ const CLAW_COOLDOWN: float = 1.1
 const CLAW_PUSH: float = 2.2  # m/s shove per claw
 const MAUL_CONTACTS: int = 3  # this many on one player at once...
 const MAUL_TIME: float = 2.5  # ...for this long, and they're pulled down (a layoff)
+const MITE_SCALE: Vector2 = Vector2(0.3, 0.42)  # of a roach's size, a mite (the nests on Level 3's roofs)
+const MITE_SPEED: float = 1.45  # of a roach's pace: quicker than a walk, slower than a sprint
+const MITE_BITE: float = 0.25  # of a set of hands toward the maul, each mite on you (a dozen pull you down)
+const MITE_CLAW: float = 0.3  # of a claw's shove
+const MITE_SEP: float = 0.4  # of the separation: mites pack in close (a dozen on one player)
 const GRAB_RANGE: float = 1.0  # m from the chain itself
 const GRAB_MAX_PER_SEGMENT: int = 3
 const DRAG_PER_HOLDER: float = 0.3  # of the held bodies' speed: one holder leaves a sprint at 4.9 m/s, three leave a crawl
@@ -105,6 +110,7 @@ var climb: PackedFloat32Array = PackedFloat32Array()
 var grab_t: PackedFloat32Array = PackedFloat32Array()
 var state: PackedByteArray = PackedByteArray()
 var kind: PackedByteArray = PackedByteArray()
+var tiny: PackedByteArray = PackedByteArray()  # 1: a mite (Level 3's nests): small, quick, never leaves its roof, swarms you rather than the chain
 var active: PackedByteArray = PackedByteArray()
 var grab_a: PackedInt32Array = PackedInt32Array()  # join indices of the two bodies whose segment it holds
 var grab_b: PackedInt32Array = PackedInt32Array()
@@ -227,6 +233,7 @@ func _alloc(n: int) -> void:
 	_crowd = _floats(n)
 	state = _bytes(n)
 	kind = _bytes(n)
+	tiny = _bytes(n)
 	active = _bytes(n)
 	grab_a = _ints(n)
 	grab_b = _ints(n)
@@ -264,7 +271,9 @@ static func _ints(n: int) -> PackedInt32Array:
 
 ## Call on every peer with the same arguments: the level's seed makes the same swarm everywhere.
 ## weights: the kind mix for this round (Roach, Weaver, Flitter).
-func spawn_group(n: int, area: Rect2, rng_seed: int, weights: Array[float] = KIND_WEIGHTS) -> void:
+## n agents in area from rng_seed (the same on every peer). `mites`: tiny ones (MITE_SCALE, quicker,
+## kept to their roof, a fraction of a bite each).
+func spawn_group(n: int, area: Rect2, rng_seed: int, weights: Array[float] = KIND_WEIGHTS, mites: bool = false) -> void:
 	spawn_seed = rng_seed
 	_rng.seed = rng_seed
 	n = mini(n, MAX_AGENTS - count)
@@ -295,6 +304,10 @@ func spawn_group(n: int, area: Rect2, rng_seed: int, weights: Array[float] = KIN
 		py[a] = _ground(x, z) + (FLY_HEIGHT if FLYING[k] else 0.0)
 		spd[a] = SPEEDS[k] * _rng.randf_range(0.8, 1.2)
 		scl[a] = _rng.randf_range(0.86, 1.12)
+		tiny[a] = 1 if mites else 0
+		if mites:
+			spd[a] *= MITE_SPEED
+			scl[a] = _rng.randf_range(MITE_SCALE.x, MITE_SCALE.y)
 		seed_f[a] = _rng.randf()
 		tint[a] = _rng.randf()
 		phase[a] = _rng.randf() * TAU
@@ -435,7 +448,7 @@ func _pick_active() -> void:
 				best = d
 				bk = k
 		_d2[i] = best
-		if best > LEFT_BEHIND * LEFT_BEHIND and nb > 0 and not FLYING[kind[i]] and s == AState.WALK:
+		if best > LEFT_BEHIND * LEFT_BEHIND and nb > 0 and not FLYING[kind[i]] and s == AState.WALK and tiny[i] == 0:  # (a nest stays a nest: crossed again after a wipe, it is still crawling)
 			# Left behind on a roof the Line has crossed: it's gone back into the walls. The
 			# server's snapshots carry the state to clients.
 			if multiplayer.is_server():
@@ -517,6 +530,12 @@ func _simulate(delta: float) -> void:
 		bxs.append(b.global_position.x)
 		bzs.append(b.global_position.z)
 	var me := Net.get_local_player()
+	var plxs := PackedFloat32Array()  # the players (a mite homes on a person)
+	var plzs := PackedFloat32Array()
+	for p in Net.get_players():
+		plxs.append(p.global_position.x)
+		plzs.append(p.global_position.z)
+	var npl := plxs.size()
 	var mex := me.global_position.x if me != null else 1.0e9
 	var mez := me.global_position.z if me != null else 1.0e9
 	var grab_count := 0
@@ -585,7 +604,7 @@ func _simulate(delta: float) -> void:
 		var speed := spd[i]
 		var k := kind[i]
 		var flies := FLYING[k]
-		var climber := CLIMBER[k]
+		var climber := CLIMBER[k]  # (a mite climbs too, but stops at its roof's edge: below)
 		var cx0 := clampi(int((x - ox) * inv_cell), 0, fw - 1)
 		var cz0 := clampi(int((z - oz) * inv_cell), 0, fh - 1)
 		var ci0 := cz0 * fw + cx0
@@ -607,9 +626,22 @@ func _simulate(delta: float) -> void:
 		else:
 			# Where to: straight at the nearest player when close (and active), else the field.
 			var steered := false
-			if is_active and _d2[i] < STEER_RANGE * STEER_RANGE and _d2[i] > 0.01:
-				var tx := _near_x[i] - x
-				var tz := _near_z[i] - z
+			var ntx := _near_x[i]
+			var ntz := _near_z[i]
+			var nd2 := _d2[i]
+			if tiny[i] == 1 and npl > 0:
+				# A mite goes for a person, not the Ballast or the chain: the nearest player.
+				nd2 = 1.0e12
+				for pi in npl:
+					var qx := plxs[pi] - x
+					var qz := plzs[pi] - z
+					if qx * qx + qz * qz < nd2:
+						nd2 = qx * qx + qz * qz
+						ntx = plxs[pi]
+						ntz = plzs[pi]
+			if is_active and nd2 < STEER_RANGE * STEER_RANGE and nd2 > 0.01:
+				var tx := ntx - x
+				var tz := ntz - z
 				var l := sqrt(tx * tx + tz * tz)
 				if l > 0.6:
 					wx = tx / l
@@ -667,7 +699,7 @@ func _simulate(delta: float) -> void:
 							var ddx := x - px[j]
 							var ddz := z - pz[j]
 							var d2 := ddx * ddx + ddz * ddz
-							if d2 < sep2 and absf(py[j] - py[i]) < 2.5:
+							if d2 < sep2 * (MITE_SEP * MITE_SEP if tiny[i] == 1 else 1.0) and absf(py[j] - py[i]) < 2.5:
 								seen += 1
 								crowd += 1
 								var d := sqrt(d2)
@@ -675,7 +707,7 @@ func _simulate(delta: float) -> void:
 									ddx = sin(seed_f[i] * 50.0)
 									ddz = cos(seed_f[i] * 50.0)
 									d = 1.0
-								var kk := (SEPARATION - d) / d
+								var kk := (SEPARATION * (MITE_SEP if tiny[i] == 1 else 1.0) - d) / d
 								sx += ddx * kk
 								sz += ddz * kk
 						j = _next[j]
@@ -714,7 +746,10 @@ func _simulate(delta: float) -> void:
 			var cin := czn * fw + cxn
 			var tnext := terrain[cin]
 			var hl := sqrt(vxx * vxx + vzz * vzz)
-			if tnext == HordeField.VOID and hl > 0.1:
+			if tnext == HordeField.VOID and tiny[i] == 1:
+				nxp = x  # a mite stops at the edge: it never leaves the roof it came out on
+				nzp = z
+			elif tnext == HordeField.VOID and hl > 0.1:
 				var land := fld.floor_ahead(x, z, vxx / hl, vzz / hl, SWING_RANGES[k])
 				if land.is_empty() and _d2[i] < 1.0e11:
 					# Not that way: straight at whoever is nearest, then.
@@ -858,7 +893,7 @@ func _server_contacts(delta: float) -> void:
 	var fx := Effects.find(self)
 	for p in players:
 		var ppos := p.global_position
-		var contacts := 0
+		var contacts := 0.0  # sets of hands on you (a mite is a fraction of one)
 		var push := Vector3.ZERO
 		var claw := Vector3.ZERO
 		var clawed := false
@@ -873,14 +908,15 @@ func _server_contacts(delta: float) -> void:
 			var d2 := dx * dx + dz * dz
 			if d2 > r2 or absf(py[i] - ppos.y) > 1.6:
 				continue
-			contacts += 1
+			var bite := MITE_BITE if tiny[i] == 1 else 1.0
+			contacts += bite
 			var d := sqrt(d2)
 			var away := Vector3(-dx, 0.0, -dz) / maxf(d, 0.05)
-			push += away
+			push += away * bite
 			if cool[i] <= 0.0 and s == AState.WALK:
 				cool[i] = CLAW_COOLDOWN
 				clawed = true
-				claw += away * CLAW_PUSH
+				claw += away * CLAW_PUSH * (MITE_CLAW if tiny[i] == 1 else 1.0)
 				if fx != null and _rng.randf() < 0.5:
 					fx.fx_sound.rpc("roach_chitter", Vector3(px[i], py[i] + 1.2, pz[i]), -4.0, _rng.randf_range(0.85, 1.25))
 			elif s == AState.LUNGE and p.state == Player.State.NORMAL:
@@ -889,10 +925,10 @@ func _server_contacts(delta: float) -> void:
 				p.apply_knockback(away * 4.0 + Vector3.UP * 1.5)
 				p.add_noise(20.0)
 				p.model.pop_hat(away * 2.0 + Vector3.UP * 4.0)
-		if p.state == Player.State.NORMAL and contacts > 0:
+		if p.state == Player.State.NORMAL and contacts > 0.0:
 			if clawed:
 				p.add_noise(10.0)
-			if contacts < MAUL_CONTACTS:
+			if contacts < float(MAUL_CONTACTS):
 				# Flesh is a wall: at the edge of the crowd the claws and the press shove you back
 				# out. Three sets of hands and nobody shoves: they hold, and the timer runs.
 				var shove := claw + (push.normalized() * 0.5 * minf(1.0, push.length()) if push.length() > 0.5 else Vector3.ZERO)
@@ -900,7 +936,7 @@ func _server_contacts(delta: float) -> void:
 					shove += Vector3.UP * 0.6
 				p.apply_knockback(shove)
 		var t := float(_maul_t.get(p.peer_id, 0.0))
-		if contacts >= MAUL_CONTACTS and p.state == Player.State.NORMAL:
+		if contacts >= float(MAUL_CONTACTS) and p.state == Player.State.NORMAL:
 			if t <= 0.0:
 				GameState.post_tip("horde_grab", "THEY'RE ON %s. Pull them out: sprint, shoot, or bomb the crowd." % p.display_name.to_upper(), 3.0)
 			t += delta
@@ -1003,7 +1039,7 @@ func _server_grabs(_delta: float) -> void:
 		plz.append(p.global_position.z)
 	var claw2 := CLAW_RANGE * CLAW_RANGE
 	for i in count:
-		if active[i] == 0 or state[i] != AState.WALK or gcool[i] > 0.0 or _d2[i] > 36.0 or FLYING[kind[i]]:
+		if active[i] == 0 or state[i] != AState.WALK or gcool[i] > 0.0 or _d2[i] > 36.0 or FLYING[kind[i]] or tiny[i] == 1:  # (the tiny ones swarm you, not the chain)
 			continue
 		var x := px[i]
 		var z := pz[i]
@@ -1424,6 +1460,13 @@ func _process(delta: float) -> void:
 	if d > 35.0:
 		return
 	# Chitter and click from the swarm; a screech from a Flitter overhead.
+	if tiny[i] == 1:
+		# A nest: hundreds of tiny legs, a hiss of them.
+		Sfx.play_at(self, "skitter", p, -6.0 + 6.0 * (1.0 - d / 35.0), _rng.randf_range(1.3, 1.8), 35.0)
+		if _caption_t <= 0.0:
+			_caption_t = 6.0
+			Sfx.caption(self, "hundreds of tiny legs", p)
+		return
 	if FLYING[kind[i]]:
 		Sfx.play_at(self, "screech", p, -18.0 + 6.0 * (1.0 - d / 35.0), _rng.randf_range(1.6, 2.2), 40.0)
 	else:

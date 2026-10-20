@@ -1,6 +1,6 @@
 class_name YellowRooms
 extends Node3D
-## Level 1: The Yellow Rooms. Four floors (B4 at the bottom to B1) of 9 x 9 six-metre office cells built
+## Level 1: The Yellow Rooms. Four floors (B4 at the bottom to B1) of 9 x 9 eight-metre office cells built
 ## from a seed the host picks (a new layout every run; the tests use DEFAULT_SEED), so every
 ## peer builds the identical building before connecting.
 ## Each floor: a Break Room you arrive in (checkpoint), a maze of halls / cubicles / meeting rooms
@@ -16,15 +16,16 @@ extends Node3D
 ## freight elevator brings a Hire screaming through the door behind the group. The power on the
 ## Line's floor stutters out for 12-20 s every 60-90 s; Break Rooms keep their lights.
 
-const CELL: float = 6.0
+const CELL: float = 8.0  # m a room (was 6; the user: "a bigger volume per room and bigger hallways")
 const GRID: int = 9  # rooms a side: 54 m floors (was 6; the user wanted a bigger maze)
 const FLOORS: int = 4
 const FLOOR_H: float = 5.0
 const SLAB: float = 0.4
-const CEIL_H: float = 3.2
+const CEIL_H: float = 4.0  # was 3.2; still under the next floor's 0.4 m slab with a plenum for the hole lining
 const WALL_T: float = 0.2
-const DOOR_W: float = 1.4
-const DOOR_H: float = 2.3
+const DOOR_W: float = 2.4  # wide double doorways (was 1.4)
+const DOOR_H: float = 2.9
+const ROOM_S: float = CELL / 6.0  # the room dressing was laid out for 6 m rooms; offsets toward the walls scale by this
 const HOLE: float = 2.6
 const CAR_HOLE: float = 3.3  # the freight car's shaft through B1's ceiling
 const DEFAULT_SEED: int = 1931
@@ -150,7 +151,7 @@ func _generate_layout() -> void:
 		floors.append({"arrive": arrive, "ascent": ascent, "conn": conn, "types": types, "path": path, "rng_seed": seed_value * 7 + i})
 		arrive = ascent
 	var a0: Vector2i = floors[0]["arrive"]
-	spawn_position = cell_center(0, a0) + Vector3(0.0, 0.1, -2.2)
+	spawn_position = cell_center(0, a0) + Vector3(0.0, 0.1, -2.2 * ROOM_S)
 	spawn_facing = PI
 
 
@@ -352,10 +353,10 @@ func _build_floor(i: int) -> void:
 	_build_events(root, i)
 	_build_scare_triggers(root, i)
 	if i > 0:
-		var cp := Checkpoint.create("Checkpoint%d" % i, i, cell_center(i, arrive) + Vector3(0.0, 0.1, -2.2), PI, OBJECTIVES[i])
+		var cp := Checkpoint.create("Checkpoint%d" % i, i, cell_center(i, arrive) + Vector3(0.0, 0.1, -2.2 * ROOM_S), PI, OBJECTIVES[i])
 		cp.area_center = cell_center(i, arrive)
 		root.add_child(cp)
-		test_points["checkpoint%d" % i] = cell_center(i, arrive) + Vector3(0.0, 0.1, -2.2)
+		test_points["checkpoint%d" % i] = cell_center(i, arrive) + Vector3(0.0, 0.1, -2.2 * ROOM_S)
 
 
 ## A slab with a hole x hole opening in the middle (4 strips).
@@ -441,15 +442,19 @@ func _wall(batch: LevelKit.BoxBatch, center: Vector3, along_x: bool, kind: int, 
 	var sw_side := 1.0 if _hash(center + Vector3(2.1, 0.0, 0.3)) < 0.5 else -1.0
 	var plate := Vector3(0.08, 0.12, 0.016) if along_x else Vector3(0.016, 0.12, 0.08)
 	batch.add(Vector3(center.x, base + 1.2, center.z) + dir * (DOOR_W * 0.5 + 0.28) + normal * sw_side * (WALL_T * 0.5 + 0.008), plate, "wallplate", false)
-	# Some doorways keep their door, swung open against the wall.
+	# Some doorways keep their double doors, swung open against the wall (one leaf per jamb,
+	# now and then one left hanging half shut).
 	if _hash(center) < 0.45:
 		var side := 1.0 if _hash(center + Vector3(1.7, 0.0, 3.1)) < 0.5 else -1.0
-		var hinge_s := 1.0 if _hash(center + Vector3(5.3, 0.0, 0.7)) < 0.5 else -1.0
-		var hinge := Vector3(center.x, base, center.z) + dir * hinge_s * (DOOR_W * 0.5 - 0.02) + normal * side * (WALL_T * 0.5 + 0.03)
-		var ang := deg_to_rad(80.0 + 25.0 * _hash(center + Vector3(0.9, 0.0, 8.8)))
-		var leaf_dir := (-dir * hinge_s * cos(ang) + normal * side * sin(ang)).normalized()
-		var rot := atan2(-leaf_dir.z, leaf_dir.x)
-		batch.add(hinge + leaf_dir * 0.34 + Vector3(0.0, 1.11, 0.0), Vector3(0.68, 2.2, 0.045), "door", true, rot)
+		var leaf_w := DOOR_W * 0.5 - 0.03
+		for hinge_s: float in [-1.0, 1.0]:
+			var hinge := Vector3(center.x, base, center.z) + dir * hinge_s * (DOOR_W * 0.5 - 0.02) + normal * side * (WALL_T * 0.5 + 0.03)
+			var ang := deg_to_rad(80.0 + 25.0 * _hash(center + Vector3(0.9, 0.0, 8.8) * hinge_s))
+			if hinge_s > 0.0 and _hash(center + Vector3(3.3, 0.0, 6.1)) < 0.25:
+				ang = deg_to_rad(35.0)
+			var leaf_dir := (-dir * hinge_s * cos(ang) + normal * side * sin(ang)).normalized()
+			var rot := atan2(-leaf_dir.z, leaf_dir.x)
+			batch.add(hinge + leaf_dir * leaf_w * 0.5 + Vector3(0.0, (DOOR_H - 0.06) * 0.5, 0.0), Vector3(leaf_w, DOOR_H - 0.06, 0.045), "door", true, rot)
 	# A few glowing EXIT signs over doorways (built later with their light and lettering).
 	if _hash(center + Vector3(7.7, 0.0, 2.2)) < 0.16:
 		var at := Vector3(center.x, base + DOOR_H + 0.3, center.z)
@@ -492,7 +497,7 @@ func _ceiling_details(batch: LevelKit.BoxBatch, center: Vector3, holed: bool, rn
 	if holed:
 		return
 	var y := center.y + CEIL_H - 0.01
-	var vent := center + Vector3(1.8 * (1.0 if rng.randf() < 0.5 else -1.0), 0.0, 1.5 * (1.0 if rng.randf() < 0.5 else -1.0))
+	var vent := center + Vector3(1.8 * ROOM_S * (1.0 if rng.randf() < 0.5 else -1.0), 0.0, 1.5 * ROOM_S * (1.0 if rng.randf() < 0.5 else -1.0))
 	batch.add(Vector3(vent.x, y, vent.z), Vector3(0.6, 0.02, 0.6), "vent", false)
 	batch.add(Vector3(vent.x, y - 0.006, vent.z), Vector3(0.48, 0.02, 0.48), "dark", false)
 	for k in 5:
@@ -511,7 +516,7 @@ func _wall_details(batch: LevelKit.BoxBatch, i: int, c: Vector2i, center: Vector
 			if int(conn.get(_edge_key(c, nb), Conn.NONE)) == Conn.OPEN:
 				continue
 		var along := Vector3(normal.z, 0.0, normal.x)
-		var at := center - normal * (CELL * 0.5 - WALL_T * 0.5 - 0.008) + along * rng.randf_range(1.2, 2.4) * (1.0 if rng.randf() < 0.5 else -1.0)
+		var at := center - normal * (CELL * 0.5 - WALL_T * 0.5 - 0.008) + along * rng.randf_range(1.2, 2.4) * ROOM_S * (1.0 if rng.randf() < 0.5 else -1.0)
 		var size := Vector3(0.08, 0.12, 0.016) if absf(normal.z) > 0.5 else Vector3(0.016, 0.12, 0.08)
 		batch.add(Vector3(at.x, float(i) * FLOOR_H + 0.32, at.z), size, "wallplate", false)
 
@@ -527,7 +532,7 @@ func _office_chair(batch: LevelKit.BoxBatch, pos: Vector3, yaw: float) -> void:
 	batch.add_prop("office_chair", PropMeshes.at(pos, yaw))
 
 func _add_light(root: Node3D, batch: LevelKit.BoxBatch, i: int, center: Vector3, t: String, holed: bool, rng: RandomNumberGenerator) -> void:
-	var at := center + (Vector3(-1.9, 0.0, -1.9) if holed else Vector3.ZERO)
+	var at := center + (Vector3(-1.9, 0.0, -1.9) * ROOM_S if holed else Vector3.ZERO)
 	var kind := 0
 	var r := rng.randf()
 	# Dark rooms are dead; storage is dying; of the rest, close to half are flickering, dying or
@@ -560,7 +565,7 @@ func _add_light(root: Node3D, batch: LevelKit.BoxBatch, i: int, center: Vector3,
 	batch.add(Vector3(at.x + 0.62, fy, at.z), Vector3(0.04, 0.05, 0.6), "fixture", false)
 	var light := OmniLight3D.new()
 	light.position = at + Vector3(0.0, CEIL_H - 0.35, 0.0)
-	light.omni_range = 8.0
+	light.omni_range = 10.0  # one troffer a room; the corners of the bigger rooms stay dim
 	light.omni_attenuation = 1.4
 	light.light_energy = 0.85 if t != "breakroom" else 1.5
 	light.light_color = Color(1.0, 0.9, 0.66) if t != "breakroom" else Color(0.95, 0.96, 0.88)
@@ -578,7 +583,8 @@ func _add_light(root: Node3D, batch: LevelKit.BoxBatch, i: int, center: Vector3,
 # --- Rooms ---------------------------------------------------------------------------------
 
 func _quadrants() -> Array[Vector3]:
-	return [Vector3(-1.75, 0.0, -1.75), Vector3(1.75, 0.0, -1.75), Vector3(-1.75, 0.0, 1.75), Vector3(1.75, 0.0, 1.75)]
+	var q := 1.75 * ROOM_S
+	return [Vector3(-q, 0.0, -q), Vector3(q, 0.0, -q), Vector3(-q, 0.0, q), Vector3(q, 0.0, q)]
 
 
 func _cubicles(root: Node3D, batch: LevelKit.BoxBatch, center: Vector3, rng: RandomNumberGenerator) -> void:
@@ -640,9 +646,9 @@ func _meeting(root: Node3D, batch: LevelKit.BoxBatch, center: Vector3, rng: Rand
 	board.outline_size = 0
 	board.shaded = true  # painted on: you only read it where light falls
 	board.double_sided = false
-	board.position = center + Vector3(0.0, 1.6, -2.85)  # on the -z wall, text faces +z into the room
+	board.position = center + Vector3(0.0, 1.6, -CELL * 0.5 + 0.15)  # on the -z wall, text faces +z into the room
 	root.add_child(board)
-	batch.add(center + Vector3(0.0, 1.6, -2.88), Vector3(1.8, 1.0, 0.03), "white", false)
+	batch.add(center + Vector3(0.0, 1.6, -CELL * 0.5 + 0.12), Vector3(1.8, 1.0, 0.03), "white", false)
 
 
 func _storage(batch: LevelKit.BoxBatch, center: Vector3, rng: RandomNumberGenerator) -> void:
@@ -687,8 +693,8 @@ func _hall(root: Node3D, batch: LevelKit.BoxBatch, center: Vector3, rng: RandomN
 		batch.add(center + q * 0.6 + Vector3(0.0, 0.32, -0.12), Vector3(0.36, 0.62, 0.03), "sign", false, 0.0)
 	# A fire extinguisher on its bracket, on some hall walls.
 	if rng.randf() < 0.45:
-		var x := 2.82 * (1.0 if rng.randf() < 0.5 else -1.0)
-		var at := center + Vector3(x, 0.0, 1.9 * (1.0 if rng.randf() < 0.5 else -1.0))
+		var x := (CELL * 0.5 - 0.18) * (1.0 if rng.randf() < 0.5 else -1.0)
+		var at := center + Vector3(x, 0.0, 1.9 * ROOM_S * (1.0 if rng.randf() < 0.5 else -1.0))
 		batch.add(at + Vector3(0.0, 0.62, 0.0), Vector3(0.15, 0.48, 0.15), "extinguisher", false)
 		batch.add(at + Vector3(0.0, 0.9, 0.0), Vector3(0.07, 0.08, 0.07), "plastic", false)
 		batch.add(at + Vector3(-signf(x) * 0.0, 0.66, 0.0), Vector3(0.17, 0.04, 0.17), "metal", false)
@@ -696,7 +702,7 @@ func _hall(root: Node3D, batch: LevelKit.BoxBatch, center: Vector3, rng: RandomN
 
 func _breakroom(root: Node3D, batch: LevelKit.BoxBatch, i: int, c: Vector2i, center: Vector3, rng: RandomNumberGenerator) -> void:
 	# Vending machine on the -x wall, away from the door line.
-	var vm := center + Vector3(-2.45, 0.0, 1.9)
+	var vm := center + Vector3(-CELL * 0.5 + 0.55, 0.0, 1.9 * ROOM_S)
 	batch.add(vm + Vector3(0.0, 0.95, 0.0), Vector3(0.8, 1.9, 0.9), "vending")
 	batch.add(vm + Vector3(0.41, 1.15, 0.0), Vector3(0.02, 1.2, 0.7), "vending_glass", false)
 	var vlight := OmniLight3D.new()
@@ -706,7 +712,7 @@ func _breakroom(root: Node3D, batch: LevelKit.BoxBatch, i: int, c: Vector2i, cen
 	vlight.position = vm + Vector3(0.9, 1.2, 0.0)
 	root.add_child(vlight)
 	# Table and chairs.
-	var tb := center + Vector3(1.9, 0.0, 1.9)
+	var tb := center + Vector3(1.9, 0.0, 1.9) * ROOM_S
 	batch.add(tb + Vector3(0.0, 0.74, 0.0), Vector3(1.2, 0.06, 1.2), "desk")
 	batch.add(tb + Vector3(0.0, 0.37, 0.0), Vector3(0.12, 0.74, 0.12), "desk_leg")
 	for k in 3:
@@ -721,10 +727,10 @@ func _breakroom(root: Node3D, batch: LevelKit.BoxBatch, i: int, c: Vector2i, cen
 	clock.outline_size = 8
 	clock.shaded = true
 	clock.double_sided = false
-	clock.position = center + Vector3(2.88, 1.8, -1.9)
+	clock.position = center + Vector3(CELL * 0.5 - 0.12, 1.8, -1.9 * ROOM_S)
 	clock.rotation = Vector3(0.0, -PI * 0.5, 0.0)
 	root.add_child(clock)
-	batch.add(center + Vector3(2.92, 1.75, -1.9), Vector3(0.06, 0.6, 0.8), "trim", false)
+	batch.add(center + Vector3(CELL * 0.5 - 0.08, 1.75, -1.9 * ROOM_S), Vector3(0.06, 0.6, 0.8), "trim", false)
 	_poster(root, i, c, rng)
 	if i == 0:
 		var sign := Label3D.new()
@@ -735,7 +741,7 @@ func _breakroom(root: Node3D, batch: LevelKit.BoxBatch, i: int, c: Vector2i, cen
 		sign.outline_size = 10
 		sign.shaded = true
 		sign.double_sided = false
-		sign.position = center + Vector3(-2.88, 2.2, -0.4)  # side wall, clear of the doorway signs
+		sign.position = center + Vector3(-CELL * 0.5 + 0.12, 2.2, -0.4)  # side wall, clear of the doorway signs
 		sign.rotation = Vector3(0.0, PI * 0.5, 0.0)
 		root.add_child(sign)
 		test_points["spawn"] = spawn_position
@@ -794,7 +800,7 @@ func _poster(root: Node3D, _i: int, c: Vector2i, rng: RandomNumberGenerator) -> 
 		if int(floors[_i]["conn"].get(_edge_key(c, nb), Conn.NONE)) == Conn.OPEN:
 			return  # open-plan side: there is no wall to hang it on
 	var along := Vector3(normal.z, 0.0, normal.x)
-	var pos := center - normal * 2.88 + along * (1.9 if rng.randf() < 0.5 else -1.9) + Vector3(0.0, 1.65, 0.0)
+	var pos := center - normal * (CELL * 0.5 - 0.12) + along * 1.9 * ROOM_S * (1.0 if rng.randf() < 0.5 else -1.0) + Vector3(0.0, 1.65, 0.0)
 	var paper := MeshInstance3D.new()
 	var pm := BoxMesh.new()
 	pm.size = Vector3(0.9, 0.62, 0.01)
@@ -1143,9 +1149,9 @@ func _wall_spot(i: int, c: Vector2i) -> Array:
 		if inside and int(conn.get(_edge_key(c, nb), Conn.NONE)) == Conn.OPEN:
 			continue
 		var along := Vector3(side.z, 0.0, side.x)
-		var pos: Vector3 = center + side * (CELL * 0.5 - WALL_T * 0.5) + along * 1.7
+		var pos: Vector3 = center + side * (CELL * 0.5 - WALL_T * 0.5) + along * 1.7 * ROOM_S
 		return [Vector3(pos.x, center.y, pos.z), -side]
-	return [center + Vector3(-CELL * 0.5 + WALL_T * 0.5, 0.0, 1.7), Vector3(1, 0, 0)]
+	return [center + Vector3(-CELL * 0.5 + WALL_T * 0.5, 0.0, 1.7 * ROOM_S), Vector3(1, 0, 0)]
 
 
 ## Server: the first player into B1's elevator room brings a Hire through the door behind them,

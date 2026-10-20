@@ -20,6 +20,10 @@ const DEFAULT_GRACE_MS: int = 650  # bridges the ~500 ms gap before key repeat s
 const MIN_GRACE_MS: int = 260
 const MAX_GRACE_MS: int = 1100
 const GRACE_MARGIN_MS: int = 120  # added to the measured repeat delay
+# Once a hold is confirmed the remote side is sending repeats every few dozen ms, so a release
+# only has to outlast that stream's jitter, not the long first delay (the long grace kept you
+# sprinting for 0.65 s after letting go: "it still adds a couple of steps").
+const CONFIRMED_GRACE_MS: int = 180
 const FLICKER_GAP_MS: int = 70  # release -> press of the same key this fast is a repeat tap
 const FLICKER_COUNT: int = 4
 const UNCONFIRMED_STRENGTH: float = 0.45  # movement while a tap might still be a tap
@@ -193,10 +197,11 @@ func strength(action: String) -> float:
 	if not Settings.remote_mode:
 		return 0.0
 	var since := Time.get_ticks_msec() - int(_last_press.get(action, -100000))
-	if since >= grace_ms():
+	var confirmed := bool(_confirmed.get(action, false))
+	if since >= (mini(CONFIRMED_GRACE_MS, grace_ms()) if confirmed else grace_ms()):
 		_confirmed.erase(action)
 		return 0.0
-	return 1.0 if bool(_confirmed.get(action, false)) else UNCONFIRMED_STRENGTH
+	return 1.0 if confirmed else UNCONFIRMED_STRENGTH
 
 
 func held(action: String) -> bool:

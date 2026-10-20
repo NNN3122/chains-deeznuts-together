@@ -405,6 +405,12 @@ func _tick_lamps(now: int) -> void:
 		if ScareDirector.flicker_active() and lamp.global_position.distance_to(ScareDirector.flicker_center) < ScareDirector.flicker_radius:
 			energy *= 0.2 if sin(now * 0.027) > 0.0 else 0.8
 		lamp.light_energy = energy
+	# The fires in the wreckage: two uneven flickers each, never in step.
+	var t := float(now) * 0.001
+	for i in arena.fires.size():
+		var f := arena.fires[i]
+		var k := float(i) * 1.7
+		f.light_energy = float(f.get_meta("base_energy")) * (0.72 + 0.18 * sin(t * 11.0 + k) + 0.1 * sin(t * 23.0 + k * 2.3))
 	if arena.beacon != null:
 		# The way out breathes, slowly: the only steady thing up here.
 		arena.beacon.light_energy = BEACON_ENERGY * (0.72 + 0.28 * sin(float(now) * 0.0021))
