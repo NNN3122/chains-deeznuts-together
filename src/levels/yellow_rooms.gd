@@ -66,7 +66,7 @@ const TASKS: Array = [
 	["Throw the HATCH RELEASE (hold Ctrl at it): 25 seconds", "Run to the SHELF SHAFT: jetpack, or stack up on a teammate", "Everyone up through the hatch before it slams"],
 	["Find the FREIGHT ELEVATOR", "Shoulder the jammed door open (sprint into it)", "Everyone inside before they catch you: it rides up to the pizzeria"],
 ]
-const HIRES_PER_FLOOR: Array[int] = [1, 2, 4, 4]  # B4 one (the user: the first floor has only one), one more on each floor above; B3 also has the ceiling hunter
+const HIRES_PER_FLOOR: Array[int] = [1, 1, 4, 4]  # B4 and B3 one each (the user: the first floor has only one, then "the second floor needs to only have one"); B3 also has the ceiling hunter
 const SENTRY_MIN_HIRES: int = 3  # a floor gets a sentry at the way up only when it has this many: with two, both roam where you are
 const RESPAWN_SECONDS: float = 45.0  # a dead Hire is replaced after this, out of sight
 const DOOR_FLOORS: Array[int] = [0, 3]  # floors with a jammed door on the route
