@@ -1,6 +1,6 @@
 class_name YellowRooms
 extends Node3D
-## Level 1: The Yellow Rooms. Four floors (B4 at the bottom to B1) of 9 x 9 eight-metre office cells built
+## Level 1: The Yellow Rooms. Four floors (B4 at the bottom to B1) of 13 x 13 office cells of 9.6 m built
 ## from a seed the host picks (a new layout every run; the tests use DEFAULT_SEED), so every
 ## peer builds the identical building before connecting.
 ## Each floor: a Break Room you arrive in (checkpoint), a maze of halls / cubicles / meeting rooms
@@ -16,8 +16,8 @@ extends Node3D
 ## freight elevator brings a Hire screaming through the door behind the group. The power on the
 ## Line's floor stutters out for 12-20 s every 60-90 s; Break Rooms keep their lights.
 
-const CELL: float = 8.0  # m a room (was 6; the user: "a bigger volume per room and bigger hallways")
-const GRID: int = 9  # rooms a side: 54 m floors (was 6; the user wanted a bigger maze)
+const CELL: float = 9.6  # m a room (6, then 8 for "a bigger volume per room", then 9.6 with GRID 13: "three times the size")
+const GRID: int = 13  # rooms a side: 124.8 m floors, about 3x the 9 x 8 m ones (6, then 9, then 13)
 const FLOORS: int = 4
 const FLOOR_H: float = 5.0
 const SLAB: float = 0.4
@@ -26,6 +26,8 @@ const WALL_T: float = 0.2
 const DOOR_W: float = 2.4  # wide double doorways (was 1.4)
 const DOOR_H: float = 2.9
 const ROOM_S: float = CELL / 6.0  # the room dressing was laid out for 6 m rooms; offsets toward the walls scale by this
+const LIGHT_FADE_BEGIN: float = 38.0  # m from the camera a ceiling light starts to fade out
+const LIGHT_FADE_LENGTH: float = 8.0
 const HOLE: float = 2.6
 const CAR_HOLE: float = 3.3  # the freight car's shaft through B1's ceiling
 const DEFAULT_SEED: int = 1931
@@ -565,7 +567,7 @@ func _add_light(root: Node3D, batch: LevelKit.BoxBatch, i: int, center: Vector3,
 	batch.add(Vector3(at.x + 0.62, fy, at.z), Vector3(0.04, 0.05, 0.6), "fixture", false)
 	var light := OmniLight3D.new()
 	light.position = at + Vector3(0.0, CEIL_H - 0.35, 0.0)
-	light.omni_range = 10.0  # one troffer a room; the corners of the bigger rooms stay dim
+	light.omni_range = 11.0  # one troffer a room; the corners of the big rooms stay dim
 	light.omni_attenuation = 1.4
 	light.light_energy = 0.85 if t != "breakroom" else 1.5
 	light.light_color = Color(1.0, 0.9, 0.66) if t != "breakroom" else Color(0.95, 0.96, 0.88)
@@ -573,6 +575,11 @@ func _add_light(root: Node3D, batch: LevelKit.BoxBatch, i: int, center: Vector3,
 	light.light_specular = 0.35
 	light.light_size = 0.45  # soft shadow penumbra, like a wide tube fixture
 	light.shadow_blur = 1.2
+	# 169 rooms a floor and three floors drawn: only the lights near you render (past this they'd
+	# also overflow the renderer's per-cluster light limit). Four rooms deep still reads as lit.
+	light.distance_fade_enabled = true
+	light.distance_fade_begin = LIGHT_FADE_BEGIN
+	light.distance_fade_length = LIGHT_FADE_LENGTH
 	root.add_child(light)
 	var hum := Sfx.loop_player("hum", -22.0, 9.0)
 	hum.position = panel.position
