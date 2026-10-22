@@ -183,6 +183,164 @@ void fragment() {
 }
 """
 
+# --- Level 4: the manor grounds ---------------------------------------------------------------
+
+## Mud and dead grass, wet in the hollows: the whole estate's ground.
+const MANOR_EARTH_SHADER: String = """
+shader_type spatial;
+varying vec3 wpos;
+%s
+void vertex() {
+	wpos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+}
+void fragment() {
+	vec2 p = wpos.xz;
+	float big = fbm(p * 0.06);
+	float grass = smoothstep(0.38, 0.58, fbm(p * 0.3 + 7.0));
+	float blades = vnoise(p * 22.0) * 0.6 + vnoise(p * 61.0) * 0.4;
+	float clumps = smoothstep(0.55, 0.7, vnoise(p * 2.3));
+	float wet = smoothstep(0.66, 0.74, fbm(p * 0.11 + 3.0));
+	float litter = smoothstep(0.7, 0.8, vnoise(p * 7.0 + 13.0));
+	vec3 mud = vec3(0.07, 0.052, 0.036) * (0.6 + 0.7 * big);
+	vec3 dead = vec3(0.26, 0.22, 0.12) * (0.45 + 0.75 * blades) * (0.75 + 0.45 * clumps);
+	vec3 col = mix(mud, dead, grass * 0.9);
+	col = mix(col, vec3(0.03, 0.025, 0.02), litter * 0.5);
+	col = mix(col, vec3(0.02, 0.022, 0.025), wet * 0.85);  // standing water, black
+	ALBEDO = col;
+	ROUGHNESS = mix(0.97, 0.06, wet);  // the puddles catch the moon
+	METALLIC = 0.0;
+	SPECULAR = mix(0.3, 0.9, wet);
+}
+"""
+
+## Cut stone in courses, mortar lines, moss and black streaks low down: walls, crypt, chapel.
+const MANOR_STONE_SHADER: String = """
+shader_type spatial;
+uniform vec3 stone = vec3(0.36, 0.35, 0.33);
+varying vec3 wpos;
+varying vec3 wnrm;
+%s
+void vertex() {
+	wpos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	wnrm = normalize(MODEL_NORMAL_MATRIX * NORMAL);
+}
+void fragment() {
+	vec2 p = abs(wnrm.y) > 0.5 ? wpos.xz : (abs(wnrm.x) > 0.5 ? wpos.zy : wpos.xy);
+	vec2 b = vec2(p.x / 0.9 + 0.5 * floor(p.y / 0.42), p.y / 0.42);
+	vec2 f = fract(b);
+	float mortar = 1.0 - smoothstep(0.0, 0.06, min(min(f.x, 1.0 - f.x) * 0.9, min(f.y, 1.0 - f.y) * 2.1));
+	float n = fbm(p * 1.7);
+	float block = hash(floor(b));
+	vec3 col = stone * (0.72 + 0.35 * n + 0.18 * block);
+	float moss = smoothstep(0.55, 0.75, fbm(p * 0.9 + 11.0)) * smoothstep(2.2, 0.0, wpos.y);
+	col = mix(col, vec3(0.1, 0.13, 0.07), moss * 0.75);
+	float streak = smoothstep(0.6, 0.9, vnoise(vec2(p.x * 3.0, wpos.y * 0.3))) * 0.35;
+	col *= 1.0 - streak;
+	col = mix(col, vec3(0.08, 0.075, 0.07), mortar * 0.8);
+	ALBEDO = col;
+	ROUGHNESS = 0.93;
+}
+"""
+
+## Overgrown box hedge: dense, near-black leaves.
+const HEDGE_SHADER: String = """
+shader_type spatial;
+varying vec3 wpos;
+varying vec3 wnrm;
+%s
+void vertex() {
+	wpos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	wnrm = normalize(MODEL_NORMAL_MATRIX * NORMAL);
+	VERTEX += NORMAL * (vnoise(wpos.xz * 2.3 + wpos.y * 1.7) - 0.5) * 0.12;
+}
+void fragment() {
+	vec2 p = abs(wnrm.y) > 0.5 ? wpos.xz : (abs(wnrm.x) > 0.5 ? wpos.zy : wpos.xy);
+	float leaves = vnoise(p * 14.0) * 0.6 + vnoise(p * 41.0) * 0.4;
+	float holes = smoothstep(0.72, 0.8, vnoise(p * 5.0));
+	float dead = smoothstep(0.6, 0.8, fbm(p * 0.7));
+	vec3 col = mix(vec3(0.07, 0.12, 0.05), vec3(0.17, 0.15, 0.07), dead) * (0.35 + 1.1 * leaves);
+	col *= 1.0 - holes * 0.8;  // gaps into the dark inside the hedge
+	ALBEDO = col;
+	ROUGHNESS = 0.9;
+}
+"""
+
+## Damask wallpaper gone grey, peeling to the plaster, damp stains rising from the floor.
+const MANOR_PAPER_SHADER: String = """
+shader_type spatial;
+varying vec3 wpos;
+varying vec3 wnrm;
+%s
+void vertex() {
+	wpos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	wnrm = normalize(MODEL_NORMAL_MATRIX * NORMAL);
+}
+void fragment() {
+	vec2 p = abs(wnrm.x) > 0.5 ? wpos.zy : wpos.xy;
+	vec2 c = fract(p / vec2(0.5, 0.7)) - 0.5;
+	float motif = smoothstep(0.2, 0.17, length(c * vec2(1.0, 0.7)) + 0.06 * sin(atan(c.y, c.x) * 6.0));
+	vec3 paper = mix(vec3(0.22, 0.2, 0.19), vec3(0.3, 0.27, 0.24), motif);
+	float peel = smoothstep(0.62, 0.66, fbm(p * 0.8 + 5.0));
+	vec3 col = mix(paper, vec3(0.42, 0.39, 0.34), peel);
+	float damp = smoothstep(1.6, 0.0, wpos.y) * (0.5 + 0.5 * fbm(p * 2.0));
+	col *= 1.0 - damp * 0.55;
+	if (wpos.y < 0.9) { col = vec3(0.12, 0.08, 0.05) * (0.7 + 0.5 * fbm(p * 3.0)); }
+	ALBEDO = col * (0.85 + 0.3 * fbm(p * 4.0));
+	ROUGHNESS = 0.85;
+}
+"""
+
+## Floorboards, dark and scuffed, the odd board missing its shine.
+const MANOR_PLANKS_SHADER: String = """
+shader_type spatial;
+varying vec3 wpos;
+%s
+void vertex() {
+	wpos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+}
+void fragment() {
+	vec2 p = wpos.xz;
+	float row = floor(p.x / 0.22);
+	float seam = smoothstep(0.0, 0.04, min(fract(p.x / 0.22), 1.0 - fract(p.x / 0.22)));
+	float joint = step(0.985, fract(p.y / 2.4 + hash(vec2(row, 1.0))));
+	float grain = vnoise(vec2(p.x * 40.0, p.y * 1.5)) * 0.3 + fbm(p * 0.5) * 0.5;
+	vec3 col = vec3(0.17, 0.11, 0.07) * (0.6 + grain + 0.3 * hash(vec2(row, 3.0)));
+	col *= 0.4 + 0.6 * seam;
+	col *= 1.0 - joint * 0.6;
+	ALBEDO = col;
+	ROUGHNESS = 0.7;
+}
+"""
+
+## Shelves of rotting books: spines in faded leathers, gaps where some fell.
+const MANOR_BOOKS_SHADER: String = """
+shader_type spatial;
+varying vec3 wpos;
+varying vec3 wnrm;
+%s
+void vertex() {
+	wpos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	wnrm = normalize(MODEL_NORMAL_MATRIX * NORMAL);
+}
+void fragment() {
+	float along = abs(wnrm.x) > 0.5 ? wpos.z : wpos.x;
+	float shelf = fract(wpos.y / 0.5);
+	float board = step(shelf, 0.08);
+	float spine = floor(along / 0.07);
+	float h = hash(vec2(spine, floor(wpos.y / 0.5)));
+	float tall = step(shelf, 0.55 + 0.4 * h);
+	float gap = step(0.9, hash(vec2(spine * 1.7, floor(wpos.y / 0.5) + 4.0)));
+	vec3 leather = mix(vec3(0.22, 0.06, 0.04), vec3(0.08, 0.12, 0.07), step(0.5, h));
+	leather = mix(leather, vec3(0.2, 0.15, 0.08), step(0.8, h));
+	vec3 col = leather * (0.6 + 0.6 * fbm(vec2(along * 30.0, wpos.y * 4.0)));
+	col = mix(col, vec3(0.02), (1.0 - tall) + gap);
+	col = mix(col, vec3(0.1, 0.07, 0.045), board);
+	if (abs(wnrm.y) > 0.5) { col = vec3(0.1, 0.07, 0.045); }
+	ALBEDO = col;
+	ROUGHNESS = 0.8;
+}
+"""
+
 # --- Level 2: the pizzeria -------------------------------------------------------------------
 
 const CHECKER_SHADER: String = """
@@ -482,6 +640,13 @@ static func _beacon() -> StandardMaterial3D:
 	return m
 
 
+## The stone shader in a darker, wetter stone: crypt, chapel, the estate wall's coping.
+static func _stone_dark() -> ShaderMaterial:
+	var m := _shader_mat(MANOR_STONE_SHADER)
+	m.set_shader_parameter("stone", Vector3(0.24, 0.235, 0.23))
+	return m
+
+
 static func _make(key: String) -> Material:
 	match key:
 		"wall": return _shader_mat(WALL_SHADER)
@@ -565,6 +730,23 @@ static func _make(key: String) -> Material:
 		"crate": return _std(Color(0.55, 0.45, 0.28), 0.9)
 		"flour": return _std(Color(0.9, 0.88, 0.82), 1.0)
 		"brass": return _std(Color(0.75, 0.6, 0.25), 0.3, 0.9)
+		# Level 4: the manor grounds.
+		"manor_earth": return _shader_mat(MANOR_EARTH_SHADER)
+		"manor_stone": return _shader_mat(MANOR_STONE_SHADER)
+		"manor_stone_dark": return _stone_dark()
+		"manor_hedge": return _shader_mat(HEDGE_SHADER)
+		"manor_paper": return _shader_mat(MANOR_PAPER_SHADER)
+		"manor_books": return _shader_mat(MANOR_BOOKS_SHADER)
+		"manor_planks": return _shader_mat(MANOR_PLANKS_SHADER)
+		"manor_slate": return _std(Color(0.07, 0.075, 0.085), 0.55, 0.15)
+		"manor_gravel": return _std(Color(0.3, 0.29, 0.27), 1.0)
+		"manor_trim": return _std(Color(0.11, 0.07, 0.05), 0.6)
+		"manor_window": return _std(Color(0.015, 0.018, 0.022), 0.08, 0.4)
+		"manor_window_lit": return _emissive(Color(0.95, 0.55, 0.22), 0.9)
+		"manor_candle": return _emissive(Color(1.0, 0.7, 0.35), 3.0)
+		"manor_bulb": return _emissive(Color(1.0, 0.72, 0.4), 2.2)
+		"manor_bulb_red": return _emissive(Color(1.0, 0.08, 0.04), 4.0)
+		"manor_water": return _std(Color(0.02, 0.03, 0.03), 0.05, 0.3)
 		"rope": return _std(Color(0.6, 0.5, 0.3), 0.95)
 		"hazard_dark": return _std(Color(0.15, 0.14, 0.1), 0.7)
 		"gold": return _std(Color(0.9, 0.75, 0.3), 0.3, 0.8)
@@ -610,6 +792,8 @@ static func _make(key: String) -> Material:
 ## volumetric fog and SSAO for speed. level 1 (the pizzeria) is colder: house lights off, red
 ## exit signs and screens doing the work.
 static func make_environment(quality: int, level: int = 0) -> Environment:
+	if level == 3:
+		return _manor_environment(quality)
 	var env := Environment.new()
 	var pizzeria := level == 1
 	var outdoors := level == 2  # the roof: a night sky over the city, no bounce light to speak of
@@ -680,6 +864,42 @@ static func make_environment(quality: int, level: int = 0) -> Environment:
 	env.adjustment_enabled = true
 	env.adjustment_contrast = 1.08
 	env.adjustment_saturation = 0.9
+	env.adjustment_brightness = Settings.brightness
+	return env
+
+
+## Level 4, the manor grounds at night: the roof's sky, but a thick, low, grey-green fog that
+## swallows everything past a few tombstones, a starved ambient, and lamps that hang halos in it.
+static func _manor_environment(quality: int) -> Environment:
+	var env := Environment.new()
+	env.background_mode = Environment.BG_SKY
+	env.sky = make_night_sky()
+	env.reflected_light_source = Environment.REFLECTION_SOURCE_SKY
+	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+	env.ambient_light_color = Color(0.36, 0.42, 0.44)
+	env.ambient_light_energy = 0.06
+	env.tonemap_mode = Environment.TONE_MAPPER_AGX
+	env.tonemap_exposure = 1.0
+	env.glow_enabled = true
+	env.glow_intensity = 0.8
+	env.glow_bloom = 0.05
+	env.glow_hdr_threshold = 1.05
+	env.ssao_enabled = quality >= 1
+	env.fog_enabled = true
+	env.fog_light_color = Color(0.05, 0.06, 0.06)
+	env.fog_density = 0.09  # a few tombstones deep and then nothing
+	env.fog_sky_affect = 0.85
+	env.fog_height = 1.8
+	env.fog_height_density = 0.15  # thicker still near the ground
+	env.volumetric_fog_enabled = quality >= 2
+	env.volumetric_fog_density = 0.05
+	env.volumetric_fog_albedo = Color(0.6, 0.66, 0.64)
+	env.volumetric_fog_length = 48.0
+	env.volumetric_fog_anisotropy = 0.5
+	env.volumetric_fog_ambient_inject = 0.08
+	env.adjustment_enabled = true
+	env.adjustment_contrast = 1.08
+	env.adjustment_saturation = 0.72
 	env.adjustment_brightness = Settings.brightness
 	return env
 
@@ -762,6 +982,8 @@ class BoxBatch:
 				pmi.visibility_range_end = PROP_DRAW_RANGE
 				pmi.visibility_range_end_margin = 4.0
 				pmi.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
+				if key.begins_with("manor_grass"):
+					pmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF  # thousands of blades: their shadows cost more than they show
 				parent.add_child(pmi)
 		for key in boxes:
 			var list: Array = boxes[key]

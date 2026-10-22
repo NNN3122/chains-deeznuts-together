@@ -90,11 +90,12 @@ const SLAP_RECOVER: float = 0.5
 const SLAP_FLING: float = 12.0  # m/s sideways across the room
 static var debug_force_plan: String = ""  # tests: always this attack ("grab" keeps the old behaviour)
 
-var level: YellowRooms
+var level: HuntGrounds  # the office maze or the manor grounds: the grid it walks
 var floor_index: int = 0
 var floor_y: float = 0.0
 var sentry: bool = false  # keeps to the rooms round the way up instead of the whole floor
 var debug_frozen: bool = false
+var asleep: bool = false  # server: stands where it is, blind and deaf (the Stack's Groundskeeper until the Line lands at the manor)
 
 # Replicated.
 var synced_position: Vector3 = Vector3.ZERO
@@ -182,8 +183,13 @@ func _ready() -> void:
 
 # --- Visuals -----------------------------------------------------------------------------------
 
+## The body it wears. Kin that hunt the same way (the manor's Groundskeeper) bring their own.
+func _make_body() -> HireBody:
+	return HireBody.new()
+
+
 func _build_visuals() -> void:
-	var body := HireBody.new()
+	var body := _make_body()
 	body.name = "Model"
 	add_child(body)
 	body.build()
@@ -364,7 +370,7 @@ func _physics_process(delta: float) -> void:
 
 
 func _server_tick(delta: float) -> void:
-	if debug_frozen and hstate != HState.GRAB:
+	if asleep or (debug_frozen and hstate != HState.GRAB):
 		return
 	_attack_cd = maxf(0.0, _attack_cd - delta)
 	_immune_t = maxf(0.0, _immune_t - delta)
@@ -967,7 +973,7 @@ func _pick_wander() -> void:
 		elif not patrol.is_empty() and _rng.randf() < PATROL_BIAS:
 			c = patrol[_rng.randi_range(0, patrol.size() - 1)]
 		else:
-			c = Vector2i(_rng.randi_range(0, YellowRooms.GRID - 1), _rng.randi_range(0, YellowRooms.GRID - 1))
+			c = level.random_cell(_rng)
 		if c == here or level.is_safe_cell(floor_index, c):
 			continue
 		_route = level.route(floor_index, here, c)

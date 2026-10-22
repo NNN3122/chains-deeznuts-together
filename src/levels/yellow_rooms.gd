@@ -1,5 +1,5 @@
 class_name YellowRooms
-extends Node3D
+extends HuntGrounds
 ## Level 1: The Yellow Rooms. Four floors (B4 at the bottom to B1) of 13 x 13 office cells of 9.6 m built
 ## from a seed the host picks (a new layout every run; the tests use DEFAULT_SEED), so every
 ## peer builds the identical building before connecting.
@@ -1208,10 +1208,14 @@ func is_safe_cell(i: int, c: Vector2i) -> bool:
 	return String(types.get(c, "")) == "breakroom"
 
 
+func random_cell(rng: RandomNumberGenerator) -> Vector2i:
+	return Vector2i(rng.randi_range(0, GRID - 1), rng.randi_range(0, GRID - 1))
+
+
 func hires_on(i: int) -> Array[HollowHire]:
 	var out: Array[HollowHire] = []
 	for h in get_tree().get_nodes_in_group("hire"):
-		if h is HollowHire and (h as HollowHire).floor_index == i:
+		if h is HollowHire and (h as HollowHire).floor_index == i and (h as HollowHire).level == self:  # not the manor's Groundskeeper
 			out.append(h)
 	return out
 
@@ -1392,7 +1396,7 @@ func server_on_respawn() -> void:
 	# Nobody respawns into a Hire's arms: the ones near the checkpoint go back to a far cell.
 	for h in get_tree().get_nodes_in_group("hire"):
 		var hire := h as HollowHire
-		if hire == null:
+		if hire == null or hire.level != self:
 			continue
 		hire.release(false)
 		if not hire.is_dead() and hire.global_position.distance_to(GameState.checkpoint_position) < 16.0:

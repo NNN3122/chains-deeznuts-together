@@ -40,19 +40,27 @@ var _registered: Dictionary = {}
 
 
 static func default_world_config() -> Dictionary:
-	return {"seed": YellowRooms.DEFAULT_SEED, "arena": false, "horde": HordeArena.HORDE_COUNT}
+	return {"seed": YellowRooms.DEFAULT_SEED, "arena": false, "manor": false, "horde": HordeArena.HORDE_COUNT}
 
 
 ## A fresh building every run: a random seed (the tests pass --seed for a fixed one).
-static func random_world_config(arena: bool) -> Dictionary:
+static func random_world_config(arena: bool, manor: bool = false) -> Dictionary:
 	var cfg := default_world_config()
 	cfg["seed"] = randi() % 900000 + 1000
-	cfg["arena"] = arena
+	cfg["arena"] = arena and not manor
+	cfg["manor"] = manor
 	return cfg
 
 
+## Which world a config builds: 0 the building, 1 the roof on its own, 2 the manor (Level 4).
+static func level_choice(cfg: Dictionary) -> int:
+	if bool(cfg.get("manor", false)):
+		return 2
+	return 1 if bool(cfg.get("arena", false)) else 0
+
+
 static func same_world(a: Dictionary, b: Dictionary) -> bool:
-	return int(a.get("seed", 0)) == int(b.get("seed", 0)) and bool(a.get("arena", false)) == bool(b.get("arena", false)) and int(a.get("horde", 0)) == int(b.get("horde", 0))
+	return int(a.get("seed", 0)) == int(b.get("seed", 0)) and bool(a.get("arena", false)) == bool(b.get("arena", false)) and bool(a.get("manor", false)) == bool(b.get("manor", false)) and int(a.get("horde", 0)) == int(b.get("horde", 0))
 
 
 func _ready() -> void:

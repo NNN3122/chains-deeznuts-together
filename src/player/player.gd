@@ -1365,7 +1365,7 @@ func free_slot() -> int:
 ## hand. The Loading Lot keeps its own stash.
 func _grant_starting_kit() -> void:
 	var level := get_tree().get_first_node_in_group("level")
-	if not (level is LevelStack):
+	if not (level is LevelStack or level is Manor):
 		return
 	for id: String in STARTING_KIT:
 		var data := ItemRegistry.get_data(id)
@@ -1447,6 +1447,21 @@ func server_drop_all(spawn_pickups: bool = true) -> void:
 		if slots[k] != null:
 			select_slot(k)
 			server_drop_item(spawn_pickups)
+
+
+## Takes every carried `id` away for good, keeping whatever else was in hand (the helicopter's pilot
+## keeps the jetpacks). True if there was one.
+func server_take_items(id: String) -> bool:
+	var keep := selected_slot
+	var took := false
+	for k in ITEM_SLOTS:
+		if slots[k] != null and slots[k].data.id == id:
+			select_slot(k)
+			server_drop_item(false)
+			took = true
+	if took and slots[keep] != null:
+		select_slot(keep)
+	return took
 
 
 func _refresh_slot_ids() -> void:

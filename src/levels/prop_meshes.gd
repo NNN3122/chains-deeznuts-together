@@ -61,6 +61,8 @@ static func mesh(key: String) -> ArrayMesh:
 		"long_table": m = _long_table()
 		_ when key.begins_with("ruin_"):
 			m = RuinMeshes.mesh(key)  # Carrow Heights' wreckage
+		_ when key.begins_with("manor_"):
+			m = ManorMeshes.mesh(key)  # Ashgrave Manor's grounds
 		_:
 			push_warning("PropMeshes: no prop '%s'" % key)
 			m = Sculpt.new().box(Vector3.ZERO, Vector3.ONE * 0.1, 0.02, Color.MAGENTA).mesh("prop_missing", 0.02, 100)

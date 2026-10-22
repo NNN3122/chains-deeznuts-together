@@ -13,6 +13,7 @@ const IDS: Array[String] = [
 	"screech", "wind", "skitter", "scream", "roar",
 	"hire_gurgle", "cust_hiss", "cust_shriek", "pappy_laugh", "pappy_scream", "spider_hiss", "spider_shriek",
 	"roach_chitter", "chase", "pant",
+	"engine", "toll", "gate",
 ]
 
 ## Sounds that get an on-screen caption (Settings.captions), with direction worked out by the HUD.
@@ -27,6 +28,7 @@ const CAPTIONS: Dictionary = {
 	"hire_gurgle": "a wet, choking gurgle", "cust_hiss": "a hiss through teeth, above", "cust_shriek": "a whistling SHRIEK",
 	"pappy_laugh": "a broken speaker laughs", "pappy_scream": "a SCREAM, all metal and static", "spider_hiss": "a dry, rattling hiss",
 	"spider_shriek": "a chattering SHRIEK", "roach_chitter": "chittering",
+	"toll": "a bell tolls, somewhere", "gate": "iron grinding: a gate",
 }
 
 static var _cache: Dictionary = {}
@@ -190,6 +192,9 @@ static func _build(id: String) -> AudioStreamWAV:
 		"roach_chitter": return _pack(_roach_chitter())
 		"chase": return _pack(_chase(), true)
 		"pant": return _pack(_pant(), true)
+		"engine": return _pack(_engine(), true)
+		"toll": return _pack(_toll())
+		"gate": return _pack(_gate())
 	push_warning("Sfx: unknown sound '%s'" % id)
 	return _pack(PackedFloat32Array([0.0]))
 
@@ -1192,4 +1197,61 @@ static func _skitter() -> PackedFloat32Array:
 	for i in b.size():
 		var t := float(i) / RATE
 		b[i] += 0.04 * sin(TAU * 610.0 * t) * sin(PI * t / 1.5) * (0.5 + 0.5 * sin(TAU * 23.0 * t))
+	return b
+
+
+# --- Level 4: the manor grounds -----------------------------------------------------------------
+
+## A tired old pump engine ticking over: a two-stroke putt nine times a second, a knock every
+## fourth, the exhaust a rasp of noise under it. Loops (18 putts in the 2 s, so it joins clean).
+static func _engine() -> PackedFloat32Array:
+	var b := _buf(2.0)
+	var r := _rng(71)
+	var lp := 0.0
+	var a := _lp_coef(900.0)
+	var rate := 9.0
+	for i in b.size():
+		var t := float(i) / RATE
+		var ph := fmod(t * rate, 1.0)
+		var pulse := exp(-ph * 9.0)
+		lp += a * (r.randf_range(-1.0, 1.0) - lp)
+		var knock := 0.0
+		if fmod(t * rate, 4.0) < 1.0:
+			knock = 0.25 * exp(-ph * 14.0) * sin(TAU * 140.0 * t)
+		b[i] = pulse * (0.45 * sin(TAU * 55.0 * t) + lp * 0.8) + 0.08 * sin(TAU * 27.5 * t) + knock
+	return _seamless(b, 0.2)
+
+
+## A funeral bell, deep and slow to die: a bell's out-of-tune partials (hum, prime, minor third,
+## fifth, octave and the rest), each fading at its own rate, a metallic strike on top.
+static func _toll() -> PackedFloat32Array:
+	var b := _buf(6.0)
+	var partials := [[0.5, 0.5, 0.6], [1.0, 0.45, 0.9], [1.19, 0.3, 1.2], [1.5, 0.22, 1.5], [2.0, 0.2, 1.9], [2.51, 0.14, 2.6], [2.66, 0.12, 2.9], [3.01, 0.08, 3.5]]
+	var f0 := 98.0
+	for i in b.size():
+		var t := float(i) / RATE
+		var v := 0.0
+		for pt in partials:
+			v += float(pt[1]) * sin(TAU * f0 * float(pt[0]) * t + 0.3 * float(pt[0])) * exp(-t * float(pt[2]) * 0.45)
+		var strike := exp(-t * 40.0) * 0.3 * sin(TAU * 1800.0 * t)
+		b[i] = (v + strike) * 0.55
+	return b
+
+
+## An iron gate grinding open on hinges nobody has oiled in decades: a scraping rumble with a
+## squeal riding on it, wavering.
+static func _gate() -> PackedFloat32Array:
+	var b := _buf(3.2)
+	var r := _rng(73)
+	var lp := 0.0
+	var a := _lp_coef(400.0)
+	var ph := 0.0
+	for i in b.size():
+		var t := float(i) / RATE
+		lp += a * (r.randf_range(-1.0, 1.0) - lp)
+		var f := 180.0 + 60.0 * sin(t * 2.3) + 25.0 * sin(t * 13.0)
+		ph += TAU * f / RATE
+		var squeal := sin(ph) * (0.5 + 0.5 * sin(t * 7.0)) * 0.25
+		var env := minf(1.0, t * 4.0) * minf(1.0, (3.2 - t) * 3.0)
+		b[i] = (lp * 1.2 + squeal + 0.15 * sin(TAU * 45.0 * t)) * env
 	return b

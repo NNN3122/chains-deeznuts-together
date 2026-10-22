@@ -12,9 +12,11 @@ extends Node
 ##   --shots=DIR                                              save screenshots (tests/screenshots.gd)
 ##   --gallery=DIR                                            close-ups of the player and every monster, lit (tests/screenshots.gd)
 ##   --arena [--horde=N]           the Loading Lot: the Level 3 horde test block instead of the building
+##   --manor                       Level 4, Ashgrave Manor, on its own
 ##   --seed=N                      build the building from this seed (the title picks a random one;
 ##                                 command-line runs default to the fixed test seed)
 ##   --bench=SECONDS               print the frame rate after that long, then quit
+##   --bench-manor                 (the building) bench at the manor's stables: the Line is flown straight there
 ##   --bots=N                      host N extra players nobody controls (load tests: a six-body Line)
 ##
 ## The host's world config (seed, lot or building, crowd size) travels in the join handshake: a
@@ -36,6 +38,7 @@ var _join_port: int = Net.DEFAULT_PORT
 var _join_name: String = ""
 var _rejoined: bool = false  # this join already rebuilt the world once for the host's config
 var _bench_t: float = -1.0
+var _bench_manor: bool = false
 var _bench_frames: int = 0
 var _bench_sample_t: float = 1.0
 var _bench_samples: Array[int] = []
@@ -156,22 +159,26 @@ func _handle_cmdline(args: PackedStringArray) -> void:
 				mode = "solo"
 		elif a == "--arena":
 			cfg["arena"] = true
+		elif a == "--manor":
+			cfg["manor"] = true
 		elif a.begins_with("--horde="):
 			cfg["horde"] = clampi(a.trim_prefix("--horde=").to_int(), 0, Horde.MAX_AGENTS)
 		elif a.begins_with("--seed="):
 			cfg["seed"] = a.trim_prefix("--seed=").to_int()
 		elif a.begins_with("--bench="):
 			_bench_t = maxf(1.0, a.trim_prefix("--bench=").to_float())
+		elif a == "--bench-manor":
+			_bench_manor = true
 		elif a.begins_with("--bots="):
 			bots = clampi(a.trim_prefix("--bots=").to_int(), 0, Net.MAX_PLAYERS - 1)
 		elif a.begins_with("--title-shot="):
-			title.set_arena(bool(cfg["arena"]))
+			title.set_choice(Net.level_choice(cfg))
 			var cam_title: Node = load("res://tests/screenshots.gd").new()
 			cam_title.set("out_dir", a.trim_prefix("--title-shot="))
 			cam_title.set("title_only", true)
 			add_child(cam_title)
 			return
-	title.set_arena(bool(cfg["arena"]))
+	title.set_choice(Net.level_choice(cfg))
 	if mode == "":
 		return
 	if player_name == "":
@@ -205,7 +212,7 @@ func _handle_cmdline(args: PackedStringArray) -> void:
 ## the default building and is handed the host's config if it differs.
 func _start(mode: String, player_name: String, ip: String, port: int, from_title: bool) -> void:
 	if from_title:
-		Net.world_config = Net.random_world_config(title.arena_selected()) if mode != "join" else Net.default_world_config()
+		Net.world_config = Net.random_world_config(title.arena_selected(), title.manor_selected()) if mode != "join" else Net.default_world_config()
 	_rejoined = false
 	_join_ip = ip
 	_join_port = port
@@ -282,7 +289,7 @@ func _on_world_mismatch(config: Dictionary) -> void:
 	_teardown_world()
 	Net.world_config = config
 	_build_world()
-	GameState.post_message_local("Building the host's %s ..." % ("Loading Lot" if bool(config.get("arena", false)) else "building"), 4.0)
+	GameState.post_message_local("Building the host's %s ..." % ["building", "roof", "manor"][Net.level_choice(config)], 4.0)
 	var err := Net.join(_join_ip, _join_port, _join_name)
 	if err != OK:
 		_leave_to_title("Couldn't reconnect to the host (error %d)." % err)
@@ -314,6 +321,9 @@ func _process(delta: float) -> void:
 			(level as HordeArena).debug_spawn_all_rounds()
 			for b in Net.get_chain_bodies():
 				b.teleport_to((level as HordeArena).test_points["north"] + Vector3(1.2 * float(b.join_index % 6), 0.0, 1.0), 0.0)
+		elif me != null and level is LevelStack and _bench_manor:
+			me.bot_controlled = true
+			(level as LevelStack).server_land_at_manor()
 	_bench_frames += 1
 	_bench_t -= delta
 	_bench_sample_t -= delta
@@ -387,7 +397,11 @@ func _build_world() -> void:
 	add_child(world)
 	var cfg := Net.world_config
 	var level: Node3D
-	if bool(cfg.get("arena", false)):
+	if bool(cfg.get("manor", false)):
+		var manor := Manor.new()  # Level 4: the haunted estate, four engines, the gate
+		manor.seed_value = int(cfg.get("seed", YellowRooms.DEFAULT_SEED))
+		level = manor
+	elif bool(cfg.get("arena", false)):
 		var arena := HordeArena.new()  # the Level 3 test block: a lot, a fence, a thousand infected
 		arena.horde_count = int(cfg.get("horde", HordeArena.HORDE_COUNT))
 		arena.seed_value = int(cfg.get("seed", YellowRooms.DEFAULT_SEED))

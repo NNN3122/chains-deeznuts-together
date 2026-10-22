@@ -462,7 +462,7 @@ func _level_index(pos: Vector3) -> int:
 
 ## The scream of whatever haunts the level at pos: the Hire's, Pappy's voice chip, the Jumper's mouthparts.
 func _level_scream(pos: Vector3) -> String:
-	return ["scream", "pappy_scream", "spider_shriek"][clampi(_level_index(pos), 0, 2)]
+	return ["scream", "pappy_scream", "spider_shriek", "scream"][clampi(_level_index(pos), 0, 3)]
 
 
 ## The body of whatever haunts that level, built (a HireBody, a PappyBody or a JumperBody).
@@ -481,6 +481,13 @@ func _level_body(idx: int) -> Node3D:
 				if i < 2:
 					j.legs[i].rotation.z = (1.0 if i % 2 == 1 else -1.0) * 1.3  # the front pair up
 			return j
+		3:
+			var g := GroundskeeperBody.new()
+			g.build()
+			g.arm_l.rotation = Vector3(1.9, 0.0, -0.3)  # both long hands out at you
+			g.arm_r.rotation = Vector3(1.9, 0.0, 0.3)
+			g.hips.rotation.x = -0.35
+			return g
 	var h := HireBody.new()
 	h.build()
 	h.arm_l.rotation = Vector3(1.9, 0.0, -0.3)  # both arms out at you
@@ -510,17 +517,21 @@ func _spawn_face(pos: Vector3) -> void:
 			m = JumperBody.face()
 			mat = Sculpt.material(0.45, 0.5, 0.0, 0.0, 0.35)
 			center = Vector3(0.0, -0.12, -0.2)
+		3:
+			m = GroundskeeperBody.gk_head()
+			mat = Sculpt.material(0.12, 0.3, 0.0, 0.0, 0.7)
+			center = Vector3(0.0, 0.22, -0.1)
 		_:
 			m = HireBody.skull(true)
 			mat = Sculpt.material(0.3, 0.5, 0.75, 0.15, 0.5)
 			center = Vector3(0.0, 0.22, -0.1)
 	Sculpt.put(face, m, mat, -center)
-	if idx == 0:
+	if idx == 0 or idx == 3:
 		var jaw := Node3D.new()  # its jaw hanging open, far too wide
 		jaw.position = HireBody.JAW_HINGE - center
 		jaw.rotation.x = -1.0
 		face.add_child(jaw)
-		Sculpt.put(jaw, HireBody.jaw_mesh(), mat)
+		Sculpt.put(jaw, GroundskeeperBody.gk_jaw() if idx == 3 else HireBody.jaw_mesh(), mat)
 	if idx == 1:
 		for x: float in [-0.14, 0.14]:  # his eyes, burning
 			var e := MeshInstance3D.new()
@@ -709,6 +720,9 @@ func _spawn_hands(pos: Vector3) -> void:
 		elif idx == 2:
 			mesh = JumperBody.lower_leg(1.0)
 			mat = Sculpt.material(0.45, 0.5, 0.0, 0.0, 0.35)
+		elif idx == 3:
+			mesh = GroundskeeperBody.gk_arm(1.0 if i % 2 == 0 else -1.0)
+			mat = Sculpt.material(0.08, 0.04, 1.0, 0.02, 1.0)
 		var mi := Sculpt.put(arm, mesh, mat)
 		mi.rotation = Vector3(PI, 0.0, -xs[i] * 0.8) if idx != 2 else Vector3(0.0, 0.0, PI * 0.5 + xs[i] * 0.6)
 		arm.position = Vector3(xs[i], -2.0, -0.55 - 0.08 * float(i % 2))
@@ -796,6 +810,15 @@ func _face_node(idx: int) -> Node3D:
 		2:
 			mat = Sculpt.material(0.45, 0.5, 0.0, 0.0, 0.35)
 			Sculpt.put(face, JumperBody.face(), mat, -Vector3(0.0, -0.12, -0.2))
+		3:
+			mat = Sculpt.material(0.12, 0.3, 0.0, 0.0, 0.7)
+			var gc := Vector3(0.0, 0.22, -0.1)
+			Sculpt.put(face, GroundskeeperBody.gk_head(), mat, -gc)
+			var gjaw := Node3D.new()
+			gjaw.position = HireBody.JAW_HINGE - gc
+			gjaw.rotation.x = -0.35
+			face.add_child(gjaw)
+			Sculpt.put(gjaw, GroundskeeperBody.gk_jaw(), mat)
 		_:
 			mat = Sculpt.material(0.3, 0.5, 0.75, 0.15, 0.5)
 			var center := Vector3(0.0, 0.22, -0.1)

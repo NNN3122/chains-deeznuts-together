@@ -38,6 +38,9 @@ func _run_host() -> void:
 	if _host != null and level_node is HordeArena:
 		await _run_arena(level_node as HordeArena)
 		return
+	if _host != null and level_node is Manor:
+		await _run_manor(level_node as Manor)
+		return
 	_stack = level_node as LevelStack
 	if _host == null or _stack == null:
 		_finish()
@@ -1802,12 +1805,66 @@ func _escape_by_helicopter(lot: HordeArena, tp: Dictionary, prefix: String) -> v
 			p._apply_input(direction, 0.0, 0.0, flags)
 		await _wait(0.05)
 		highest = maxf(highest, _host.global_position.y)
-		if GameState.escaped:
+		if GameState.escaped or lot.heli_departing:
 			break
-	_check("jetpack flight with the chain reaches the moving cabin and escapes", GameState.escaped and GameState.escape_line.begins_with("Airlifted"), "rose %.2f m; host %s, heli %s" % [highest - tp[prefix + "helipad"].y, _host.global_position, lot.heli_position()])
+	if lot.airlift.is_valid():
+		# In the Stack the run goes on: it climbs away with everyone and flies them to the manor.
+		_check("jetpack flight with the chain reaches the moving cabin: everyone's aboard and it climbs away (no escape: the run goes on)", lot.heli_departing and GameState.task_done(HordeArena.TASK_ABOARD) and not GameState.escaped,
+			"rose %.2f m; host %s, heli %s" % [highest - tp[prefix + "helipad"].y, _host.global_position, lot.heli_position()])
+	else:
+		_check("jetpack flight with the chain reaches the moving cabin and escapes", GameState.escaped and GameState.escape_line.begins_with("Airlifted"), "rose %.2f m; host %s, heli %s" % [highest - tp[prefix + "helipad"].y, _host.global_position, lot.heli_position()])
 	for p in Net.get_players():
 		p._apply_input(Vector2.ZERO, 0.0, 0.0, 0)
 	await _wait(0.3)
+	if lot.airlift.is_valid():
+		await _test_airlift()
+
+
+## Level 3 to Level 4 in the Stack: the helicopter sets the Line down at the manor's stables (the
+## next checkpoint, the manor's list and pickups, the pilot keeps the jetpacks), the manor answers
+## for everything down there, the Groundskeeper only wakes now, a catch is a layoff back to the
+## stables, and the south gate ends the run.
+func _test_airlift() -> void:
+	var m := _stack.manor
+	_manor = m
+	var asleep_before := m.keeper.asleep
+	var cp := _stack.manor_checkpoint_index()
+	for i in 80:
+		if GameState.checkpoint_index >= cp:
+			break
+		await _wait(0.1)
+	await _wait(0.6)  # the fade lifts and a cull pass runs
+	var spawn := m.spawn_position
+	var far := ""
+	for b in Net.get_chain_bodies():
+		if b.global_position.distance_to(spawn) > 2.0 + 0.6 * float(Net.get_chain_bodies().size()):
+			far += "%s at %s " % [b.name, b.global_position]
+	var packs := 0
+	for p in Net.get_players():
+		if p.has_item("jetpack"):
+			packs += 1
+	var pickups := 0
+	for pickup in get_tree().get_nodes_in_group("pickups"):
+		if _stack.level_index_at(pickup.global_position) == 3:
+			pickups += 1
+	_check("the helicopter sets the whole Line down at the manor's stables: checkpoint %d, the manor's list, its pickups out, no escape yet, the pilot kept the jetpacks" % cp,
+		GameState.checkpoint_index == cp and far == "" and GameState.tasks.size() == Manor.TASKS.size() and String(GameState.tasks[0][0]).begins_with("Get the four engines") and pickups >= 8 and packs == 0 and not GameState.escaped and not _stack.lot.heli_departing,
+		"checkpoint %d, far: %s, tasks %s, %d pickups, %d jetpacks, escaped %s" % [GameState.checkpoint_index, far, str(GameState.tasks), pickups, packs, GameState.escaped])
+	var at := _host.global_position
+	var foyer: Vector3 = _stack.test_points["m_foyer"]
+	_check("down here the Stack answers as the manor: its name, scares and sky; the mansion has a ceiling, the grounds don't",
+		_stack.floor_name(at.y) == Manor.FLOOR_NAME and _stack.level_index_at(at) == 3 and _stack.scare_pool(at) == Manor.SCARE_POOL and not _stack.paces_own_scares(at) and not _stack.is_safe_spot(at)
+			and _stack.has_ceiling_at(foyer) and not _stack.has_ceiling_at(at) and is_equal_approx(_stack.ceiling_y(foyer), m.origin.y + Manor.ROOM_H),
+		"%s, level %d, ceiling over the foyer %.1f" % [_stack.floor_name(at.y), _stack.level_index_at(at), _stack.ceiling_y(foyer)])
+	var floor0 := _level.get_node("Floor0") as Node3D
+	_check("only the manor is drawn down here (the building and the roof are hidden)", m.visible and not _stack.lot.root.visible and not floor0.visible, "manor %s, roof %s, B4 %s" % [m.visible, _stack.lot.root.visible, floor0.visible])
+	_check("the Groundskeeper slept until the Line landed and is awake now; it isn't one of the office's Hires", asleep_before and not m.keeper.asleep and not _level.hires_on(0).has(m.keeper), "asleep before %s, now %s" % [asleep_before, m.keeper.asleep])
+	_test_m_grid()
+	m.machines[0].debug_complete()  # the catch test wants a running engine to stay running
+	await _test_m_chase()
+	_check("the catch was a layoff back to the manor's stables, not to the roof or the office", GameState.checkpoint_index == cp and _stack.level_index_at(_host.global_position) == 3, "checkpoint %d, host %s" % [GameState.checkpoint_index, _host.global_position])
+	await _test_m_generator()
+	_check("the run ends at the manor's south gate", GameState.escaped and GameState.escape_line.begins_with("Out of Ashgrave"), GameState.escape_line)
 
 
 ## Playable end to end: the bot crosses every link of the route the way a player would (a run
@@ -2921,6 +2978,9 @@ func _run_client() -> void:
 	if lvl is HordeArena:
 		await _run_client_arena(lvl as HordeArena)
 		return
+	if lvl is Manor:
+		await _run_client_manor(lvl as Manor)
+		return
 	var chain := get_tree().get_first_node_in_group("chain") as ChainSystem
 	var segs := chain.segments.size() if chain != null else -1
 	_check("client: chain rebuilt from replicated players", segs >= 1, "%d segments" % segs)
@@ -2932,10 +2992,17 @@ func _run_client() -> void:
 	var saw_car_top := false
 	var pappy := get_tree().get_first_node_in_group("pappy") as PappyPepperoni
 	var pappy_node0 := pappy.node_index if pappy != null else -1
+	var stack := lvl as LevelStack
+	var saw_manor := false
+	var saw_keeper_grab := false
 	t = 0.0
-	while t < 320.0 and not GameState.escaped:
+	while t < 380.0 and not GameState.escaped:
 		await _wait(0.2)
 		t += 0.2
+		if stack != null and me != null and stack.level_index_at(me.global_position) == 3 and stack.manor.visible:
+			saw_manor = true
+		if stack != null and stack.manor.keeper.grab_peer != 0:
+			saw_keeper_grab = true
 		if _find_thrown("decoy") != null or _find_thrown("bomb") != null:
 			saw_thrown = true
 		for c in get_tree().get_nodes_in_group("hire"):
@@ -2950,6 +3017,8 @@ func _run_client() -> void:
 		if car != null and car.has_arrived():
 			saw_car_top = true
 	_check("client: received ESCAPED", GameState.escaped, "after %.1f s" % t)
+	_check("client: flew on to the manor with the host (down there with the estate drawn, the manor's checkpoint, the Groundskeeper's catch replicated)", saw_manor and saw_keeper_grab and stack != null and GameState.checkpoint_index == stack.manor_checkpoint_index(),
+		"saw the manor %s, keeper grab %s, checkpoint %d" % [saw_manor, saw_keeper_grab, GameState.checkpoint_index])
 	_check("client: saw thrown items replicate", saw_thrown, "")
 	_check("client: saw a Hollow Hire grab replicate", saw_grab, "")
 	_check("client: received the layoff and checkpoints", GameState.wipes >= 1 and GameState.checkpoint_index >= 6, "wipes %d, checkpoint %d" % [GameState.wipes, GameState.checkpoint_index])
@@ -3126,3 +3195,255 @@ func _drive_mate(move: Vector2, flags: int, jump: bool) -> void:
 	if jump:
 		_mate_seq = (_mate_seq + 1) & 0xFF
 	m._apply_input(move, 0.0, 0.0, flags | (_mate_seq << Player.JUMP_SEQ_SHIFT))
+
+
+# --- Level 4: Ashgrave Manor (--manor) ------------------------------------------------------------
+
+var _manor: Manor
+
+
+## The manor suite: the layout and the Groundskeeper's grid, repairing an engine, the wrench, a
+## kick, the Groundskeeper sent to work, a chase and a catch, then the main generator, the gate and
+## the way out.
+func _run_manor(m: Manor) -> void:
+	_manor = m
+	_host.bot_controlled = true
+	m.keeper.debug_frozen = true
+	await _wait(0.6)
+	var bodies := Net.get_chain_bodies()
+	_mate = bodies[1] if bodies.size() > 1 else null
+	var kit_ok := _host.has_item("flashlight") and _host.has_item("wrench")
+	_check("manor: four engines, the main generator, the gate and the Groundskeeper; you start with a flashlight and a wrench",
+		m.machines.size() == 4 and m.generator != null and m.gate != null and m.keeper != null and kit_ok, "engines %d, kit %s" % [m.machines.size(), kit_ok])
+	_check("manor: its own task list is up", GameState.tasks.size() == Manor.TASKS.size(), "%d tasks" % GameState.tasks.size())
+	if only != "":
+		await call("_test_" + only)
+		_finish()
+		return
+	_test_m_grid()
+	await _test_m_repair()
+	await _test_m_wrench()
+	await _test_m_kick()
+	await _test_m_draw()
+	await _test_m_chase()
+	await _test_m_generator()
+	_finish()
+
+
+## The Groundskeeper can walk to every engine, the generator and the gate from the graveyard, and
+## the drive from the manor's door to the gate is open all the way.
+func _test_m_grid() -> void:
+	var m := _manor
+	var o := m.origin  # zero on its own; far below the building in the Stack
+	var home := m.cell_of(o + Manor.KEEPER_HOME)
+	var bad := ""
+	for key in ["engine0", "engine1", "engine2", "engine3", "generator", "gate_inside", "spawn", "foyer"]:
+		var path := m.route(0, home, m.cell_of(m.test_points[key]))
+		if path.is_empty():
+			bad += key + " "
+	_check("manor: from the graveyard the Groundskeeper's grid reaches every engine, the generator, the gate, the stables and the foyer", bad == "", bad)
+	var space := _host.get_world_3d().direct_space_state
+	var q := PhysicsRayQueryParameters3D.create(o + Vector3(0.0, 1.0, -8.0), o + Vector3(0.0, 1.0, Manor.GATE_Z - 1.0), ChainBody.LAYER_WORLD)
+	var hit := space.intersect_ray(q)
+	var drive := m.route(0, m.cell_of(o + Vector3(0.0, 0.0, Manor.MANSION.end.y + 2.0)), m.cell_of(m.test_points["gate_inside"]))
+	_check("manor: the drive from the fountain to the south gate is open (nothing across it) and walkable on the grid from the manor door", hit.is_empty() and drive.size() > 0 and drive.size() < 60,
+		"hit %s, path %d cells" % [str(hit.get("position", "none")), drive.size()])
+
+
+## Crouched at an engine (Ctrl), it comes along; it's noise while you work; let go and it holds;
+## at 100% it runs, and the task's count goes up.
+func _test_m_repair() -> void:
+	var m := _manor
+	var e: ManorMachine = m.machines[0]
+	var stand: Vector3 = m.test_points["engine0"]
+	var to := e.global_position - stand
+	var yaw := atan2(-to.x, -to.z)
+	_place(stand, yaw)
+	await _wait(0.4)
+	_bot(Vector2.ZERO, yaw, Player.FLAG_BRACE)
+	await _wait(3.0)
+	var p1 := e.progress
+	var heard := e.noise_level()
+	var was_working := e.working
+	_bot(Vector2.ZERO, yaw, 0)
+	await _wait(1.0)
+	var p2 := e.progress
+	_check("manor: crouched at an engine it comes along (a few percent in 3 s), it's noise while you work, and it holds when you stop",
+		p1 > 0.04 and was_working and heard >= ManorMachine.NOISE_WORK and absf(p2 - p1) < 0.01 and not e.working, "%.3f then %.3f, noise %.0f" % [p1, p2, heard])
+	e.progress = 0.97
+	_bot(Vector2.ZERO, yaw, Player.FLAG_BRACE)
+	await _wait(2.5)
+	_bot(Vector2.ZERO, yaw, 0)
+	var text := String(GameState.tasks[Manor.TASK_ENGINES][0])
+	_check("manor: at 100% the engine runs for good and the task counts it (1 of 4)", e.done and m.engines_running() == 1 and text.contains("1 of 4"), "%s, %s" % [e.done, text])
+
+
+## A crack of the wrench at an engine jumps it along.
+func _test_m_wrench() -> void:
+	var m := _manor
+	var e: ManorMachine = m.machines[1]
+	var stand: Vector3 = m.test_points["engine1"]
+	_place(stand, 0.0)
+	await _wait(0.3)
+	_give("wrench")
+	await _wait(0.2)
+	var before := e.progress
+	var to := e.fix_point() - _host.eye_position()
+	await _swing(atan2(-to.x, -to.z), atan2(to.y, Vector2(to.x, to.z).length()))
+	await _wait(0.3)
+	_check("manor: a crack of the wrench at an engine jumps it along", e.progress >= before + ManorMachine.WRENCH_BOOST * 0.9, "%.3f -> %.3f" % [before, e.progress])
+	_give("flashlight")
+
+
+## Left half done with nobody at it, an engine the Groundskeeper walks past gets kicked: it runs
+## back down until someone works it again.
+func _test_m_kick() -> void:
+	var m := _manor
+	var e: ManorMachine = m.machines[2]
+	_place(m.test_points["spawn"], PI * 0.5)
+	await _wait(0.3)
+	e.progress = 0.3
+	var k := m.keeper
+	k.debug_reset(m.test_points["engine2"], 0.0)
+	k.debug_frozen = false
+	var kicked := false
+	for i in 20:
+		await _wait(0.1)
+		if e.regressing:
+			kicked = true
+			break
+	k.debug_frozen = true
+	var p1 := e.progress
+	await _wait(1.0)
+	var falling := e.progress < p1
+	# Someone works it again: it stops running down.
+	var stand: Vector3 = m.test_points["engine2"]
+	var to := e.global_position - stand
+	_place(stand, atan2(-to.x, -to.z))
+	k.debug_reset(Manor.KEEPER_HOME, 0.0)
+	await _wait(0.3)
+	_bot(Vector2.ZERO, atan2(-to.x, -to.z), Player.FLAG_BRACE)
+	await _wait(1.0)
+	_bot(Vector2.ZERO, 0.0, 0)
+	_check("manor: the Groundskeeper kicks a half-done engine it passes (it runs down), and working it again stops that",
+		kicked and falling and not e.regressing, "kicked %s, falling %s (%.3f), regressing now %s" % [kicked, falling, p1, e.regressing])
+
+
+## Work on an engine carries: the Groundskeeper is sent to it.
+func _test_m_draw() -> void:
+	var m := _manor
+	var e: ManorMachine = m.machines[3]
+	var stand: Vector3 = m.test_points["engine3"]
+	var to := e.global_position - stand
+	var yaw := atan2(-to.x, -to.z)
+	_place(stand, yaw)
+	var k := m.keeper
+	k.debug_reset(Manor.KEEPER_HOME, 0.0)
+	k.debug_frozen = false
+	await _wait(0.3)
+	_bot(Vector2.ZERO, yaw, Player.FLAG_BRACE)
+	m._draw_t = 0.2
+	await _wait(1.0)
+	var sent := k.hstate == HollowHire.HState.INVESTIGATE and k._goal.distance_to(e.global_position) < 3.0
+	var start_d := k.global_position.distance_to(e.global_position)
+	await _wait(4.0)
+	var closer := k.global_position.distance_to(e.global_position) < start_d - 4.0
+	_bot(Vector2.ZERO, yaw, 0)
+	k.debug_frozen = true
+	_check("manor: work on an engine sends the Groundskeeper to it", sent and closer, "state %d, goal %.1f m off, closed %.1f m" % [k.hstate, k._goal.distance_to(e.global_position), start_d - k.global_position.distance_to(e.global_position)])
+
+
+## It sees you, it runs you down and takes you: a layoff back to the stables, and the engines that
+## run keep running.
+func _test_m_chase() -> void:
+	var m := _manor
+	# Somewhere it comes straight at you: nothing on its grid in between (the dressing moves with the
+	# seed and the build; a detour round something low it can see over carried it onto the co-op partner).
+	var at := m.origin + Vector3(30.0, 0.1, -8.0)
+	for spot: Vector3 in [Vector3(30.0, 0.1, -8.0), Vector3(24.0, 0.1, 14.0), Vector3(30.0, 0.1, 32.0), Vector3(-4.0, 0.1, 30.0), Vector3(12.0, 0.1, -24.0), Vector3(40.0, 0.1, -40.0)]:
+		var p := m.origin + spot
+		var side := p + Vector3(0.0, 0.0, -(HollowHire.RESCUE_RADIUS + 0.9))  # where _park_mate_clear puts a partner
+		if m.clear_walk(p + Vector3(7.0, 0.0, 0.0), p) and m.is_walkable(m.cell_of(p)) and m.is_walkable(m.cell_of(p + Vector3(7.0, 0.0, 0.0))) and m.is_walkable(m.cell_of(side)):
+			at = p
+			break
+	_place(at, -PI * 0.5)
+	_park_mate_clear()
+	await _wait(0.3)
+	var k := m.keeper
+	k.debug_reset(at + Vector3(7.0, 0.0, 0.0), PI * 0.5)  # facing west, at you
+	k.debug_frozen = false
+	var wipes0 := GameState.wipes
+	var saw := false
+	var grabbed := false
+	for i in 100:
+		await _wait(0.1)
+		if k.hstate == HollowHire.HState.CHASE:
+			saw = true
+		if k.grab_peer == 1:
+			grabbed = true
+		if GameState.wipes > wipes0:
+			break
+	await _wait(1.6)
+	k.debug_frozen = true
+	var home := _host.global_position.distance_to(m.test_points["spawn"]) < 4.0
+	_check("manor: the Groundskeeper sees you, runs you down, takes you: a layoff back to the stables, the running engine still running",
+		saw and grabbed and GameState.wipes > wipes0 and home and m.machines[0].done, "saw %s, grabbed %s, wipes %d -> %d, home %s" % [saw, grabbed, wipes0, GameState.wipes, home])
+
+
+## All four engines run: the main generator is armed. Held at its switch it starts, the lamps come
+## on, the gate grinds open, and everyone past the end of the lane is out.
+func _test_m_generator() -> void:
+	var m := _manor
+	var g := m.generator
+	var stand: Vector3 = m.test_points["generator"]
+	var to := g.global_position - stand
+	var yaw := atan2(-to.x, -to.z)
+	_place(stand, yaw)
+	await _wait(0.3)
+	_bot(Vector2.ZERO, yaw, Player.FLAG_BRACE)
+	await _wait(1.0)
+	var dead_before := not g.armed and g.progress == 0.0
+	_bot(Vector2.ZERO, yaw, 0)
+	for e in m.machines:
+		e.debug_complete()
+	await _wait(0.3)
+	var armed := g.armed and GameState.task_done(Manor.TASK_ENGINES)
+	_bot(Vector2.ZERO, yaw, Player.FLAG_BRACE)
+	await _wait(ManorMachine.START_SECONDS + 1.0)
+	_bot(Vector2.ZERO, yaw, 0)
+	var started := g.done and m.gate.opening and GameState.task_done(Manor.TASK_SWITCH) and m._lamps_on
+	_check("manor: the generator is dead until all four engines run, then held at its switch it starts, the lamps come on and the gate starts to open",
+		dead_before and armed and started, "dead before %s, armed %s, started %s" % [dead_before, armed, started])
+	await _wait(ManorGate.OPEN_SECONDS + 0.5)
+	var open := m.gate.is_open()
+	var lane := m.route(0, m.cell_of(m.test_points["generator"]), m.cell_of(m.origin + Vector3(0.0, 0.0, Manor.GATE_Z)))
+	var exit: Vector3 = m.test_points["exit"]
+	_place(exit, PI)
+	await _wait(1.0)
+	_check("manor: the gate opens all the way, the grid runs through it, and the whole Line down the lane is out",
+		open and lane.size() > 0 and GameState.escaped and GameState.task_done(Manor.TASK_OUT), "open %s, lane %d, escaped %s" % [open, lane.size(), GameState.escaped])
+
+
+## The manor from a client: the host's config arrived and the estate was rebuilt; an engine's
+## progress, the Groundskeeper's catch and the gate opening replicate; the escape arrives.
+func _run_client_manor(m: Manor) -> void:
+	var main := get_tree().current_scene
+	_check("client: the host's world config arrived and the manor was rebuilt (joined with no --manor)", bool(Net.world_config.get("manor", false)) and m.machines.size() == 4 and bool(main.get("_rejoined")),
+		"config %s, rejoined %s" % [Net.world_config, main.get("_rejoined")])
+	var saw_progress := false
+	var saw_grab := false
+	var saw_open := false
+	var t := 0.0
+	while t < 200.0 and not GameState.escaped:
+		await _wait(0.2)
+		t += 0.2
+		for e in m.machines:
+			if e.progress > 0.02:
+				saw_progress = true
+		if m.keeper.grab_peer != 0:
+			saw_grab = true
+		if m.gate.open_t > 0.5:
+			saw_open = true
+	_check("client: engine progress, the Groundskeeper's catch and the gate opening replicate, and the escape arrives", saw_progress and saw_grab and saw_open and GameState.escaped,
+		"progress %s, grab %s, gate %s, escaped %s after %.0f s" % [saw_progress, saw_grab, saw_open, GameState.escaped, t])
+	_finish()

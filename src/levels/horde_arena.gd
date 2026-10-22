@@ -37,6 +37,7 @@ const STEP_H: float = 1.75  # m up per fire-escape ledge (a standing mantle reac
 const FLYBY_SECONDS: float = 22.0  # repeat pass: a miss never strands the team
 const FLYBY_HEIGHT: float = 4.2  # above the pad, beyond a normal jump
 const FLYBY_WIDTH: float = 12.0
+const CLIMB_AWAY: float = 3.0  # m/s the helicopter rises off the tower with everyone aboard
 const LOT_JUMPERS: int = 1  # Jumpers in front of the first of the swarm on the lot
 const LOT_ROACHES: Vector2 = Vector2(10.0, 6.0)  # the lot's two waves (were 70 and 45: the user, "less of them")
 const NEST_COUNT: int = 3  # roofs where the mites pour out, one in each third of the route
@@ -184,6 +185,8 @@ var furthest_roof: int = 0  # replicated: how far the Line has got (for the HUD 
 var rounds_spawned: int = 0  # replicated: every peer spawns waves up to this
 var heli_fraction: float = 0.0  # replicated: 1 once the helicopter starts its passes
 var heli_elapsed: float = 0.0  # replicated flight clock; clients extrapolate between snapshots
+var heli_departing: bool = false  # replicated: everyone's aboard and it is climbing away (the Stack flies on to the manor)
+var airlift: Callable  # set by the Stack: boarding flies the Line on to Level 4 instead of ending the run
 var _waves: Array = []  # [[count, weights, local rect, kinds...], ...] per wave, in order
 var _we: WorldEnvironment
 var _layoff_pending: bool = false
@@ -217,7 +220,7 @@ func _enter_tree() -> void:
 	var sync := MultiplayerSynchronizer.new()
 	sync.name = "Sync"
 	var cfg := SceneReplicationConfig.new()
-	for prop in ["rounds_spawned", "heli_fraction", "heli_elapsed", "furthest_roof"]:
+	for prop in ["rounds_spawned", "heli_fraction", "heli_elapsed", "furthest_roof", "heli_departing"]:
 		var path := NodePath(".:" + prop)
 		cfg.add_property(path)
 		cfg.property_set_replication_mode(path, SceneReplicationConfig.REPLICATION_MODE_ALWAYS)
@@ -2151,7 +2154,7 @@ func is_aboard(p: Vector3) -> bool:
 
 
 func _tick_boarding(players: Array[Player]) -> void:
-	if heli_fraction < 1.0 or not _tasks_set or players.is_empty() or not GameState.task_done(TASK_ESCAPE):
+	if heli_fraction < 1.0 or heli_departing or not _tasks_set or players.is_empty() or not GameState.task_done(TASK_ESCAPE):
 		return
 	if _layoff_pending or Time.get_ticks_msec() - last_layoff_msec() < 3000:
 		return
@@ -2159,7 +2162,20 @@ func _tick_boarding(players: Array[Player]) -> void:
 		if p.state != Player.State.NORMAL or not is_aboard(p.global_position):
 			return
 	GameState.complete_task(TASK_ABOARD)
-	GameState.set_escaped("Airlifted off Carrow Heights. Next stop: Level 4, the Hotel Velluto.")
+	if airlift.is_valid():
+		heli_departing = true  # it climbs away with the Line in the cabin; the Stack takes it from here
+		airlift.call()
+		return
+	GameState.set_escaped("Airlifted off Carrow Heights. Next stop: Level 4, Ashgrave Manor.")
+
+
+## Server: the Stack has set the Line down at the manor. The helicopter goes back to waiting
+## off the tower (nobody sees it again), and nobody who was up here counts as having fallen.
+func server_airlifted() -> void:
+	heli_departing = false
+	heli_fraction = 0.0
+	heli_elapsed = 0.0
+	_been_up.clear()
 
 
 func _on_helipad(p: Vector3) -> bool:
@@ -2172,9 +2188,9 @@ func _tick_helicopter(delta: float) -> void:
 	if _rotor == null:
 		return
 	var spin := lerpf(0.0, 32.0, heli_fraction * heli_fraction)
-	if GameState.escaped:
+	if GameState.escaped or heli_departing:
 		spin = 40.0
-		_heli.position.y += 3.0 * delta  # up and away
+		_heli.position.y += CLIMB_AWAY * delta  # up and away
 		_heli.rotation.x = lerpf(_heli.rotation.x, -0.12, delta)
 	elif heli_fraction > 0.0:
 		heli_elapsed += delta
@@ -2251,6 +2267,7 @@ func server_on_respawn() -> void:
 			launchers[i].debug_reset(launcher_homes[i])
 	heli_elapsed = 0.0
 	heli_fraction = 0.0
+	heli_departing = false
 	_pad_told = false
 	dread.server_reset(16.0)
 

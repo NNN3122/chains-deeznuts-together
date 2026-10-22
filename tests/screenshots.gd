@@ -30,6 +30,10 @@ func _ready() -> void:
 		await _tour_arena(level_node as HordeArena)
 		get_tree().quit()
 		return
+	if _host != null and level_node is Manor:
+		await _tour_manor(level_node as Manor)
+		get_tree().quit()
+		return
 	_stack = level_node as LevelStack
 	if _host == null or _stack == null:
 		get_tree().quit(1)
@@ -288,6 +292,11 @@ func _tour_pizzeria() -> void:
 		l.debug_frozen = true
 	await _shot("43_roof_lot", lot.spawn_position, 0.0, -0.05, false)
 	await _shot("44_roof_lot_first_person", lot.spawn_position + Vector3(0.0, 0.0, -6.0), 0.0, 0.0, true)
+	# Then on: the helicopter sets the Line down at the manor's stables, far below the building (the
+	# same view as the manor tour's 80, which should look the same).
+	_stack.server_land_at_manor()
+	_stack.manor.keeper.debug_frozen = true
+	await _shot("45_manor_from_the_stack", _stack.manor.spawn_position, PI * 0.5, -0.05, false)
 
 
 ## The Loading Lot (--arena --shots=DIR): the lot, the fence, the crowd at the gap, a Launcher
@@ -647,6 +656,7 @@ func gallery_subjects() -> Array:
 		mi.material_override = HordeMesh.material_for(k)
 		list.append(["g%02d_%s" % [6 + k, names[k]], mi, [[Vector3(0.0, 0.3, 0.0), Vector3(1.1, 0.9, -1.8), "front"], [Vector3(0.0, 0.3, -0.4), Vector3(0.2, 0.45, -1.1), "face"]]])
 	list.append(["g09_tall_tenant", RoofStalker.new(), [[Vector3(0.0, 1.8, 0.0), Vector3(0.8, 1.9, -5.0), "front"], [Vector3(0.0, 3.1, -0.2), Vector3(0.15, 3.1, -1.2), "face"]]])
+	list.append(["g12_groundskeeper", GroundskeeperBody.new(), [[Vector3(0.0, 1.2, 0.0), Vector3(0.9, 1.7, -3.4), "front"], [Vector3(0.0, 2.27, 0.0), Vector3(0.14, 2.25, -0.85), "face"], [Vector3(0.0, 1.2, 0.0), Vector3(-2.6, 1.4, -0.8), "side"]]])
 	return list
 
 
@@ -689,3 +699,69 @@ func _use() -> void:
 
 func _wait(s: float) -> void:
 	await get_tree().create_timer(s).timeout
+
+
+## Ashgrave Manor (--manor --shots=DIR): the stables at the start, the grounds from above, the
+## mansion, its foyer and the library engine, the graveyard and the crypt, the chapel, the orchard
+## and greenhouse, the hedges, the main generator, the Groundskeeper in the fog, and the gate shut,
+## then open with the lamps lit.
+func _tour_manor(m: Manor) -> void:
+	_host.bot_controlled = true
+	var hud := get_tree().current_scene.get("hud") as Hud
+	if hud != null:
+		hud.set_help_visible(false)
+	m.keeper.debug_frozen = true
+	m.keeper.debug_reset(Vector3(-66.0, 0.0, -66.0), 0.0)  # out of the way until its own shot
+	var tp := m.test_points
+	await _shot("80_manor_spawn", tp["spawn"], PI * 0.5, -0.05, false)
+	await _free_cam("81_grounds_from_above", Vector3(34.0, 26.0, 30.0), Vector3(-4.0, 0.0, -18.0))
+	await _shot("82_mansion_front", tp["m_mansion"] + Vector3(4.0, 0.0, 12.0), 0.15, 0.12, true)
+	await _shot("83_foyer", tp["foyer"], 0.0, 0.08, true)
+	await _shot("84_library_engine", tp["engine0"] + Vector3(1.5, 0.0, 2.0), 0.4, -0.2, true)
+	await _shot("85_graveyard", Vector3(-35.0, 0.1, 2.0), PI * 0.5, 0.02, true)
+	await _shot("86_crypt", Vector3(-43.0, 0.1, -12.0), PI * 0.5 - 0.15, 0.05, false)
+	await _shot("87_crypt_engine", tp["engine1"] + Vector3(0.6, 0.0, 0.0), PI * 0.5, -0.2, true)
+	await _shot("88_chapel", Vector3(-35.0, 0.1, 46.5), PI * 0.5, 0.05, true)
+	await _shot("89_greenhouse", Vector3(42.0, 0.1, -50.0), 0.0, 0.0, true)
+	await _shot("90_hedges", Vector3(-1.0, 0.1, 36.0), PI * 0.5, 0.0, true)
+	await _shot("91_generator", tp["generator"] + Vector3(-2.0, 0.0, 4.0), -0.3, -0.05, true)
+	if tp.has("grass"):
+		await _shot("91b_tall_grass", tp["grass"] + Vector3(0.0, 0.0, 5.0), 0.0, -0.05, true)
+	if not m.hang_points.is_empty():
+		var hp: Vector3 = m.hang_points[0]
+		var eye := Vector3(hp.x + 3.2, 0.1, hp.z + 1.0)
+		var d := hp - eye
+		await _shot("91c_hanged", eye, atan2(-d.x, -d.z), 0.22, true)
+	await _shot("91d_gallows_from_the_stables", Vector3(47.0, 0.1, 15.0), atan2(7.0, 6.0), 0.1, true)
+	# The Groundskeeper: coming out of the fog at you, then right on you.
+	var at := Vector3(-30.0, 0.1, -6.0)
+	_place_all(at, PI * 0.5)
+	m.keeper.debug_reset(at + Vector3(-9.0, 0.0, 0.0), -PI * 0.5)
+	await _shot_here("92_groundskeeper_in_the_fog", PI * 0.5, 0.05, true)
+	m.keeper.debug_reset(at + Vector3(-2.6, 0.0, 0.0), -PI * 0.5)
+	await _shot_here("93_groundskeeper_close", PI * 0.5, 0.25, true)
+	m.keeper.debug_reset(Vector3(-66.0, 0.0, -66.0), 0.0)
+	await _shot("94_gate_shut", tp["gate_inside"] + Vector3(0.0, 0.0, -8.0), PI, 0.08, true)
+	for mm in m.machines:
+		mm.debug_complete()
+	m.generator.debug_complete()
+	await _wait(9.0)
+	await _shot("95_gate_open_lamps_lit", tp["gate_inside"] + Vector3(0.0, 0.0, -8.0), PI, 0.08, true)
+	await _free_cam("96_grounds_lit", Vector3(20.0, 18.0, 30.0), Vector3(0.0, 0.0, -8.0))
+
+
+## A shot from a camera of our own at eye, looking at target; the player's camera after.
+func _free_cam(file: String, eye: Vector3, target: Vector3) -> void:
+	var prev := get_viewport().get_camera_3d()
+	var cam := Camera3D.new()
+	cam.fov = 70.0
+	cam.far = 400.0
+	get_tree().current_scene.add_child(cam)
+	cam.global_position = eye
+	cam.look_at(target, Vector3.UP)
+	cam.current = true
+	await _wait(1.6)
+	await _capture_to(out_dir.path_join(file + ".png"))
+	cam.queue_free()
+	if prev != null:
+		prev.make_current()
