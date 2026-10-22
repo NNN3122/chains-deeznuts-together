@@ -87,6 +87,8 @@ const GROUND_CHUNK: float = 20.0  # m: drawn in squares this size,
 const GROUND_STEP: float = 0.33  # m between vertices near you,
 const GROUND_STEP_FAR: float = 1.0  # m and further off
 const GROUND_NEAR: float = 50.0  # m: where the far squares take over
+const WALK_HALF: float = HALF + 2.0  # m: the heave is solid this far out (you walk on it, the camera stops on it)
+const FALL_RESCUE: float = 6.0  # m under the ground: back to the stables
 const TASK_ENGINES: int = 0
 const TASK_SWITCH: int = 1
 const TASK_OUT: int = 2
@@ -200,6 +202,7 @@ func _ready() -> void:
 	_build_forest()
 	_dress_grounds()
 	_build_heights()
+	_build_ground_collision()
 	_overgrow()
 	_batch.build(_root, "M")
 	_build_ground_mesh()
@@ -387,7 +390,9 @@ func ground_y(i: int, p: Vector3, _fallback: float) -> float:
 	var l := p - origin
 	if STAIR.grow(0.05).has_point(Vector2(l.x, l.z)):
 		return origin.y + _ramp_y(l.z)
-	return origin.y + (FLOOR2_Y if i == 1 and MANSION.has_point(Vector2(l.x, l.z)) else 0.0)
+	if i == 1 and MANSION.has_point(Vector2(l.x, l.z)):
+		return origin.y + FLOOR2_Y
+	return origin.y + heave_at(l.x, l.z)  # over the lumps of the grounds (nothing in the buildings)
 
 
 ## Server: which floor the Groundskeeper is on follows where it walks: up as it passes the stair's
@@ -1868,6 +1873,33 @@ func heave_at(x: float, z: float) -> float:
 	return _texel(_mask_bytes, int(GROUND), x, z) * HEAVE_WOOD * s * s * (3.0 - 2.0 * s)
 
 
+## The heave you walk on: a height field over the grounds (WALK_HALF each way), a sample a metre
+## (unscaled; within a few millimetres of the drawn ground), from the numbers the earth shader lifts
+## its mesh by. Without it you stood on the flat box under the lumps (feet sunk in them) and the
+## third-person camera, stopped only by that box, went under the drawn ground and showed the void
+## below the map. The box stays under it.
+func _build_ground_collision() -> void:
+	var n := int(2.0 * WALK_HALF) + 1
+	var data := PackedFloat32Array()
+	data.resize(n * n)
+	for j in n:
+		var z := -WALK_HALF + float(j)
+		for i in n:
+			data[j * n + i] = heave_at(-WALK_HALF + float(i), z)
+	var hm := HeightMapShape3D.new()
+	hm.map_width = n
+	hm.map_depth = n
+	hm.map_data = data
+	var cs := CollisionShape3D.new()
+	cs.shape = hm
+	var body := StaticBody3D.new()
+	body.name = "Heave"
+	body.collision_layer = ChainBody.LAYER_WORLD
+	body.collision_mask = 0
+	body.add_child(cs)
+	_root.add_child(body)
+
+
 ## A square texture of n texels over the GROUND square, read at (x, z) the way the GPU filters it.
 static func _texel(bytes: PackedByteArray, n: int, x: float, z: float) -> float:
 	var t := GROUND / float(n)
@@ -2428,6 +2460,7 @@ func _physics_process(delta: float) -> void:
 	if not multiplayer.is_server() or not _arrived or keeper == null:
 		return
 	_tick_keeper_floor()
+	_tick_fallen()
 	_tick_draw(delta)
 	_tick_kick(delta)
 	_tick_respawn(delta)
@@ -2436,6 +2469,14 @@ func _physics_process(delta: float) -> void:
 		_gate_cell_open = true
 		_astar.set_point_solid(_cell(Vector3(0.0, 0.0, GATE_Z)), false)
 	_tick_escape()
+
+
+## Server: a safety net. Nothing should get anyone under the ground (a solid box under the height
+## field), but a body that ever does is put back at the stables rather than falling for ever.
+func _tick_fallen() -> void:
+	for b in Net.get_chain_bodies():
+		if b.global_position.y < origin.y - FALL_RESCUE:
+			b.teleport_to(spawn_position + Vector3(0.0, 0.3, 0.0), spawn_facing)
 
 
 ## Work on an engine carries: every so often the Groundskeeper is sent to one being worked on.

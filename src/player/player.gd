@@ -39,6 +39,7 @@ const ORPHAN_GRAB_TIME: float = 0.4  # s held by nothing before the grab is drop
 const CROUCH_HEIGHT: float = 1.25
 const EYE_HEIGHT: float = 1.55
 const CROUCH_EYE_HEIGHT: float = 1.05
+const CAMERA_BALL: float = 0.2  # m: the third-person camera's clearance from whatever its arm meets
 const NOISE_DECAY: float = 30.0  # per second
 const NOISE_RUN: float = 55.0
 const NOISE_WALK: float = 15.0
@@ -355,6 +356,11 @@ func _setup_cameras() -> void:
 	_spring_arm.spring_length = TP_ARM_LENGTH
 	_spring_arm.margin = 0.25
 	_spring_arm.collision_mask = ChainBody.LAYER_WORLD
+	# A ball, not the camera's own view pyramid (what it sweeps with no shape): that went straight
+	# through the manor's height-field ground, and the camera came up under the map.
+	var ball := SphereShape3D.new()
+	ball.radius = CAMERA_BALL
+	_spring_arm.shape = ball
 	_pitch_pivot.add_child(_spring_arm)
 	_tp_camera = Camera3D.new()
 	_tp_camera.near = 0.05

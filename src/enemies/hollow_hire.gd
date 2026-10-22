@@ -34,6 +34,8 @@ const SWEEP_CHANCE: float = 0.55  # of wander walks that end in a sweep (investi
 const PATROL_BIAS: float = 0.65  # of wander targets picked on the route, for the ones that aren't the sentry
 const VIEW_HALF_ANGLE: float = 1.05  # rad: about 60 degrees to each side
 const LOSE_SIGHT_TIME: float = 3.5  # s out of sight before it gives up on where you were
+const REROUTE_EVERY: float = 0.25  # s: the most often a chase finds a new way round to you
+const REROUTE_DIST: float = 0.75  # m you have to have moved for it to
 const GRAB_RANGE: float = 1.3
 const GRAB_TIME: float = 3.5  # s pinned before the layoff
 const GRAB_REACH: float = 0.85  # m in front of it a caught player is held
@@ -119,6 +121,7 @@ var _route: Array[Vector2i] = []
 var _goal: Vector3 = Vector3.ZERO
 var _last_seen: Vector3 = Vector3.ZERO
 var _lose_t: float = 0.0
+var _reroute_t: float = 0.0
 var _t: float = 0.0
 var _rescue: float = 0.0
 var _burn: float = 0.0
@@ -473,6 +476,7 @@ func _start_chase(p: Player, by_ear: bool = false) -> void:
 	_last_seen = p.global_position
 	_lose_t = 0.0
 	_route.clear()
+	_reroute_t = 0.0
 	_safe_t = 0.0
 	_hold = null
 	_pick_plan()
@@ -503,6 +507,7 @@ func join_chase(p: Player) -> void:
 	_last_seen = p.global_position
 	_lose_t = 0.0
 	_route.clear()
+	_reroute_t = 0.0
 	_safe_t = 0.0
 	_hold = null
 	_alert_t = maxf(_alert_t, 20.0)
@@ -608,10 +613,15 @@ func _tick_chase(delta: float) -> void:
 			_give_up()
 		return
 	var goal := _last_seen
+	_reroute_t -= delta
 	if seen and _has_clear_floor_line(goal):
 		_move_toward(goal, chase_speed, delta)
 	else:
-		_route_toward(goal)
+		# A fresh route when the quarry has moved on, at most every REROUTE_EVERY: a path search
+		# every tick across the manor's grounds was most of a frame on the host.
+		if _reroute_t <= 0.0 and (_route.is_empty() or _goal.distance_to(goal) > REROUTE_DIST):
+			_route_toward(goal)
+			_reroute_t = REROUTE_EVERY
 		_follow_route(chase_speed, delta)
 	if seen and not safe and _attack_cd <= 0.0 and absf(_target.global_position.y - global_position.y) < 1.6:
 		_try_attack(_target)

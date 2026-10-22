@@ -22,15 +22,15 @@ const TYPE_LINGER: float = 1.2  # s after a right key it still counts as being w
 const MISS_NOISE_TIME: float = 1.0  # s a wrong key's clang carries
 const NOISE_MISS: float = 85.0
 ## The pace (the user: "type really fast, at least 80 wpm, or else it makes sound and the monster can
-## come get you"): five keys a word, so a right key at least every KEY_GAP s, smoothed over the keys
-## (PACE_SMOOTH). Slower and the engine grinds (GRIND_TIME after each slow key, NOISE_GRIND) and the
-## Groundskeeper comes for the typist. A gap over KEY_GAP_PAUSE is stopping, not slow typing; the
-## pace counts again WPM_WARMUP keys after one.
+## come get you"): five keys a word, so a right key every KEY_GAP s on average over the last PACE_KEYS
+## right keys, timed on the typist's own computer (a key's arrival at the host jitters with the
+## network: timed there, a friend typing fast read as slow). Slower and the engine grinds (GRIND_TIME
+## after each slow key, NOISE_GRIND) and the Groundskeeper is called, once as the grinding starts. A
+## gap over KEY_GAP_PAUSE is stopping, not slow typing: the count starts again.
 const WPM_MIN: float = 80.0
 const KEY_GAP: float = 60.0 / (WPM_MIN * 5.0)  # s: 0.15
-const PACE_SMOOTH: float = 0.3
+const PACE_KEYS: int = 10
 const KEY_GAP_PAUSE: float = 1.2
-const WPM_WARMUP: int = 4
 const GRIND_TIME: float = 1.5
 const GRIND_SOUND_EVERY: float = 0.9  # s between grinds while it goes on
 const NOISE_GRIND: float = 95.0
@@ -297,10 +297,11 @@ func server_end_typing(peer: int) -> void:
 	_typists.erase(peer)
 
 
-## Server: one key from a typist. Right: the engine comes along and their place moves on (a new page
-## at the end of one); under the pace it grinds and the Groundskeeper comes for them. Wrong: a clang
-## everything on the grounds hears, the engine slips back, and the Groundskeeper comes for them.
-func server_type(peer: int, code: int) -> void:
+## Server: one key from a typist, pressed at at_ms on their own clock (-1: now, here). Right: the
+## engine comes along and their place moves on (a new page at the end of one); under the pace it
+## grinds and the Groundskeeper comes for them. Wrong: a clang everything on the grounds hears, the
+## engine slips back, and the Groundskeeper comes for them.
+func server_type(peer: int, code: int, at_ms: int = -1) -> void:
 	if done or not _typists.has(peer):
 		return
 	var st: Array = _typists[peer]
@@ -315,12 +316,12 @@ func server_type(peer: int, code: int) -> void:
 		regressing = false
 		_type_t = TYPE_LINGER
 		progress = minf(1.0, progress + 1.0 / TYPE_CHARS)
-		if pace_step(st[2], Time.get_ticks_msec()):
-			if _grind_t <= 0.0:
+		if pace_step(st[2], at_ms if at_ms >= 0 else Time.get_ticks_msec()):
+			if _grind_t <= 0.0:  # it starts to grind: the Groundskeeper hears it labour
 				_grind_sound_t = 0.0
+				if level != null:
+					level.server_typing_alarm(peer)
 			_grind_t = GRIND_TIME
-			if level != null:
-				level.server_typing_alarm(peer)
 		if progress >= 1.0:
 			_complete()
 			return
@@ -335,27 +336,31 @@ func server_type(peer: int, code: int) -> void:
 
 
 ## A typist's pace, kept the same way on the host (the grind) and in their TypingPanel (the readout):
-## [msec of the last right key, smoothed seconds between keys, keys since a pause].
+## the msec of their last right keys (up to PACE_KEYS), on the typist's own clock.
 static func new_pace() -> Array:
-	return [0, KEY_GAP, 0]
+	return []
 
 
 ## A right key at msec `now`. True when they're typing slower than WPM_MIN.
 static func pace_step(pace: Array, now: int) -> bool:
-	var gap := float(now - int(pace[0])) / 1000.0
-	if int(pace[0]) <= 0 or gap > KEY_GAP_PAUSE:
-		pace[1] = KEY_GAP
-		pace[2] = 0
-	else:
-		pace[1] = lerpf(float(pace[1]), gap, PACE_SMOOTH)
-		pace[2] = int(pace[2]) + 1
-	pace[0] = now
-	return int(pace[2]) >= WPM_WARMUP and float(pace[1]) > KEY_GAP
+	if not pace.is_empty() and float(now - int(pace[pace.size() - 1])) / 1000.0 > KEY_GAP_PAUSE:
+		pace.clear()  # they stopped; that's not slow typing
+	pace.append(now)
+	if pace.size() > PACE_KEYS:
+		pace.pop_front()
+	return pace.size() >= PACE_KEYS and pace_gap(pace) > KEY_GAP
+
+
+## Seconds between their keys, on average over the ones kept.
+static func pace_gap(pace: Array) -> float:
+	if pace.size() < 2:
+		return KEY_GAP
+	return float(int(pace[pace.size() - 1]) - int(pace[0])) / 1000.0 / float(pace.size() - 1)
 
 
 ## Words a minute at that pace (five keys a word).
 static func pace_wpm(pace: Array) -> float:
-	return 12.0 / maxf(float(pace[1]), 0.01)
+	return 12.0 / maxf(pace_gap(pace), 0.01)
 
 
 ## Grinding (someone at it typing under the pace).
@@ -418,9 +423,9 @@ func rpc_end_typing() -> void:
 
 
 @rpc("any_peer", "call_local", "reliable")
-func rpc_key(code: int) -> void:
+func rpc_key(code: int, at_ms: int) -> void:
 	if multiplayer.is_server():
-		server_type(_sender(), code)
+		server_type(_sender(), code, at_ms)
 
 
 ## To one typist: their page and place (-1: they're done typing here).

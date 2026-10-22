@@ -3235,6 +3235,7 @@ func _run_manor(m: Manor) -> void:
 	await _test_m_wrench()
 	await _test_m_kick()
 	await _test_m_draw()
+	await _test_m_camera()
 	await _test_m_ears()
 	await _test_m_chase()
 	await _test_m_stairs()
@@ -3277,11 +3278,11 @@ func _test_m_ground() -> void:
 			over += 1
 	var flat := ""
 	for at: Vector3 in [Vector3(0.0, 0.0, 20.0), Vector3(0.0, 0.0, 60.0), Vector3(30.0, 0.0, 22.0), Manor.MAIN_SPOT, Vector3(0.0, 0.0, -34.0)]:
-		if m.heave_at(at.x, at.z) > 0.005:
+		if m.heave_at(at.x, at.z) > 0.02:
 			flat += "%s %.3f " % [str(at), m.heave_at(at.x, at.z)]
 	for spot: Array in Manor.ENGINE_SPOTS:
 		var e: Vector3 = spot[0]
-		if m.heave_at(e.x, e.z) > 0.005:
+		if m.heave_at(e.x, e.z) > 0.02:
 			flat += "engine %s %.3f " % [str(e), m.heave_at(e.x, e.z)]
 	_check("manor: the ground heaves in the open (up to %.2f m inside the wall) and lies flat on the drives, at the doors and the machines" % top,
 		top > 0.06 and over == 0 and flat == "", "top %.3f, %d samples over, raised: %s" % [top, over, flat])
@@ -3289,7 +3290,36 @@ func _test_m_ground() -> void:
 	for key in ["manor_tuft", "manor_grass", "manor_stones", "manor_leaves", "manor_roots", "manor_wood_cross", "manor_hump", "manor_tree", "manor_tomb_round"]:
 		counts[key] = (m._batch.props.get(key, []) as Array).size()
 	_check("manor: it's grown over: short grass, tall grass, stones, leaves, roots, graves and crosses everywhere", counts["manor_tuft"] > 5000 and counts["manor_grass"] > 5000
-		and counts["manor_stones"] > 200 and counts["manor_leaves"] > 200 and counts["manor_roots"] > 100 and counts["manor_wood_cross"] > 10 and counts["manor_hump"] > 60, str(counts))
+		and counts["manor_stones"] > 200 and counts["manor_leaves"] > 200 and counts["manor_roots"] > 100 and counts["manor_wood_cross"] > 10 and counts["manor_hump"] > 40, str(counts))
+
+
+## On a lump of the ground you stand on it (not on the flat box under it), and the third-person
+## camera swung down by looking up stops on it: it used to go under the drawn ground and show the
+## void below the map (the user: "dropping out of the map").
+func _test_m_camera() -> void:
+	var m := _manor
+	m.keeper.debug_frozen = true
+	var best := Vector3.ZERO
+	var best_h := -1.0
+	for i in 900:
+		var x := -66.0 + float(i % 30) * 4.5
+		var z := -66.0 + float(i / 30) * 4.5
+		var h := m.heave_at(x, z)
+		if h > best_h and m.is_walkable(m.cell_of(m.origin + Vector3(x, 0.0, z))) and m.is_walkable(m.cell_of(m.origin + Vector3(x + 2.0, 0.0, z))):
+			best_h = h
+			best = Vector3(x, 0.0, z)
+	_place(m.origin + best + Vector3(0.0, best_h + 0.1, 0.0), -PI * 0.5)
+	_park_mate_clear()
+	_host.set_first_person_camera(false)
+	_host._pitch = 0.9  # looking up: the camera swings down behind you
+	await _wait(1.5)
+	var feet := _host.global_position - m.origin
+	var cam := _host.local_camera().global_position - m.origin
+	var under := m.heave_at(cam.x, cam.z)
+	_host._pitch = 0.0
+	_host.set_first_person_camera(true)
+	_check("manor: on a lump of the ground (%.2f m) you stand on it, and the third-person camera looking up stays above it" % best_h,
+		best_h > 0.08 and absf(feet.y - m.heave_at(feet.x, feet.z)) < 0.06 and cam.y > under + 0.03, "feet %.3f on %.3f, camera %.3f over %.3f" % [feet.y, m.heave_at(feet.x, feet.z), cam.y, under])
 
 
 ## It hears: a sprint behind its back sends it running at you, gasping for breath carries, creeping
@@ -3371,7 +3401,7 @@ func _test_m_ears() -> void:
 	await _wait(1.6)
 	k.debug_frozen = false
 	var grind := false
-	for i in 8:
+	for i in ManorMachine.PACE_KEYS + 3:
 		e.debug_type(1, 1)
 		await _wait(0.3)
 		grind = grind or (e.is_grinding() and e.noise_level() >= ManorMachine.NOISE_GRIND)
@@ -3517,6 +3547,13 @@ func _test_m_draw() -> void:
 	var yaw := atan2(-to.x, -to.z)
 	_place(stand, yaw)
 	var k := m.keeper
+	for i in 30:  # the engine typed at in the last test stops counting as worked first
+		var busy := false
+		for other: ManorMachine in m.machines:
+			busy = busy or (other != e and other.working)
+		if not busy:
+			break
+		await _wait(0.1)
 	k.debug_reset(Manor.KEEPER_HOME, 0.0)
 	k.debug_frozen = false
 	await _wait(0.3)

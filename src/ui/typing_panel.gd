@@ -93,16 +93,18 @@ func _process(delta: float) -> void:
 
 ## Your words a minute, red under the pace (the engine is grinding out there).
 func _show_pace() -> void:
-	var idle := float(Time.get_ticks_msec() - int(_pace[0])) / 1000.0 > ManorMachine.KEY_GAP_PAUSE
-	if int(_pace[0]) <= 0 or idle:
-		_pace_label.text = "-- WPM"
-		_pace_label.add_theme_color_override("font_color", Color(0.75, 0.75, 0.72))
-	elif _slow:
-		_pace_label.text = "%d WPM   TOO SLOW: THE ENGINE GRINDS, AND SOMETHING HEARS IT" % int(ManorMachine.pace_wpm(_pace))
-		_pace_label.add_theme_color_override("font_color", Color(1.0, 0.35, 0.3))
-	else:
-		_pace_label.text = "%d WPM" % int(ManorMachine.pace_wpm(_pace))
-		_pace_label.add_theme_color_override("font_color", Color(0.65, 0.9, 0.6))
+	var text := "-- WPM"
+	var col := Color(0.75, 0.75, 0.72)
+	var idle := _pace.is_empty() or float(Time.get_ticks_msec() - int(_pace[_pace.size() - 1])) / 1000.0 > ManorMachine.KEY_GAP_PAUSE
+	if not idle and _pace.size() >= 3:
+		text = "%d WPM" % int(ManorMachine.pace_wpm(_pace))
+		col = Color(0.65, 0.9, 0.6)
+		if _slow:
+			text += "   TOO SLOW: THE ENGINE GRINDS, AND SOMETHING HEARS IT"
+			col = Color(1.0, 0.35, 0.3)
+	if text != _pace_label.text:  # only when it changes: a restyle every frame is work for nothing
+		_pace_label.text = text
+		_pace_label.add_theme_color_override("font_color", col)
 
 
 func _open(m: ManorMachine) -> void:
@@ -166,16 +168,17 @@ func _input(event: InputEvent) -> void:
 	var c := k.unicode
 	if c < 32 or page < 0:
 		return
+	var now := Time.get_ticks_msec()  # your own clock: the host times your pace by it, not by when the key gets there
 	var text: String = ManorMachine.TYPE_TEXTS[page]
 	var at := ManorMachine.skip_untyped(text, cursor)
 	if at < text.length() and ManorMachine.same_key(text.unicode_at(at), c):
 		cursor = ManorMachine.skip_untyped(text, at + 1)
-		_slow = ManorMachine.pace_step(_pace, Time.get_ticks_msec())
+		_slow = ManorMachine.pace_step(_pace, now)
 	else:
 		_flash = FLASH
 	var m := machine
 	_refresh()
-	m.rpc_key.rpc_id(1, c)  # last: on the host it answers at once (and may close the page)
+	m.rpc_key.rpc_id(1, c, now)  # last: on the host it answers at once (and may close the page)
 
 
 func _refresh() -> void:
