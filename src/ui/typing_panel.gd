@@ -18,6 +18,9 @@ var _hold_off: bool = false  # just closed with Ctrl still down: wait for the cr
 var _flash: float = 0.0
 var _text: RichTextLabel
 var _bar: ProgressBar
+var _pace_label: Label
+var _pace: Array = ManorMachine.new_pace()  # your own pace, kept the way the host keeps it
+var _slow: bool = false
 
 
 func _ready() -> void:
@@ -37,7 +40,7 @@ func _ready() -> void:
 	var box := VBoxContainer.new()
 	box.add_theme_constant_override("separation", 10)
 	add_child(box)
-	box.add_child(UiTheme.text("REPAIRING THE ENGINE: type the page out. A wrong key clangs, and something hears it.     Esc: step away", 15, Color(1.0, 0.86, 0.55)))
+	box.add_child(UiTheme.text("REPAIRING THE ENGINE: type the page out, %d words a minute or faster. Too slow it grinds, a wrong key clangs: it hears both.     Esc: step away" % int(ManorMachine.WPM_MIN), 15, Color(1.0, 0.86, 0.55)))
 	_text = RichTextLabel.new()
 	_text.bbcode_enabled = true
 	_text.fit_content = true
@@ -53,6 +56,8 @@ func _ready() -> void:
 	_bar.max_value = 1.0
 	_bar.custom_minimum_size = Vector2(900.0, 8.0)
 	box.add_child(_bar)
+	_pace_label = UiTheme.text("", 16, Color(0.75, 0.75, 0.72))
+	box.add_child(_pace_label)
 
 
 func _process(delta: float) -> void:
@@ -79,10 +84,25 @@ func _process(delta: float) -> void:
 		close(true)  # a menu came up
 		return
 	_bar.value = machine.progress
+	_show_pace()
 	if _flash > 0.0:
 		_flash -= delta
 		if _flash <= 0.0:
 			_refresh()
+
+
+## Your words a minute, red under the pace (the engine is grinding out there).
+func _show_pace() -> void:
+	var idle := float(Time.get_ticks_msec() - int(_pace[0])) / 1000.0 > ManorMachine.KEY_GAP_PAUSE
+	if int(_pace[0]) <= 0 or idle:
+		_pace_label.text = "-- WPM"
+		_pace_label.add_theme_color_override("font_color", Color(0.75, 0.75, 0.72))
+	elif _slow:
+		_pace_label.text = "%d WPM   TOO SLOW: THE ENGINE GRINDS, AND SOMETHING HEARS IT" % int(ManorMachine.pace_wpm(_pace))
+		_pace_label.add_theme_color_override("font_color", Color(1.0, 0.35, 0.3))
+	else:
+		_pace_label.text = "%d WPM" % int(ManorMachine.pace_wpm(_pace))
+		_pace_label.add_theme_color_override("font_color", Color(0.65, 0.9, 0.6))
 
 
 func _open(m: ManorMachine) -> void:
@@ -90,6 +110,8 @@ func _open(m: ManorMachine) -> void:
 	page = -1
 	cursor = 0
 	_flash = 0.0
+	_pace = ManorMachine.new_pace()
+	_slow = false
 	GameState.typing = true
 	if not m.typing_changed.is_connected(_on_typing):
 		m.typing_changed.connect(_on_typing)
@@ -148,6 +170,7 @@ func _input(event: InputEvent) -> void:
 	var at := ManorMachine.skip_untyped(text, cursor)
 	if at < text.length() and ManorMachine.same_key(text.unicode_at(at), c):
 		cursor = ManorMachine.skip_untyped(text, at + 1)
+		_slow = ManorMachine.pace_step(_pace, Time.get_ticks_msec())
 	else:
 		_flash = FLASH
 	var m := machine

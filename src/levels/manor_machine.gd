@@ -21,6 +21,19 @@ const TYPE_MISS: float = 0.02  # of the engine a wrong key knocks off
 const TYPE_LINGER: float = 1.2  # s after a right key it still counts as being worked on
 const MISS_NOISE_TIME: float = 1.0  # s a wrong key's clang carries
 const NOISE_MISS: float = 85.0
+## The pace (the user: "type really fast, at least 80 wpm, or else it makes sound and the monster can
+## come get you"): five keys a word, so a right key at least every KEY_GAP s, smoothed over the keys
+## (PACE_SMOOTH). Slower and the engine grinds (GRIND_TIME after each slow key, NOISE_GRIND) and the
+## Groundskeeper comes for the typist. A gap over KEY_GAP_PAUSE is stopping, not slow typing; the
+## pace counts again WPM_WARMUP keys after one.
+const WPM_MIN: float = 80.0
+const KEY_GAP: float = 60.0 / (WPM_MIN * 5.0)  # s: 0.15
+const PACE_SMOOTH: float = 0.3
+const KEY_GAP_PAUSE: float = 1.2
+const WPM_WARMUP: int = 4
+const GRIND_TIME: float = 1.5
+const GRIND_SOUND_EVERY: float = 0.9  # s between grinds while it goes on
+const NOISE_GRIND: float = 95.0
 const WRENCH_BOOST: float = 0.03  # of the machine per crack of the wrench
 ## The engines' maintenance book, a page at a time (punctuation types itself; case doesn't matter).
 const TYPE_TEXTS: Array[String] = [
@@ -63,7 +76,9 @@ signal typing_changed(missed: bool)
 var _wrench_t: float = 0.0
 var _type_t: float = 0.0  # s left of "being worked on" after the last right key
 var _miss_t: float = 0.0
-var _typists: Dictionary = {}  # peer id -> [page, cursor]
+var _grind_t: float = 0.0  # s left of grinding (someone typing under the pace)
+var _grind_sound_t: float = 0.0
+var _typists: Dictionary = {}  # peer id -> [page, cursor, pace (see pace_step)]
 var _pages: int = 0  # pages handed out here, so each typist gets the next
 
 # Visuals.
@@ -187,6 +202,8 @@ func server_arm() -> void:
 
 
 func noise_level() -> float:
+	if _grind_t > 0.0:
+		return NOISE_GRIND
 	if _miss_t > 0.0:
 		return NOISE_MISS
 	if working:
@@ -219,6 +236,12 @@ func _server_tick(delta: float) -> void:
 	_wrench_t = maxf(0.0, _wrench_t - delta)
 	_type_t = maxf(0.0, _type_t - delta)
 	_miss_t = maxf(0.0, _miss_t - delta)
+	_grind_t = maxf(0.0, _grind_t - delta)
+	if _grind_t > 0.0:
+		_grind_sound_t -= delta
+		if _grind_sound_t <= 0.0:
+			_grind_sound_t = GRIND_SOUND_EVERY
+			_rpc_grind.rpc()
 	# A typist who was taken, knocked down or walked off stops typing here.
 	for peer: int in _typists.keys():
 		var p := Net.find_player(peer)
@@ -266,7 +289,7 @@ func server_begin_typing(peer: int) -> void:
 		_rpc_typing.rpc_id(peer, -1, 0, false)
 		return
 	if not _typists.has(peer):
-		_typists[peer] = [_next_page(), 0]
+		_typists[peer] = [_next_page(), 0, new_pace()]
 	_send_page(peer, false)
 
 
@@ -275,7 +298,8 @@ func server_end_typing(peer: int) -> void:
 
 
 ## Server: one key from a typist. Right: the engine comes along and their place moves on (a new page
-## at the end of one). Wrong: a clang everything on the grounds hears, and the engine slips back.
+## at the end of one); under the pace it grinds and the Groundskeeper comes for them. Wrong: a clang
+## everything on the grounds hears, the engine slips back, and the Groundskeeper comes for them.
 func server_type(peer: int, code: int) -> void:
 	if done or not _typists.has(peer):
 		return
@@ -291,6 +315,12 @@ func server_type(peer: int, code: int) -> void:
 		regressing = false
 		_type_t = TYPE_LINGER
 		progress = minf(1.0, progress + 1.0 / TYPE_CHARS)
+		if pace_step(st[2], Time.get_ticks_msec()):
+			if _grind_t <= 0.0:
+				_grind_sound_t = 0.0
+			_grind_t = GRIND_TIME
+			if level != null:
+				level.server_typing_alarm(peer)
 		if progress >= 1.0:
 			_complete()
 			return
@@ -300,6 +330,37 @@ func server_type(peer: int, code: int) -> void:
 		_miss_t = MISS_NOISE_TIME
 		_rpc_miss.rpc()
 		_send_page(peer, true)
+		if level != null:
+			level.server_typing_alarm(peer)
+
+
+## A typist's pace, kept the same way on the host (the grind) and in their TypingPanel (the readout):
+## [msec of the last right key, smoothed seconds between keys, keys since a pause].
+static func new_pace() -> Array:
+	return [0, KEY_GAP, 0]
+
+
+## A right key at msec `now`. True when they're typing slower than WPM_MIN.
+static func pace_step(pace: Array, now: int) -> bool:
+	var gap := float(now - int(pace[0])) / 1000.0
+	if int(pace[0]) <= 0 or gap > KEY_GAP_PAUSE:
+		pace[1] = KEY_GAP
+		pace[2] = 0
+	else:
+		pace[1] = lerpf(float(pace[1]), gap, PACE_SMOOTH)
+		pace[2] = int(pace[2]) + 1
+	pace[0] = now
+	return int(pace[2]) >= WPM_WARMUP and float(pace[1]) > KEY_GAP
+
+
+## Words a minute at that pace (five keys a word).
+static func pace_wpm(pace: Array) -> float:
+	return 12.0 / maxf(float(pace[1]), 0.01)
+
+
+## Grinding (someone at it typing under the pace).
+func is_grinding() -> bool:
+	return _grind_t > 0.0
 
 
 func _next_page() -> int:
@@ -376,6 +437,14 @@ func _rpc_miss() -> void:
 	Sfx.play_at(self, "bang", fix_point(), -2.0, randf_range(0.9, 1.1), 40.0)
 	Sfx.caption(self, "metal clangs: a slip at an engine", fix_point())
 	_bulb.light_energy = 2.5  # a spark
+
+
+@rpc("authority", "call_local", "reliable")
+func _rpc_grind() -> void:
+	Sfx.play_at(self, "scrape", fix_point(), 4.0, randf_range(0.35, 0.45), 45.0)
+	Sfx.play_at(self, "clink", fix_point(), 0.0, randf_range(0.3, 0.4), 40.0)
+	Sfx.caption(self, "an engine grinds: too slow at it", fix_point())
+	_bulb.light_energy = 1.8
 
 
 ## Tests: finish it now, as if someone had worked it to the end.
@@ -467,4 +536,4 @@ func hud_line() -> String:
 	var state := ""
 	if regressing:
 		state = "  (KICKED: it's running down)"
-	return "ENGINE  %d%%   crouch at it (Ctrl) to repair: type out the page; a crack of the wrench helps, loudly%s" % [int(progress * 100.0), state]
+	return "ENGINE  %d%%   crouch at it (Ctrl) to repair: type the page out fast (%d words a minute) and right, or it hears you; a crack of the wrench helps, loudly%s" % [int(progress * 100.0), int(WPM_MIN), state]

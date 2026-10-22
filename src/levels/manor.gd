@@ -75,6 +75,18 @@ const BEAM_FOG: float = 0.7  # the flashlight's glow in this fog (Player.beam_fo
 const FOG_BANK_SPEED: Vector2 = Vector2(0.4, 1.3)  # m/s
 const FOG_WIND: float = 0.6  # m/s
 const FOG_GLOW: Color = Color(0.03, 0.035, 0.036)  # the fog's own faint light: pale mist, not more dark
+## The ground heaves: the earth shader lifts its mesh by a noise texture (HEAVE_TEXEL m a texel)
+## times a mask (a metre a texel) of how far each place may rise. Drawn only: you walk the flat box
+## under it, so a lump is at most a hand high where anyone walks; heave_at gives the same height
+## for the ground cover laid on it.
+const GROUND: float = 220.0  # m: the earth's square
+const HEAVE_TEXEL: float = 0.5
+const HEAVE_GROUNDS: float = 0.17  # m: the most it rises inside the wall
+const HEAVE_WOOD: float = 0.55  # m: and out among the trees past it
+const GROUND_CHUNK: float = 20.0  # m: drawn in squares this size,
+const GROUND_STEP: float = 0.33  # m between vertices near you,
+const GROUND_STEP_FAR: float = 1.0  # m and further off
+const GROUND_NEAR: float = 50.0  # m: where the far squares take over
 const TASK_ENGINES: int = 0
 const TASK_SWITCH: int = 1
 const TASK_OUT: int = 2
@@ -133,6 +145,12 @@ var _hanged: Array = []  # [Node3D pivot at the rope's top, phase, scale]: they 
 var _fog_banks: Array = []  # every peer: the wandering banks (see _build_fog_banks)
 var _fog_tiles: Array[FogVolume] = []  # every peer: the drifting mist
 var _wind_dir: float = 0.0  # rad: where the mist drifts
+var _trees: Array = []  # [Vector3 base, scale]: every dead tree inside the wall (their roots go round them)
+var _mask: PackedFloat32Array = PackedFloat32Array()  # m: how far the ground may rise, a metre a texel
+var _mask_bytes: PackedByteArray = PackedByteArray()  # the same, as the shader reads it
+var _heave_bytes: PackedByteArray = PackedByteArray()  # the humps' noise, HEAVE_TEXEL a texel
+var _reach_from: Vector2i = Vector2i.ZERO  # _solid_ok: the graveyard...
+var _reach_to: Array[Vector2i] = []  # ...and what must stay reachable from it
 # Server.
 var _arrived: bool = false
 var _draw_t: float = 18.0
@@ -181,7 +199,10 @@ func _ready() -> void:
 	_build_grass()
 	_build_forest()
 	_dress_grounds()
+	_build_heights()
+	_overgrow()
 	_batch.build(_root, "M")
+	_build_ground_mesh()
 	_build_fog_banks()
 	_build_moon()
 	_build_keeper()
@@ -198,7 +219,7 @@ func _exit_tree() -> void:
 
 
 func first_objective() -> String:
-	return "Ashgrave Manor: four old engines are out on the grounds. Get them all running (crouch at one with Ctrl and type out the page that comes up), throw the main generator's switch in the courtyard, and get out through the south gate. Something with a lantern walks the grounds."
+	return "Ashgrave Manor: four old engines are out on the grounds. Get them all running (crouch at one with Ctrl and type out the page that comes up, at 80 words a minute and without a slip), throw the main generator's switch in the courtyard, and get out through the south gate. Something with a lantern walks the grounds, and it listens."
 
 
 # --- The grid the Groundskeeper walks -----------------------------------------------------------
@@ -635,7 +656,7 @@ func _candle(at: Vector3, energy: float = 0.7, range_m: float = 6.0, rng: Random
 # --- The grounds ---------------------------------------------------------------------------------
 
 func _build_ground() -> void:
-	_over(Vector3(0.0, -0.5, 0.0), Vector3(220.0, 1.0, 220.0), "manor_earth")
+	_batch.add_solid(Vector3(0.0, -0.5, 0.0), Vector3(GROUND, 1.0, GROUND))  # what you walk on; the heaving earth drawn over it is _build_ground_mesh
 	# Gravel: the drive from the mansion door to the south gate, the lane beyond, the east drive to
 	# the stables, the path to the graveyard.
 	_deco(Vector3(0.0, 0.012, 19.0), Vector3(4.0, 0.025, 110.0), "manor_gravel")
@@ -1182,7 +1203,9 @@ func _build_graveyard() -> void:
 	for at: Vector3 in [Vector3(-50.0, 0.0, -27.0), Vector3(-64.0, 0.0, 0.0), Vector3(-37.0, 0.0, 19.0)]:
 		_piece("manor_mourner", at, ManorMeshes.NATIVE["manor_mourner"] * 1.15, _rng.randf() * TAU, Vector3(0.9, 2.4, 0.9))
 	for at: Vector3 in [Vector3(-62.0, 0.0, -22.0), Vector3(-40.0, 0.0, -24.0), Vector3(-63.0, 0.0, 14.0), Vector3(-44.0, 0.0, 10.5)]:
-		_piece("manor_tree", at, ManorMeshes.NATIVE["manor_tree"] * _rng.randf_range(0.9, 1.3), _rng.randf() * TAU, Vector3(0.9, 4.0, 0.9))
+		var sc := _rng.randf_range(0.9, 1.3)
+		_piece("manor_tree", at, ManorMeshes.NATIVE["manor_tree"] * sc, _rng.randf() * TAU, Vector3(0.9, 4.0, 0.9))
+		_trees.append([at, sc])
 	# Two open graves: a coffin dug up, the mound beside it, the spade still in it.
 	for at: Vector3 in [Vector3(-60.0, 0.0, 6.0), Vector3(-28.0, 0.0, -16.0)]:
 		_piece("manor_coffin", at, ManorMeshes.NATIVE["manor_coffin"], 0.1, Vector3(0.9, 0.5, 2.0))
@@ -1422,7 +1445,9 @@ func _scatter() -> void:
 		var p := Vector3(_rng.randf_range(-70.0, 70.0), 0.0, _rng.randf_range(-70.0, 70.0))
 		if GRAVEYARD.grow(1.0).has_point(Vector2(p.x, p.z)) or not _room_for(p, 2.2):
 			continue
-		_piece("manor_tree", p, ManorMeshes.NATIVE["manor_tree"] * _rng.randf_range(0.8, 1.35), _rng.randf() * TAU, Vector3(0.9, 4.0, 0.9))
+		var sc := _rng.randf_range(0.8, 1.35)
+		_piece("manor_tree", p, ManorMeshes.NATIVE["manor_tree"] * sc, _rng.randf() * TAU, Vector3(0.9, 4.0, 0.9))
+		_trees.append([p, sc])
 		_keep(p, 1.5, false)
 		placed += 1
 	placed = 0
@@ -1489,7 +1514,9 @@ func _build_copses() -> void:
 				if not _room_for(p, 1.2):
 					continue
 				if _rng.randf() < 0.7:
-					_piece("manor_tree", p, ManorMeshes.NATIVE["manor_tree"] * _rng.randf_range(0.85, 1.4), _rng.randf() * TAU, Vector3(0.9, 4.0, 0.9))
+					var tsc := _rng.randf_range(0.85, 1.4)
+					_piece("manor_tree", p, ManorMeshes.NATIVE["manor_tree"] * tsc, _rng.randf() * TAU, Vector3(0.9, 4.0, 0.9))
+					_trees.append([p, tsc])
 					_keep(p, 1.2, false)
 				else:
 					var sc := _rng.randf_range(0.8, 1.3)
@@ -1514,6 +1541,7 @@ func _build_hangings() -> void:
 				at += Vector3(_rng.randf_range(-3.0, 3.0), 0.0, _rng.randf_range(-3.0, 3.0))
 				continue
 			_piece("manor_hang_tree", at, ManorMeshes.NATIVE["manor_hang_tree"] * sc, yaw, Vector3(0.9, 4.0, 0.9))
+			_trees.append([at, sc])
 			_keep(at, 1.5, false)
 			_hang_body(hang, _rng.randf_range(0.95, 1.08))
 			break
@@ -1770,6 +1798,383 @@ func _dress_piece(key: String, base: Vector3, yaw: float, radius: float) -> bool
 	_piece(key, base, ManorMeshes.NATIVE[key], yaw, DRESS_SOLIDS.get(key, Vector3.ZERO), Vector2.ZERO, 0.15)
 	_keep(base, radius + 0.5, false)
 	return true
+
+
+# --- The ground's heave and what grows on it -----------------------------------------------------
+
+## The mask (how far the ground may rise: nothing where anything stands or is laid on the ground,
+## nothing on the paths, at the doors and machines; a hand inside the wall, more out in the wood),
+## softened, and the humps' noise. After everything that keeps the ground flat is placed.
+func _build_heights() -> void:
+	var n := int(GROUND)
+	var half := GROUND * 0.5
+	_mask.resize(n * n)
+	for j in n:
+		var z := float(j) + 0.5 - half
+		for i in n:
+			var d := maxf(absf(float(i) + 0.5 - half), absf(z))
+			_mask[j * n + i] = HEAVE_GROUNDS if d < HALF - 1.5 else (HEAVE_WOOD if d > HALF + 2.5 else 0.0)
+	var flat: Array[Rect2] = []
+	for r: Rect2 in [MANSION, CRYPT, CHAPEL, GREENHOUSE, STABLES]:
+		flat.append(r.grow(1.2))
+	for key: String in _batch.boxes:
+		for xf: Transform3D in _batch.boxes[key]:
+			var bb := xf * AABB(Vector3(-0.5, -0.5, -0.5), Vector3.ONE)
+			if bb.position.y > -0.3 and bb.end.y < 0.35 and bb.size.x * bb.size.z > 0.5:  # gravel, paving, floors: laid on the ground
+				flat.append(Rect2(bb.position.x, bb.position.z, bb.size.x, bb.size.z).grow(1.0))
+	for r: Rect2 in flat:
+		for j in range(clampi(int(r.position.y + half), 0, n), clampi(int(ceil(r.end.y + half)), 0, n)):
+			for i in range(clampi(int(r.position.x + half), 0, n), clampi(int(ceil(r.end.x + half)), 0, n)):
+				_mask[j * n + i] = 0.0
+	for k: Array in _keepout:
+		if not bool(k[2]):
+			continue
+		var c: Vector2 = k[0]
+		var rad := float(k[1]) + 0.5
+		for j in range(clampi(int(c.y - rad + half), 0, n), clampi(int(ceil(c.y + rad + half)), 0, n)):
+			for i in range(clampi(int(c.x - rad + half), 0, n), clampi(int(ceil(c.x + rad + half)), 0, n)):
+				if Vector2(float(i) + 0.5 - half, float(j) + 0.5 - half).distance_to(c) < rad:
+					_mask[j * n + i] = 0.0
+	for _pass in 3:  # soft edges: a box blur, across then down
+		var src := _mask.duplicate()
+		for j in n:
+			for i in range(1, n - 1):
+				_mask[j * n + i] = (src[j * n + i - 1] + src[j * n + i] + src[j * n + i + 1]) / 3.0
+		src = _mask.duplicate()
+		for j in range(1, n - 1):
+			for i in n:
+				_mask[j * n + i] = (src[(j - 1) * n + i] + src[j * n + i] + src[(j + 1) * n + i]) / 3.0
+	_mask_bytes.resize(n * n)
+	for i in n * n:
+		_mask_bytes[i] = clampi(roundi(_mask[i] / HEAVE_WOOD * 255.0), 0, 255)
+	var noise := FastNoiseLite.new()
+	noise.seed = seed_value * 23 + 5
+	noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	noise.fractal_type = FastNoiseLite.FRACTAL_FBM
+	noise.fractal_octaves = 4
+	noise.frequency = 0.09 * HEAVE_TEXEL  # per texel: a hump every ten metres or so, smaller ones on it
+	var hn := int(GROUND / HEAVE_TEXEL)
+	var img := noise.get_image(hn, hn)
+	img.convert(Image.FORMAT_L8)
+	_heave_bytes = img.get_data()
+
+
+## How high the drawn ground stands at (x, z) in the estate's own coordinates: the numbers the earth
+## shader lifts its mesh by (Manor sets them on it in _build_ground_mesh).
+func heave_at(x: float, z: float) -> float:
+	if _heave_bytes.is_empty():
+		return 0.0
+	var s := clampf((_texel(_heave_bytes, int(GROUND / HEAVE_TEXEL), x, z) - 0.35) / 0.45, 0.0, 1.0)
+	return _texel(_mask_bytes, int(GROUND), x, z) * HEAVE_WOOD * s * s * (3.0 - 2.0 * s)
+
+
+## A square texture of n texels over the GROUND square, read at (x, z) the way the GPU filters it.
+static func _texel(bytes: PackedByteArray, n: int, x: float, z: float) -> float:
+	var t := GROUND / float(n)
+	var fx := clampf((x + GROUND * 0.5) / t - 0.5, 0.0, float(n - 1))
+	var fz := clampf((z + GROUND * 0.5) / t - 0.5, 0.0, float(n - 1))
+	var i0 := mini(int(fx), n - 2)
+	var j0 := mini(int(fz), n - 2)
+	var u := fx - float(i0)
+	var a := lerpf(float(bytes[j0 * n + i0]), float(bytes[j0 * n + i0 + 1]), u)
+	var b := lerpf(float(bytes[(j0 + 1) * n + i0]), float(bytes[(j0 + 1) * n + i0 + 1]), u)
+	return lerpf(a, b, fz - float(j0)) / 255.0
+
+
+## Somewhere ground cover may go: inside the wall, not where the ground is kept flat (paths, doors,
+## machines, buildings, anything laid down), on ground the Groundskeeper can walk (or between the
+## graveyard's headstones, rows).
+func _cover_ok(q: Vector3, rows: bool = false) -> bool:
+	if absf(q.x) > HALF - 1.0 or absf(q.z) > HALF - 1.0:
+		return false
+	var n := int(GROUND)
+	var i := clampi(int(q.x + GROUND * 0.5), 0, n - 1)
+	var j := clampi(int(q.z + GROUND * 0.5), 0, n - 1)
+	if _mask[j * n + i] < 0.02:
+		return false
+	return (rows and GRAVEYARD.has_point(Vector2(q.x, q.z))) or is_walkable(_cell(q))
+
+
+## Whether a solid of `size` centred at center, turned by yaw, can go down without cutting the
+## Groundskeeper off anything it must reach from the graveyard. If it can, its cells are marked.
+func _solid_ok(center: Vector3, size: Vector3, yaw: float, margin: float = MARGIN) -> bool:
+	var hx := absf(cos(yaw)) * size.x * 0.5 + absf(sin(yaw)) * size.z * 0.5 + margin
+	var hz := absf(sin(yaw)) * size.x * 0.5 + absf(cos(yaw)) * size.z * 0.5 + margin
+	var c0 := _cell(Vector3(center.x - hx, 0.0, center.z - hz))
+	var c1 := _cell(Vector3(center.x + hx, 0.0, center.z + hz))
+	var marked: Array[Vector2i] = []
+	for x in range(c0.x, c1.x + 1):
+		for z in range(c0.y, c1.y + 1):
+			var c := Vector2i(x, z)
+			if _astar.is_in_boundsv(c) and not _astar.is_point_solid(c):
+				_astar.set_point_solid(c, true)
+				marked.append(c)
+	if marked.is_empty():
+		return true
+	for t: Vector2i in _reach_to:
+		if route(0, _reach_from, t).is_empty():
+			for c: Vector2i in marked:
+				_astar.set_point_solid(c, false)
+			return false
+	return true
+
+
+## _piece, if its solid leaves the Groundskeeper its ways (_solid_ok).
+func _piece_if_clear(key: String, base: Vector3, size: Vector3, yaw: float, solid: Vector3, tilt: Vector2 = Vector2.ZERO, margin: float = MARGIN) -> bool:
+	if not _solid_ok(base + Vector3(0.0, solid.y * 0.5, 0.0), solid, yaw, margin):
+		return false
+	_piece(key, base, size, yaw, solid, tilt, margin)
+	return true
+
+
+## Drawn only, sat on the heaving ground.
+func _cover(key: String, at: Vector3, scale: float, yaw: float) -> void:
+	var base := Vector3(at.x, heave_at(at.x, at.z) - 0.02, at.z)
+	_batch.add_prop(key, ManorMeshes.fit(key, base, ManorMeshes.NATIVE[key] * scale, Basis.from_euler(Vector3(0.0, yaw, 0.0))))
+
+
+func _tall_grass(at: Vector3, sc: float, rng: RandomNumberGenerator) -> void:
+	var base := Vector3(at.x, heave_at(at.x, at.z) - 0.03, at.z)
+	_batch.add_prop("manor_grass", ManorMeshes.fit("manor_grass", base, ManorMeshes.NATIVE["manor_grass"] * Vector3(sc, sc * rng.randf_range(0.85, 1.2), sc), Basis.from_euler(Vector3(0.0, rng.randf() * TAU, 0.0))))
+
+
+## The second growth, from its own dice (everything before stays where it was): more dead trees,
+## stumps, lone graves with fallen stones, family plots (some railed), two paupers' fields of
+## wooden crosses, more open graves; tall grass in more fields, between the headstones and against
+## the buildings; and the ground covered: short dead grass everywhere, stones, twigs, drifts of
+## leaves, roots round every tree, toadstools, and bones where the earth gave them back.
+func _overgrow() -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = seed_value * 29 + 131
+	# Whatever goes down solid here must leave the Groundskeeper its ways from the graveyard to every
+	# machine, the gate, the stables and the house (_solid_ok).
+	_reach_from = _cell(KEEPER_HOME)
+	_reach_to.clear()
+	for s: Array in ENGINE_SPOTS:  # where you stand to type at each (the machine's own cell is solid)
+		_reach_to.append(_cell((s[0] as Vector3) + Vector3(sin(float(s[1])), 0.0, cos(float(s[1]))) * 1.3))
+	for p: Vector3 in [MAIN_SPOT + Vector3(0.0, 0.0, 1.8), Vector3(0.0, 0.0, GATE_Z - 3.0), SPAWN, Vector3(0.0, 0.0, MANSION.end.y + 2.0)]:
+		_reach_to.append(_cell(p))
+	var placed := 0
+	var tries := 0
+	# Paupers' fields first (they want the most room): rows of wooden crosses over unmarked humps,
+	# each cross where it fits.
+	while placed < 2 and tries < 900:
+		tries += 1
+		var c := Vector3(rng.randf_range(-66.0, 66.0), 0.0, rng.randf_range(-66.0, 66.0))
+		if GRAVEYARD.grow(8.0).has_point(Vector2(c.x, c.z)) or not _room_for(c, 3.0):
+			continue
+		var yaw := rng.randf_range(-0.25, 0.25)
+		var basis := Basis.from_euler(Vector3(0.0, yaw, 0.0))
+		var spots: Array[Vector3] = []
+		for row in 3:
+			for col in 6:
+				var at := c + basis * Vector3(float(col) * 2.0 - 5.0, 0.0, float(row) * 3.0 - 4.0) + Vector3(rng.randf_range(-0.25, 0.25), 0.0, rng.randf_range(-0.25, 0.25))
+				if rng.randf() >= 0.12 and _room_for(at, 0.6):
+					spots.append(at)
+		if spots.size() < 6:
+			continue
+		for at: Vector3 in spots:
+			_lone_grave(at, yaw + rng.randf_range(-0.2, 0.2), rng, true)
+			_keep(at, 0.6, false)
+		if placed == 0:
+			test_points["paupers"] = c + Vector3(0.0, 0.1, 0.0)
+		placed += 1
+	# Family plots, some inside low railings.
+	placed = 0
+	tries = 0
+	while placed < 10 and tries < 500:
+		tries += 1
+		var c := Vector3(rng.randf_range(-64.0, 66.0), 0.0, rng.randf_range(-66.0, 66.0))
+		if GRAVEYARD.grow(5.0).has_point(Vector2(c.x, c.z)) or not _room_for(c, 2.5):
+			continue
+		var yaw := rng.randf_range(-0.3, 0.3) + (PI * 0.5 if rng.randf() < 0.5 else 0.0)
+		var basis := Basis.from_euler(Vector3(0.0, yaw, 0.0))
+		var railed := rng.randf() < 0.55 and _room_for(c, 4.4)
+		for k in rng.randi_range(3, 6):
+			var at := c + basis * Vector3(float(k % 3) * 1.8 - 1.8, 0.0, float(k / 3) * 2.6 - 2.2)
+			if _room_for(at, 0.8):
+				_lone_grave(at, yaw + rng.randf_range(-0.12, 0.12), rng)
+				_keep(at, 0.6, false)
+		if railed:
+			_plot_railing(c, basis, yaw, rng)
+		_keep(c, 3.5, false)
+		placed += 1
+	placed = 0
+	tries = 0
+	while placed < 50 and tries < 1500:
+		tries += 1
+		var p := Vector3(rng.randf_range(-70.0, 70.0), 0.0, rng.randf_range(-70.0, 70.0))
+		if GRAVEYARD.grow(1.0).has_point(Vector2(p.x, p.z)) or not _room_for(p, 2.0):
+			continue
+		var sc := rng.randf_range(0.8, 1.4)
+		if not _piece_if_clear("manor_tree", p, ManorMeshes.NATIVE["manor_tree"] * sc, rng.randf() * TAU, Vector3(0.9, 4.0, 0.9)):
+			continue
+		_trees.append([p, sc])
+		_keep(p, 1.5, false)
+		placed += 1
+	placed = 0
+	tries = 0
+	while placed < 30 and tries < 800:
+		tries += 1
+		var p := Vector3(rng.randf_range(-70.0, 70.0), 0.0, rng.randf_range(-70.0, 70.0))
+		if not _room_for(p, 1.2):
+			continue
+		var sc := rng.randf_range(0.7, 1.2)
+		if not _piece_if_clear("manor_stump", p, ManorMeshes.NATIVE["manor_stump"] * sc, rng.randf() * TAU, Vector3(0.6, 0.5, 0.6) * sc):
+			continue
+		_keep(p, 1.0, false)
+		placed += 1
+	# Lone graves out on the grounds, their stones leaning or fallen across them.
+	placed = 0
+	tries = 0
+	while placed < 36 and tries < 900:
+		tries += 1
+		var p := Vector3(rng.randf_range(-70.0, 70.0), 0.0, rng.randf_range(-70.0, 70.0))
+		if GRAVEYARD.grow(2.0).has_point(Vector2(p.x, p.z)) or not _room_for(p, 1.6):
+			continue
+		_lone_grave(p, rng.randf() * TAU, rng)
+		_keep(p, 1.8, false)
+		placed += 1
+	# More open graves, the coffins dug up.
+	var graves: Array[Vector3] = []
+	tries = 0
+	while graves.size() < 4 and tries < 300:
+		tries += 1
+		var p := Vector3(rng.randf_range(-68.0, 68.0), 0.0, rng.randf_range(-68.0, 68.0))
+		if not _room_for(p, 2.0):
+			continue
+		var yaw := rng.randf() * TAU
+		if not _piece_if_clear("manor_coffin", p, ManorMeshes.NATIVE["manor_coffin"], yaw, Vector3(0.9, 0.5, 2.0)):
+			continue
+		_piece_if_clear("manor_mound", p + Basis.from_euler(Vector3(0.0, yaw, 0.0)) * Vector3(1.6, 0.0, 0.0), ManorMeshes.NATIVE["manor_mound"], yaw, Vector3(1.3, 0.6, 2.0))
+		_keep(p, 2.5, false)
+		graves.append(p)
+	# Tall grass: more fields, grown up round the headstones, thick against the buildings.
+	placed = 0
+	tries = 0
+	while placed < 90 and tries < 1500:
+		tries += 1
+		var c := Vector3(rng.randf_range(-71.0, 71.0), 0.0, rng.randf_range(-71.0, 71.0))
+		if not _cover_ok(c):
+			continue
+		placed += 1
+		var radius := rng.randf_range(2.5, 8.0)
+		for k in rng.randi_range(30, 64):
+			var a := rng.randf() * TAU
+			var q := c + Vector3(cos(a), 0.0, sin(a)) * radius * rng.randf()
+			if _cover_ok(q):
+				_tall_grass(q, rng.randf_range(0.7, 1.4), rng)
+	for k in 420:
+		var q := Vector3(rng.randf_range(GRAVEYARD.position.x, GRAVEYARD.end.x), 0.0, rng.randf_range(GRAVEYARD.position.y, GRAVEYARD.end.y))
+		if _cover_ok(q, true):
+			_tall_grass(q, rng.randf_range(0.6, 1.2), rng)
+	for r: Rect2 in [MANSION, CHAPEL, CRYPT, GREENHOUSE, STABLES]:
+		for k in int((r.size.x + r.size.y) * 2.0 / 1.4):
+			var t := rng.randf()
+			var off := rng.randf_range(1.0, 2.4)
+			var q := Vector3.ZERO
+			match rng.randi_range(0, 3):
+				0: q = Vector3(lerpf(r.position.x, r.end.x, t), 0.0, r.position.y - off)
+				1: q = Vector3(lerpf(r.position.x, r.end.x, t), 0.0, r.end.y + off)
+				2: q = Vector3(r.position.x - off, 0.0, lerpf(r.position.y, r.end.y, t))
+				_: q = Vector3(r.end.x + off, 0.0, lerpf(r.position.y, r.end.y, t))
+			if _grass_ok(q):
+				_tall_grass(q, rng.randf_range(0.8, 1.3), rng)
+	# The ground itself.
+	for cv: Array in [["manor_tuft", 15000, 0.7, 1.4], ["manor_stones", 700, 0.6, 1.3], ["manor_twigs", 1100, 0.7, 1.3], ["manor_leaves", 450, 0.7, 1.4], ["manor_fungus", 180, 0.7, 1.3]]:  # about half land on open ground
+		for k in int(cv[1]):
+			var q := Vector3(rng.randf_range(-72.0, 72.0), 0.0, rng.randf_range(-72.0, 72.0))
+			if _cover_ok(q, true):
+				_cover(String(cv[0]), q, rng.randf_range(float(cv[2]), float(cv[3])), rng.randf() * TAU)
+	for t: Array in _trees:
+		var p: Vector3 = t[0]
+		_cover("manor_roots", p, float(t[1]), rng.randf() * TAU)
+		for k in 2:
+			var q := p + Vector3(rng.randf_range(-3.5, 3.5), 0.0, rng.randf_range(-3.5, 3.5))
+			if _cover_ok(q):
+				_cover("manor_leaves", q, rng.randf_range(0.6, 1.2), rng.randf() * TAU)
+		if rng.randf() < 0.45:
+			_cover("manor_fungus", p + Vector3(rng.randf_range(-1.2, 1.2), 0.0, rng.randf_range(-1.2, 1.2)), rng.randf_range(0.6, 1.1), rng.randf() * TAU)
+	# Bones: between the headstones, round the open graves, under the hanged.
+	for k in 36:
+		var q := Vector3(rng.randf_range(GRAVEYARD.position.x, GRAVEYARD.end.x), 0.0, rng.randf_range(GRAVEYARD.position.y, GRAVEYARD.end.y))
+		if _cover_ok(q, true):
+			_cover("manor_bones", q, rng.randf_range(0.8, 1.2), rng.randf() * TAU)
+	for g: Vector3 in graves:
+		_cover("manor_bones", g + Vector3(rng.randf_range(-2.0, 2.0), 0.0, rng.randf_range(-2.0, 2.0)), 1.0, rng.randf() * TAU)
+	for hp: Vector3 in hang_points:
+		if not MANSION.has_point(Vector2(hp.x, hp.z)):
+			_cover("manor_bones", Vector3(hp.x + rng.randf_range(-0.6, 0.6), 0.0, hp.z + rng.randf_range(-0.6, 0.6)), rng.randf_range(0.8, 1.1), rng.randf() * TAU)
+
+
+## A grave out on its own: the sunken hump, its stone at the head (leaning, or fallen forward
+## across it), or a wooden cross.
+func _lone_grave(at: Vector3, yaw: float, rng: RandomNumberGenerator, cross: bool = false) -> void:
+	var basis := Basis.from_euler(Vector3(0.0, yaw, 0.0))
+	_cover("manor_hump", at + basis * Vector3(0.0, 0.0, 1.15), 1.0, yaw)
+	var key := "manor_wood_cross" if cross else ("manor_tomb_round" if rng.randf() < 0.6 else "manor_tomb_cross")
+	var s := rng.randf_range(0.85, 1.2)
+	var fallen := rng.randf() < 0.25 and not cross
+	var lean := Vector2(rng.randf_range(-0.12, 0.12), rng.randf_range(-0.18, 0.18)) * (2.0 if cross else 1.0)
+	var tumble := rng.randf_range(-0.2, 0.2)
+	if not fallen and _piece_if_clear(key, at, ManorMeshes.NATIVE[key] * s, yaw, Vector3(0.35, 1.0, 0.18) if cross else Vector3(0.7, 1.1, 0.3) * s, lean, 0.15):
+		return
+	# Fallen forward across the grave (or there was no standing it there without walling something off).
+	var base := Vector3(at.x, heave_at(at.x, at.z) + 0.05, at.z) + basis * Vector3(0.0, 0.0, 0.15)
+	_batch.add_prop(key, ManorMeshes.fit(key, base, ManorMeshes.NATIVE[key] * s, Basis.from_euler(Vector3(PI * 0.5 - 0.06, yaw, tumble))))
+
+
+## Low iron railings round a family plot: a gap at the front, a section here and there fallen flat.
+func _plot_railing(c: Vector3, basis: Basis, yaw: float, rng: RandomNumberGenerator) -> void:
+	for side in 4:
+		for k in 3:
+			if side == 0 and k == 1:
+				continue  # the way in
+			var t := float(k - 1) * 2.0
+			var local := Vector3(t, 0.0, -3.0) if side == 0 else (Vector3(t, 0.0, 3.0) if side == 1 else (Vector3(-3.0, 0.0, t) if side == 2 else Vector3(3.0, 0.0, t)))
+			var ry := yaw + (0.0 if side < 2 else PI * 0.5)
+			var at := c + basis * local
+			if rng.randf() < 0.12:
+				_batch.add_prop("manor_fence", ManorMeshes.fit("manor_fence", at + Vector3(0.0, 0.05, 0.0), Vector3(2.0, 1.0, 0.12), Basis.from_euler(Vector3(PI * 0.5 - 0.05, ry, 0.0))))
+				continue
+			_piece_if_clear("manor_fence", at, Vector3(2.0, 1.0, 0.12), ry, Vector3(2.0, 0.9, 0.12), Vector2.ZERO, 0.1)  # else a gap
+
+
+## The heaving earth: one square mesh drawn at every GROUND_CHUNK, fine near you and coarse past
+## GROUND_NEAR, the earth shader lifting both by the same heave (so the seams agree).
+func _build_ground_mesh() -> void:
+	var mat := LevelKit.mat("manor_earth") as ShaderMaterial
+	var hn := int(GROUND / HEAVE_TEXEL)
+	mat.set_shader_parameter("heave_tex", ImageTexture.create_from_image(Image.create_from_data(hn, hn, false, Image.FORMAT_L8, _heave_bytes)))
+	mat.set_shader_parameter("heave_mask", ImageTexture.create_from_image(Image.create_from_data(int(GROUND), int(GROUND), false, Image.FORMAT_L8, _mask_bytes)))
+	mat.set_shader_parameter("heave_max", HEAVE_WOOD)
+	mat.set_shader_parameter("heave_origin", Vector2(origin.x, origin.z))
+	mat.set_shader_parameter("heave_span", GROUND)
+	var near := PlaneMesh.new()
+	near.size = Vector2(GROUND_CHUNK, GROUND_CHUNK)
+	near.subdivide_width = int(GROUND_CHUNK / GROUND_STEP) - 1
+	near.subdivide_depth = near.subdivide_width
+	var far := PlaneMesh.new()
+	far.size = near.size
+	far.subdivide_width = int(GROUND_CHUNK / GROUND_STEP_FAR) - 1
+	far.subdivide_depth = far.subdivide_width
+	var count := int(GROUND / GROUND_CHUNK)
+	for cx in count:
+		for cz in count:
+			var at := Vector3(-GROUND * 0.5 + (float(cx) + 0.5) * GROUND_CHUNK, 0.0, -GROUND * 0.5 + (float(cz) + 0.5) * GROUND_CHUNK)
+			for fine: bool in [true, false]:
+				var mi := MeshInstance3D.new()
+				mi.name = "Earth_%d_%d_%s" % [cx, cz, "near" if fine else "far"]
+				mi.mesh = near if fine else far
+				mi.material_override = mat
+				mi.position = at
+				mi.extra_cull_margin = HEAVE_WOOD + 0.1  # the mesh is flat; the shader lifts it
+				if fine:  # no margins: exactly one of the pair is drawn, or they'd fight
+					mi.visibility_range_end = GROUND_NEAR
+				else:
+					mi.visibility_range_begin = GROUND_NEAR
+					mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+				_root.add_child(mi)
 
 
 ## Beyond the wall: a black wood, dead trunks crowding up to the stone, more and more of them lost
@@ -2138,6 +2543,12 @@ func _tick_escape() -> void:
 
 
 ## Server: an engine (or the main generator) just finished.
+## Server: a typist slipped at an engine, or is typing it under the pace. The Groundskeeper knows.
+func server_typing_alarm(peer: int) -> void:
+	if keeper != null:
+		keeper.hear_typist(Net.find_player(peer))  # asleep (the Stack before the Line lands), it doesn't
+
+
 func on_machine_done(m: ManorMachine) -> void:
 	if not multiplayer.is_server():
 		return

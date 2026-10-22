@@ -3230,10 +3230,12 @@ func _run_manor(m: Manor) -> void:
 		_finish()
 		return
 	_test_m_grid()
+	_test_m_ground()
 	await _test_m_repair()
 	await _test_m_wrench()
 	await _test_m_kick()
 	await _test_m_draw()
+	await _test_m_ears()
 	await _test_m_chase()
 	await _test_m_stairs()
 	await _test_m_generator()
@@ -3258,6 +3260,127 @@ func _test_m_grid() -> void:
 	var drive := m.route(0, m.cell_of(o + Vector3(0.0, 0.0, Manor.MANSION.end.y + 2.0)), m.cell_of(m.test_points["gate_inside"]))
 	_check("manor: the drive from the fountain to the south gate is open (nothing across it) and walkable on the grid from the manor door", hit.is_empty() and drive.size() > 0 and drive.size() < 60,
 		"hit %s, path %d cells" % [str(hit.get("position", "none")), drive.size()])
+
+
+## The ground heaves in the open (a hand high at most where anyone walks) and lies flat on the
+## drive, at the doors and machines; it's covered: short grass, stones, leaves, graves out on it.
+func _test_m_ground() -> void:
+	var m := _manor
+	var top := 0.0
+	var over := 0
+	for i in 400:
+		var x := -70.0 + float(i % 20) * 7.3
+		var z := -70.0 + float(i / 20) * 7.3
+		var h := m.heave_at(x, z)
+		top = maxf(top, h)
+		if h > Manor.HEAVE_GROUNDS + 0.01:
+			over += 1
+	var flat := ""
+	for at: Vector3 in [Vector3(0.0, 0.0, 20.0), Vector3(0.0, 0.0, 60.0), Vector3(30.0, 0.0, 22.0), Manor.MAIN_SPOT, Vector3(0.0, 0.0, -34.0)]:
+		if m.heave_at(at.x, at.z) > 0.005:
+			flat += "%s %.3f " % [str(at), m.heave_at(at.x, at.z)]
+	for spot: Array in Manor.ENGINE_SPOTS:
+		var e: Vector3 = spot[0]
+		if m.heave_at(e.x, e.z) > 0.005:
+			flat += "engine %s %.3f " % [str(e), m.heave_at(e.x, e.z)]
+	_check("manor: the ground heaves in the open (up to %.2f m inside the wall) and lies flat on the drives, at the doors and the machines" % top,
+		top > 0.06 and over == 0 and flat == "", "top %.3f, %d samples over, raised: %s" % [top, over, flat])
+	var counts := {}
+	for key in ["manor_tuft", "manor_grass", "manor_stones", "manor_leaves", "manor_roots", "manor_wood_cross", "manor_hump", "manor_tree", "manor_tomb_round"]:
+		counts[key] = (m._batch.props.get(key, []) as Array).size()
+	_check("manor: it's grown over: short grass, tall grass, stones, leaves, roots, graves and crosses everywhere", counts["manor_tuft"] > 5000 and counts["manor_grass"] > 5000
+		and counts["manor_stones"] > 200 and counts["manor_leaves"] > 200 and counts["manor_roots"] > 100 and counts["manor_wood_cross"] > 10 and counts["manor_hump"] > 60, str(counts))
+
+
+## It hears: a sprint behind its back sends it running at you, gasping for breath carries, creeping
+## doesn't; a light in its face does nothing; a slip at an engine, or a page typed under 80 words a
+## minute, brings it for the typist from across the grounds.
+func _test_m_ears() -> void:
+	var m := _manor
+	var k := m.keeper
+	var at := m.origin + Vector3(30.0, 0.1, -8.0)
+	for spot: Vector3 in [Vector3(30.0, 0.1, -8.0), Vector3(24.0, 0.1, 14.0), Vector3(30.0, 0.1, 32.0), Vector3(-4.0, 0.1, 30.0), Vector3(12.0, 0.1, -24.0)]:
+		var p := m.origin + spot
+		if m.is_walkable(m.cell_of(p)) and m.is_walkable(m.cell_of(p + Vector3(-13.0, 0.0, 0.0))):
+			at = p
+			break
+	_place(at, -PI * 0.5)
+	_park_mate_clear()
+	k.debug_frozen = true
+	k.debug_reset(at + Vector3(-13.0, -0.1, 0.0), PI * 0.5)  # 13 m off, its back to you
+	await _wait(1.2)  # the drag of the placing dies down
+	_host.noise = Player.NOISE_RUN
+	var sprint := k.heard(_host)
+	_host.noise = Player.NOISE_PANT
+	var gasp := k.heard(_host)
+	_host.noise = Player.NOISE_SNEAK
+	var creep := k.heard(_host)
+	_host.noise = 0.0
+	_check("manor: it hears a sprint 13 m off (it comes running), a gasp for breath (it comes to look), and not someone creeping",
+		sprint >= Groundskeeper.EAR_HUNT and gasp >= Groundskeeper.EAR_NOISE and gasp < Groundskeeper.EAR_HUNT and creep < Groundskeeper.EAR_NOISE, "sprint %.0f, gasp %.0f, creep %.0f" % [sprint, gasp, creep])
+	k.debug_frozen = false
+	var ran := false
+	var saw := true
+	for i in 30:
+		_host.add_noise(Player.NOISE_RUN)
+		await get_tree().physics_frame
+		if k.hstate == HollowHire.HState.CHASE and k.hunt_peer == _host.peer_id:
+			ran = true
+			saw = k._can_see(_host) >= 0.0
+			break
+	# A light in its face: nothing.
+	_give("flashlight")
+	if not _host.held_item.is_active:
+		await _press_use()
+	var stunned := false
+	for i in 8:
+		var to: Vector3 = k.head_point() - _host.eye_position()
+		_host._apply_input(Vector2.ZERO, atan2(-to.x, -to.z), atan2(to.y, Vector2(to.x, to.z).length()), _seq << Player.JUMP_SEQ_SHIFT)
+		await _wait(0.1)
+		if k.hstate == HollowHire.HState.STUNNED:
+			stunned = true
+	k.debug_frozen = true
+	if _host.is_grabbed():
+		k.release(false)
+	_check("manor: heard behind its back, it comes running (not by sight), and a flashlight in its face doesn't stop it",
+		ran and not saw and not stunned and k.burn_fraction == 0.0, "ran %s, saw %s, stunned %s" % [ran, saw, stunned])
+	# A slip at an engine across the grounds: it comes for the typist.
+	var e: ManorMachine = m.machines[3]
+	var stand: Vector3 = m.test_points["engine3"]
+	_place(stand, 0.0)
+	_park_mate_clear()
+	k.debug_reset(m.origin + Manor.KEEPER_HOME, 0.0)
+	await _wait(0.5)
+	k.debug_frozen = false
+	e.server_begin_typing(1)
+	await _wait(0.1)
+	var st: Array = e._typists[1]
+	var text: String = ManorMachine.TYPE_TEXTS[int(st[0])]
+	var want := text.unicode_at(ManorMachine.skip_untyped(text, int(st[1])))
+	e.server_type(1, 113 if String.chr(want).to_lower() == "z" else 122)
+	await _wait(0.1)
+	var slip := k.hstate == HollowHire.HState.CHASE and k.hunt_peer == 1
+	k.debug_frozen = true
+	# Fast typing is quiet; under the pace it grinds, and it comes again.
+	k.debug_reset(m.origin + Manor.KEEPER_HOME, 0.0)
+	await _wait(1.5)
+	for i in 10:
+		e.debug_type(1, 1)
+		await _wait(0.05)
+	var fast_quiet := not e.is_grinding()
+	await _wait(1.6)
+	k.debug_frozen = false
+	var grind := false
+	for i in 8:
+		e.debug_type(1, 1)
+		await _wait(0.3)
+		grind = grind or (e.is_grinding() and e.noise_level() >= ManorMachine.NOISE_GRIND)
+	var slow_came := k.hstate == HollowHire.HState.CHASE and k.hunt_peer == 1
+	k.debug_frozen = true
+	e.server_end_typing(1)
+	k.debug_reset(m.origin + Manor.KEEPER_HOME, 0.0)
+	_check("manor: a wrong key brings it for the typist from across the grounds; typing fast is quiet, under %d words a minute the engine grinds and it comes again" % int(ManorMachine.WPM_MIN),
+		slip and fast_quiet and grind and slow_came, "slip %s, fast quiet %s, grind %s, came %s" % [slip, fast_quiet, grind, slow_came])
 
 
 ## Crouched at an engine (Ctrl) a page of its book comes up and the keys type instead of walking

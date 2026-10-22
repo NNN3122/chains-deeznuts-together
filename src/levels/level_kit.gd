@@ -188,9 +188,16 @@ void fragment() {
 ## The whole estate's ground: two photo-scanned earths (ambientCG, CC0: an overgrown damp one
 ## and bare dirt with leaf litter), each sampled at two unrelated scales so no repeat shows,
 ## blended by large patches, darkened toward night, with black standing water in the hollows that
-## catches the moon. Planar from above: the ground is one big box and only its top is ever seen.
+## catches the moon. Planar from above. The mesh is lifted by the estate's heave: a noise texture
+## (the humps) times a mask in metres (how far each place may rise: nothing on the paths, at the
+## doors or under anything laid on the ground), the same numbers Manor.heave_at reads.
 const MANOR_EARTH_SHADER: String = """
 shader_type spatial;
+uniform sampler2D heave_tex : filter_linear, repeat_disable, hint_default_black;
+uniform sampler2D heave_mask : filter_linear, repeat_disable, hint_default_black;
+uniform float heave_max = 0.0;  // m: what a full mask texel means
+uniform vec2 heave_origin = vec2(0.0);  // the estate's middle, world x and z
+uniform float heave_span = 220.0;  // m: the square both textures cover
 uniform sampler2D albedo_tex : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D normal_tex : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D rough_tex : hint_default_white, filter_linear_mipmap, repeat_enable;
@@ -205,9 +212,28 @@ uniform float span = 3.0;  // m per repeat of each photo
 uniform float span2 = 2.6;
 uniform float bump = 1.3;
 varying vec3 wpos;
+varying vec3 rnrm;  // the heaved ground's own normal, world space
+varying float rh;  // and its height there
 %s
+float heave(vec2 p) {
+	vec2 uv = (p - heave_origin) / heave_span + 0.5;
+	float s = clamp((textureLod(heave_tex, uv, 0.0).r - 0.35) / 0.45, 0.0, 1.0);
+	return textureLod(heave_mask, uv, 0.0).r * heave_max * s * s * (3.0 - 2.0 * s);
+}
 void vertex() {
 	wpos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	rh = 0.0;
+	rnrm = vec3(0.0, 1.0, 0.0);
+	if (heave_max > 0.0) {
+		float h = heave(wpos.xz);
+		float hx = heave(wpos.xz + vec2(0.25, 0.0));
+		float hz = heave(wpos.xz + vec2(0.0, 0.25));
+		VERTEX.y += h;
+		wpos.y += h;
+		rh = h;
+		rnrm = normalize(vec3(h - hx, 0.25, h - hz));
+		NORMAL = rnrm;
+	}
 }
 float lum(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
 void fragment() {
@@ -223,10 +249,10 @@ void fragment() {
 	vec2 n2 = mix(texture(normal2_tex, a2).rg, texture(normal2_tex, b2).rg, k) * 2.0 - 1.0;
 	float m1 = max(lum(textureLod(albedo_tex, vec2(0.5), 12.0).rgb), 0.01);
 	float m2 = max(lum(textureLod(albedo2_tex, vec2(0.5), 12.0).rgb), 0.01);
-	float grown = smoothstep(0.36, 0.64, fbm(p * 0.07 + 5.0));
+	float grown = smoothstep(0.36, 0.64, fbm(p * 0.07 + 5.0) + rh * 1.5);  // the humps grown over, the hollows bare
 	vec3 col = mix(bare * pow(lum(c2) / m2, 1.15), overgrown * pow(lum(c1) / m1, 1.15) * mix(vec3(1.0), c1 / max(lum(c1), 0.01), 0.35), grown);
 	col *= 0.62 + 0.62 * fbm(p * 0.045);
-	float wet = smoothstep(0.66, 0.74, fbm(p * 0.11 + 3.0));
+	float wet = smoothstep(0.66, 0.74, fbm(p * 0.11 + 3.0)) * (1.0 - smoothstep(0.004, 0.03, rh));  // water stands only in the low places
 	col = mix(col, vec3(0.02, 0.022, 0.025), wet * 0.85);  // standing water, black
 	ALBEDO = col;
 	float r = mix(texture(rough2_tex, a2).r, texture(rough_tex, a1).r, grown);
@@ -235,7 +261,7 @@ void fragment() {
 	AO = mix(texture(ao2_tex, a2).r, texture(ao_tex, a1).r, grown);
 	AO_LIGHT_AFFECT = 0.6;
 	vec2 nm = mix(n2, n1, grown) * bump * (1.0 - wet);
-	NORMAL = normalize((VIEW_MATRIX * vec4(normalize(vec3(nm.x, 1.0, -nm.y)), 0.0)).xyz);
+	NORMAL = normalize((VIEW_MATRIX * vec4(normalize(normalize(rnrm) + vec3(nm.x, 0.0, -nm.y)), 0.0)).xyz);
 }
 """
 
@@ -1129,11 +1155,11 @@ class BoxBatch:
 				pmi.name = "%s_prop_%s_%d_%d" % [prefix, key, ck.x, ck.y]
 				pmi.multimesh = pmm
 				pmi.material_override = PropMeshes.material_for(key)
-				pmi.visibility_range_end = PROP_DRAW_RANGE
+				pmi.visibility_range_end = float(ManorMeshes.DRAW_RANGE.get(key, PROP_DRAW_RANGE))
 				pmi.visibility_range_end_margin = 4.0
 				pmi.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
-				if key.begins_with("manor_grass"):
-					pmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF  # thousands of blades: their shadows cost more than they show
+				if ManorMeshes.SHADOWLESS.has(key):
+					pmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF  # thousands of blades and stones: their shadows cost more than they show
 				parent.add_child(pmi)
 		for key in boxes:
 			var list: Array = boxes[key]

@@ -91,6 +91,11 @@ const SLAP_FLING: float = 12.0  # m/s sideways across the room
 static var debug_force_plan: String = ""  # tests: always this attack ("grab" keeps the old behaviour)
 
 var level: HuntGrounds  # the office maze or the manor grounds: the grid it walks
+# What a kind of Hire is like (the Groundskeeper sets its own): m/s, m, s, m.
+var chase_speed: float = CHASE_SPEED
+var sight_range: float = SIGHT_RANGE
+var lose_time: float = LOSE_SIGHT_TIME
+var hear_radius: float = HEAR_RADIUS
 var floor_index: int = 0
 var floor_y: float = 0.0
 var sentry: bool = false  # keeps to the rooms round the way up instead of the whole floor
@@ -440,7 +445,7 @@ func _look_for_players() -> void:
 func _can_see(p: Player) -> float:
 	var to := p.eye_position() - head_point()
 	var d := to.length()
-	var range_m := SIGHT_RANGE
+	var range_m := sight_range
 	if _alert_t > 0.0:
 		range_m *= ALERT_SIGHT
 	if p.is_bracing():
@@ -457,7 +462,8 @@ func _can_see(p: Player) -> float:
 	return d
 
 
-func _start_chase(p: Player) -> void:
+## by_ear: it heard you rather than saw you (the Groundskeeper).
+func _start_chase(p: Player, by_ear: bool = false) -> void:
 	if hstate == HState.CHASE and _target == p:
 		return
 	var fresh := hstate != HState.CHASE
@@ -472,15 +478,15 @@ func _start_chase(p: Player) -> void:
 	_pick_plan()
 	if fresh:
 		_fx("hire_gurgle", 4.0, _rng.randf_range(0.9, 1.0))
-		_rpc_seen.rpc()
+		_rpc_seen.rpc(by_ear)
 		if level != null:
 			level.hire_callout(self, p)
 
 
 @rpc("authority", "call_local", "reliable")
-func _rpc_seen() -> void:
+func _rpc_seen(by_ear: bool) -> void:
 	Sfx.play_at(self, "scream", head_point(), 4.0, randf_range(0.88, 0.97), 50.0)
-	Sfx.caption(self, "a scream: it's seen you", head_point())
+	Sfx.caption(self, "a scream: it heard you" if by_ear else "a scream: it's seen you", head_point())
 	var me := Net.get_local_player()
 	if me != null and me.global_position.distance_to(global_position) < 20.0:
 		me.add_shake(0.35)
@@ -577,13 +583,13 @@ func _tick_chase(delta: float) -> void:
 	if _target == null or not is_instance_valid(_target) or _target.state != Player.State.NORMAL:
 		_give_up()
 		return
-	var seen := _can_see(_target) >= 0.0
+	var seen := _senses(_target)
 	if seen:
 		_last_seen = _target.global_position
 		_lose_t = 0.0
 	else:
 		_lose_t += delta
-		if _lose_t > LOSE_SIGHT_TIME and global_position.distance_to(_last_seen) < 1.5:
+		if _lose_t > lose_time and global_position.distance_to(_last_seen) < 1.5:
 			_give_up()
 			return
 	# Someone else in plain view and much closer steals its attention.
@@ -603,12 +609,17 @@ func _tick_chase(delta: float) -> void:
 		return
 	var goal := _last_seen
 	if seen and _has_clear_floor_line(goal):
-		_move_toward(goal, CHASE_SPEED, delta)
+		_move_toward(goal, chase_speed, delta)
 	else:
 		_route_toward(goal)
-		_follow_route(CHASE_SPEED, delta)
+		_follow_route(chase_speed, delta)
 	if seen and not safe and _attack_cd <= 0.0 and absf(_target.global_position.y - global_position.y) < 1.6:
 		_try_attack(_target)
+
+
+## Whether it still knows where its quarry is (the Hires: by sight).
+func _senses(p: Player) -> bool:
+	return _can_see(p) >= 0.0
 
 
 func _give_up() -> void:
@@ -1057,9 +1068,9 @@ func _listen() -> void:
 			continue
 		var d := _flat_dist(n3.global_position)
 		var decoy := n3 is Thrown and (n3 as Thrown).kind == "decoy"
-		if d > HEAR_RADIUS and not decoy:
+		if d > hear_radius and not decoy:
 			continue
-		var eff := float(n3.call("noise_level")) * (1.0 if decoy else 1.0 - d / HEAR_RADIUS)
+		var eff := float(n3.call("noise_level")) * (1.0 if decoy else 1.0 - d / hear_radius)
 		if eff > best_eff:
 			best_eff = eff
 			best = n3

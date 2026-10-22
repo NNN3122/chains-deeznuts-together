@@ -728,6 +728,10 @@ func _tour_manor(m: Manor) -> void:
 	await _shot("83i_parlour_under_sheets", o + Vector3(11.0, 0.1, -38.2), -0.84, -0.15, true)
 	await _shot("83j_stables_yard", o + Vector3(51.0, 0.1, 10.0), -PI * 0.5 + 0.2, -0.12, true)
 	await _shot("83k_urns_down_the_drive", o + Vector3(1.5, 0.1, 21.0), PI, -0.05, true)
+	if m.test_points.has("paupers"):
+		await _shot("83l_paupers_field", (m.test_points["paupers"] as Vector3) + Vector3(0.0, 0.0, 9.5), 0.0, -0.2, true)
+	await _shot("83m_the_ground", o + Vector3(30.0, 0.1, -8.0), PI * 0.5, -0.5, true)
+	await _shot("83n_the_grounds_heave", o + Vector3(24.0, 0.1, 14.0), PI * 0.75, -0.12, true)
 	await _shot("84_library_engine", tp["engine0"] + Vector3(1.5, 0.0, 2.0), 0.4, -0.2, true)
 	# Crouched at it, the page comes up; a few words typed.
 	var e0: ManorMachine = m.machines[0]

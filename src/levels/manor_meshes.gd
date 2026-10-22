@@ -73,7 +73,29 @@ const NATIVE: Dictionary = {
 	"manor_crib": Vector3(0.9, 1.1, 1.5),
 	"manor_wardrobe": Vector3(1.8, 2.4, 0.8),
 	"manor_tub": Vector3(2.0, 0.8, 0.9),
+	# Ground cover and more graves (drawn only, sat on the heaving ground, except the cross and stump).
+	"manor_tuft": Vector3(0.8, 0.45, 0.8),  # short dead grass
+	"manor_stones": Vector3(1.0, 0.2, 0.9),  # a few stones half sunk in the earth
+	"manor_twigs": Vector3(1.2, 0.06, 1.0),
+	"manor_leaves": Vector3(1.8, 0.16, 1.4),  # a drift of dead leaves
+	"manor_roots": Vector3(3.2, 0.3, 3.2),  # a dead tree's roots out along the ground round its foot
+	"manor_fungus": Vector3(0.45, 0.16, 0.4),
+	"manor_bones": Vector3(1.0, 0.12, 0.7),
+	"manor_hump": Vector3(1.0, 0.24, 2.0),  # a sunken grave's earth
+	"manor_wood_cross": Vector3(0.62, 1.15, 0.1),
+	"manor_stump": Vector3(1.3, 0.7, 1.3),
 }
+## Cover too small and too many for shadows to be worth their cost.
+const SHADOWLESS: Array[String] = ["manor_grass", "manor_tuft", "manor_twigs", "manor_leaves", "manor_fungus", "manor_bones", "manor_stones"]
+## m: how far off small cover is still drawn (props default to BoxBatch.PROP_DRAW_RANGE).
+const DRAW_RANGE: Dictionary = {"manor_tuft": 28.0, "manor_twigs": 18.0, "manor_fungus": 18.0, "manor_bones": 22.0, "manor_stones": 30.0, "manor_leaves": 32.0}
+const BONE: Color = Color(0.58, 0.54, 0.44)
+const LEAF_BROWN: Color = Color(0.24, 0.15, 0.07)
+const LEAF_DARK: Color = Color(0.12, 0.08, 0.05)
+const LEAF_RED: Color = Color(0.28, 0.1, 0.05)
+const FUNGUS_CAP: Color = Color(0.62, 0.58, 0.48)
+const FUNGUS_STEM: Color = Color(0.7, 0.67, 0.58)
+const FUNGUS_GILL: Color = Color(0.3, 0.24, 0.19)
 const MAHOGANY: Color = Color(0.16, 0.075, 0.045)
 const EBONY: Color = Color(0.035, 0.032, 0.03)
 const IVORY: Color = Color(0.68, 0.63, 0.5)
@@ -146,6 +168,13 @@ const DETAIL: Dictionary = {
 	"manor_crib": ["wood", 0.4, 0.55, 0.8],
 	"manor_wardrobe": ["wood", 0.55, 0.65, 0.9],
 	"manor_tub": ["plaster", 0.6, 0.35, 0.6],
+	"manor_stones": ["rock", 0.5, 0.9, 1.3],
+	"manor_leaves": ["leaves", 0.7, 1.0, 1.3],
+	"manor_roots": ["bark", 0.5, 0.9, 1.4],
+	"manor_stump": ["bark", 0.5, 0.9, 1.4],
+	"manor_hump": ["earth_dirt", 1.0, 0.9, 1.3],
+	"manor_wood_cross": ["wood", 0.4, 0.8, 1.0],
+	"manor_twigs": ["bark", 0.3, 0.6, 0.8],
 }
 
 static var _meshes: Dictionary = {}
@@ -220,6 +249,16 @@ static func mesh(key: String) -> ArrayMesh:
 		"manor_crib": m = _crib()
 		"manor_wardrobe": m = _wardrobe()
 		"manor_tub": m = _tub()
+		"manor_tuft": m = _tuft()
+		"manor_stones": m = _stones()
+		"manor_twigs": m = _twigs()
+		"manor_leaves": m = _leaves()
+		"manor_roots": m = _roots()
+		"manor_fungus": m = _fungus()
+		"manor_bones": m = _bones()
+		"manor_hump": m = _hump()
+		"manor_wood_cross": m = _wood_cross()
+		"manor_stump": m = _stump()
 		_:
 			push_warning("ManorMeshes: no piece '%s'" % key)
 			m = Sculpt.new().box(Vector3.ZERO, Vector3.ONE * 0.1, 0.02, Color.MAGENTA).mesh("manor_missing", 0.02, 100)
@@ -1163,3 +1202,162 @@ static func _tub() -> ArrayMesh:
 	s.tube_add(PackedVector3Array([Vector3(-0.93, 0.7, 0.0), Vector3(-1.0, 0.88, 0.0), Vector3(-0.95, 0.98, 0.0), Vector3(-0.84, 0.92, 0.0)]), PackedFloat32Array([0.022, 0.02, 0.018, 0.016]), BRASS, 0.4, 7)
 	s.paint_capsule(Vector3(-0.86, 0.7, 0.0), Vector3(-0.55, 0.52, 0.0), 0.05, 0.03, RUST, 0.6)
 	return s.mesh("manor_tub", 0.015, 2400)
+
+
+## A tuft of short dead grass: the ground cover between everything else.
+static func _tuft() -> ArrayMesh:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 4405
+	var s := Sculpt.new()
+	for k in 16:
+		var a := rng.randf() * TAU
+		var r0 := rng.randf_range(0.0, 0.12)
+		var base := Vector3(cos(a) * r0, -0.02, sin(a) * r0)
+		var out := Vector3(cos(a), 0.0, sin(a)) * rng.randf_range(0.08, 0.28)
+		var h := rng.randf_range(0.2, 0.44)
+		var col := STRAW if k % 3 != 0 else (GRASS_DEAD if k % 2 == 0 else GRASS_DARK)
+		s.tube_add(PackedVector3Array([base, base + out * 0.4 + Vector3(0.0, h * 0.6, 0.0), base + out + Vector3(0.0, h, 0.0)]), PackedFloat32Array([0.008, 0.005, 0.0015]), col, 0.9, 3, 2)
+	return s.mesh("manor_tuft", 0.03, 600)
+
+
+## A few stones sunk in the earth, mossy where they meet it.
+static func _stones() -> ArrayMesh:
+	var s := Sculpt.new().noise_scale(7.0)
+	for st: Array in [[Vector3(-0.22, -0.02, 0.05), Vector3(0.22, 0.14, 0.18), 0.4], [Vector3(0.2, -0.04, -0.12), Vector3(0.17, 0.12, 0.14), -0.6],
+			[Vector3(0.05, -0.03, 0.28), Vector3(0.1, 0.07, 0.09), 1.2], [Vector3(0.34, -0.02, 0.22), Vector3(0.07, 0.05, 0.08), 0.2], [Vector3(-0.38, -0.03, -0.25), Vector3(0.09, 0.06, 0.1), 2.0]]:
+		s.ellipsoid(st[0], st[1], STONE_DARK if st[2] > 0.0 else STONE, 0.0, 0.9, 0.025, Basis.from_euler(Vector3(0.0, float(st[2]), 0.15)))
+	s.carve_box(Vector3(0.0, -0.2, 0.0), Vector3(0.7, 0.16, 0.6), STONE_DARK)
+	s.paint_box(Vector3(0.0, 0.0, 0.0), Vector3(0.6, 0.04, 0.5), MOSS, 1.0)
+	s.paint_ellipsoid(Vector3(-0.2, 0.13, 0.05), Vector3(0.12, 0.05, 0.1), LICHEN, 1.0)
+	return s.mesh("manor_stones", 0.02, 900)
+
+
+## Twigs down on the ground, a few forked.
+static func _twigs() -> ArrayMesh:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 4406
+	var s := Sculpt.new()
+	for k in 9:
+		var a := rng.randf() * TAU
+		var c := Vector3(rng.randf_range(-0.4, 0.4), 0.012, rng.randf_range(-0.35, 0.35))
+		var d := Vector3(cos(a), 0.0, sin(a)) * rng.randf_range(0.15, 0.32)
+		var kink := Vector3(-d.z, 0.0, d.x) * rng.randf_range(-0.3, 0.3)
+		s.tube_add(PackedVector3Array([c - d, c + kink, c + d]), PackedFloat32Array([0.012, 0.009, 0.005]), BARK if k % 2 == 0 else BARK_DARK, 0.95, 4, 2)
+		if k % 3 == 0:
+			var f := c + kink
+			s.tube_add(PackedVector3Array([f, f + (d + kink * 2.0).normalized() * 0.12 + Vector3(0.0, 0.01, 0.0)]), PackedFloat32Array([0.007, 0.003]), BARK, 0.95, 4, 1)
+	return s.mesh("manor_twigs", 0.03, 700)
+
+
+## A drift of dead leaves blown together: brown, black and a rusty red (the photo gives the leaves).
+static func _leaves() -> ArrayMesh:
+	var s := Sculpt.new().noise_scale(9.0)
+	s.ellipsoid(Vector3(0.0, -0.06, 0.0), Vector3(0.85, 0.2, 0.65), LEAF_BROWN, 0.0, 0.95, 0.03)
+	s.ellipsoid(Vector3(0.45, -0.05, 0.25), Vector3(0.4, 0.15, 0.35), LEAF_DARK, 0.15, 0.95, 0.03)
+	s.ellipsoid(Vector3(-0.5, -0.05, -0.2), Vector3(0.35, 0.13, 0.3), LEAF_RED, 0.15, 0.95, 0.03)
+	s.carve_box(Vector3(0.0, -0.3, 0.0), Vector3(1.0, 0.25, 0.8), LEAF_BROWN)
+	s.paint_ellipsoid(Vector3(0.1, 0.12, -0.15), Vector3(0.25, 0.1, 0.2), LEAF_RED, 0.95)
+	return s.mesh("manor_leaves", 0.03, 800)
+
+
+## A dead tree's roots: the flare at its foot and seven roots snaking out and diving back in.
+static func _roots() -> ArrayMesh:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 4407
+	var s := Sculpt.new().noise_scale(6.0)
+	s.ellipsoid(Vector3(0.0, -0.12, 0.0), Vector3(0.75, 0.3, 0.75), BARK, 0.0, 0.95, 0.03)
+	for k in 7:
+		var a := float(k) * TAU / 7.0 + rng.randf_range(-0.3, 0.3)
+		var dir := Vector3(cos(a), 0.0, sin(a))
+		var side := Vector3(-dir.z, 0.0, dir.x)
+		var reach := rng.randf_range(0.9, 1.55)
+		var pts := PackedVector3Array([dir * 0.3 + Vector3(0.0, 0.12, 0.0), dir * reach * 0.45 + side * rng.randf_range(-0.15, 0.15) + Vector3(0.0, 0.1, 0.0),
+			dir * reach * 0.8 + side * rng.randf_range(-0.2, 0.2) + Vector3(0.0, 0.05, 0.0), dir * reach + side * rng.randf_range(-0.2, 0.2) + Vector3(0.0, -0.08, 0.0)])
+		s.tube_add(pts, PackedFloat32Array([0.11, 0.08, 0.05, 0.02]), BARK if k % 2 == 0 else BARK_DARK, 0.95, 6)
+	s.carve_box(Vector3(0.0, -0.4, 0.0), Vector3(1.0, 0.3, 1.0), BARK)
+	return s.mesh("manor_roots", 0.03, 1400)
+
+
+## A ring of pale toadstools.
+static func _fungus() -> ArrayMesh:
+	var s := Sculpt.new().noise_scale(14.0)
+	var caps := [[Vector3(0.0, 0.0, 0.0), 0.11, 0.06], [Vector3(0.1, 0.0, 0.06), 0.07, 0.045], [Vector3(-0.09, 0.0, 0.08), 0.06, 0.035],
+		[Vector3(0.05, 0.0, -0.11), 0.09, 0.05], [Vector3(-0.12, 0.0, -0.06), 0.045, 0.03]]
+	for f: Array in caps:
+		var p: Vector3 = f[0]
+		var r := float(f[2])
+		s.ellipsoid(p + Vector3(0.0, float(f[1]), 0.0), Vector3(r, r * 0.45, r), FUNGUS_CAP, 0.01, 0.5)
+	for f: Array in caps:
+		var p: Vector3 = f[0]
+		var r := float(f[2])
+		s.carve_ellipsoid(p + Vector3(0.0, float(f[1]) - r * 0.35, 0.0), Vector3(r * 0.9, r * 0.3, r * 0.9), FUNGUS_GILL, 0.005)
+	for f: Array in caps:  # the stems after the cuts under the caps
+		var p: Vector3 = f[0]
+		var r := float(f[2])
+		s.capsule(p + Vector3(0.0, -0.02, 0.0), p + Vector3(0.0, float(f[1]), 0.0), r * 0.28, r * 0.22, FUNGUS_STEM, 0.01, 0.7)
+	return s.mesh("manor_fungus", 0.006, 900)
+
+
+## Bones the earth gave back: a skull on its side, long bones, ribs arching out of the dirt.
+static func _bones() -> ArrayMesh:
+	var s := Sculpt.new().noise_scale(12.0)
+	var sk := Vector3(0.28, 0.02, 0.1)
+	s.ellipsoid(sk + Vector3(0.0, 0.05, 0.0), Vector3(0.09, 0.08, 0.11), BONE, 0.0, 0.7)
+	s.ellipsoid(sk + Vector3(0.0, 0.0, 0.08), Vector3(0.065, 0.045, 0.05), BONE, 0.03, 0.7)
+	for x: float in [-1.0, 1.0]:
+		s.carve_ellipsoid(sk + Vector3(x * 0.032, 0.035, 0.11), Vector3(0.024, 0.024, 0.03), VOID)
+	s.carve_ellipsoid(sk + Vector3(0.0, 0.0, 0.125), Vector3(0.012, 0.02, 0.02), VOID)
+	for b: Array in [[Vector3(-0.35, 0.025, -0.1), Vector3(0.05, 0.03, -0.25)], [Vector3(-0.25, 0.02, 0.2), Vector3(0.05, 0.02, 0.28)], [Vector3(-0.45, 0.02, 0.05), Vector3(-0.3, 0.02, 0.3)]]:
+		var a: Vector3 = b[0]
+		var c: Vector3 = b[1]
+		s.capsule(a, c, 0.018, 0.016, BONE, 0.0, 0.7)
+		s.ellipsoid(a, Vector3(0.032, 0.028, 0.032), BONE, 0.01, 0.7)
+		s.ellipsoid(c, Vector3(0.03, 0.026, 0.03), BONE, 0.01, 0.7)
+	for k in 4:
+		var z := -0.05 + float(k) * 0.06
+		s.tube_add(PackedVector3Array([Vector3(-0.15, -0.01, z), Vector3(-0.08, 0.06, z + 0.01), Vector3(0.02, 0.07, z + 0.02), Vector3(0.1, 0.0, z + 0.03)]), PackedFloat32Array([0.009, 0.009, 0.008, 0.006]), BONE, 0.7, 4)
+	s.carve_box(Vector3(0.0, -0.15, 0.0), Vector3(0.6, 0.13, 0.5), BONE)
+	s.paint_box(Vector3(0.0, -0.01, 0.0), Vector3(0.6, 0.025, 0.5), EARTH, 0.9)
+	return s.mesh("manor_bones", 0.008, 1400)
+
+
+## The earth over a grave nobody tends: a long low hump gone to weeds.
+static func _hump() -> ArrayMesh:
+	var s := Sculpt.new().noise_scale(6.0)
+	s.ellipsoid(Vector3(0.0, -0.1, 0.0), Vector3(0.5, 0.26, 1.0), Color(0.23, 0.19, 0.14), 0.0, 0.95, 0.025)
+	s.carve_box(Vector3(0.0, -0.4, 0.0), Vector3(0.6, 0.32, 1.1), EARTH)
+	s.paint_ellipsoid(Vector3(0.0, 0.14, 0.1), Vector3(0.38, 0.08, 0.85), GRASS_DEAD, 1.0)
+	return s.mesh("manor_hump", 0.025, 900)
+
+
+## A pauper's cross: two boards lashed together, pushed into the ground and left to lean.
+static func _wood_cross() -> ArrayMesh:
+	var s := Sculpt.new().noise_scale(12.0)
+	s.box(Vector3(0.0, 0.55, 0.0), Vector3(0.045, 0.6, 0.035), 0.008, WOOD_ROT, 0.0, 0.9, 0.006)
+	s.box(Vector3(0.0, 0.82, 0.0), Vector3(0.28, 0.04, 0.03), 0.008, WOOD, 0.0, 0.9, 0.006, Basis.from_euler(Vector3(0.0, 0.0, 0.08)))
+	for x: float in [-1.0, 1.0]:
+		var loop := PackedVector3Array()
+		var radii := PackedFloat32Array()
+		for k in 9:
+			var a := TAU * float(k) / 8.0
+			loop.append(Vector3(cos(a) * 0.06 * x, 0.82 + sin(a) * 0.055, sin(a) * 0.045))
+			radii.append(0.008)
+		s.tube_add(loop, radii, ROPE, 0.9, 4)
+	s.paint_box(Vector3(0.0, 0.05, 0.0), Vector3(0.06, 0.12, 0.05), MOSS, 1.0)
+	return s.mesh("manor_wood_cross", 0.012, 900)
+
+
+## A dead tree's stump, broken off on a slant and rotted hollow, its roots in the ground.
+static func _stump() -> ArrayMesh:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 4408
+	var s := Sculpt.new().noise_scale(7.0)
+	s.capsule(Vector3(0.0, -0.1, 0.0), Vector3(0.02, 0.45, 0.01), 0.36, 0.3, BARK, 0.0, 0.95, 0.02)
+	s.carve_box(Vector3(0.1, 0.72, 0.0), Vector3(0.5, 0.2, 0.5), WOOD, 0.02, Basis.from_euler(Vector3(0.0, 0.0, 0.35)))
+	s.carve_ellipsoid(Vector3(0.0, 0.55, 0.0), Vector3(0.17, 0.2, 0.17), WOOD_ROT)
+	for k in 5:
+		var a := float(k) * TAU / 5.0 + rng.randf_range(-0.3, 0.3)
+		var dir := Vector3(cos(a), 0.0, sin(a))
+		s.tube_add(PackedVector3Array([dir * 0.25 + Vector3(0.0, 0.15, 0.0), dir * 0.45 + Vector3(0.0, 0.06, 0.0), dir * 0.65 + Vector3(0.0, -0.06, 0.0)]), PackedFloat32Array([0.08, 0.05, 0.02]), BARK, 0.95, 6)
+	s.carve_box(Vector3(0.0, -0.4, 0.0), Vector3(0.8, 0.3, 0.8), BARK)
+	return s.mesh("manor_stump", 0.02, 1400)
