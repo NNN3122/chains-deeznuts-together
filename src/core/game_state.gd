@@ -30,6 +30,7 @@ var final_time: float = 0.0
 var final_jerks: int = 0
 var escape_line: String = ""  # the end screen's line about how the run ended
 var ui_blocking: bool = false  # local: a menu is open, so the game ignores your input
+var typing: bool = false  # local: a repair page has the keyboard (TypingPanel), so keys type instead of moving you
 
 
 func _ready() -> void:

@@ -122,6 +122,8 @@ var _downed: bool = false  # server: flat on the floor for it
 var _flung: bool = false  # server: in flight, and a wall will hurt
 var _down_amt: float = 0.0  # every peer: 0..1 of the lying-down pose
 static var debug_infinite_stamina: bool = false  # tests that are about routes, not breath
+const BEAM_FOG: float = 2.0  # the flashlight beam's glow in volumetric fog (the roof's thin fog)
+static var beam_fog: float = BEAM_FOG  # every peer, for the level the camera is in: the manor's thick fog wants less (Manor.set_shown)
 
 # --- Server-side input -------------------------------------------------------------
 var input_move: Vector2 = Vector2.ZERO
@@ -290,7 +292,7 @@ func _build_flashlight() -> void:
 	_flashlight.spot_attenuation = 0.8
 	_flashlight.light_energy = 4.5
 	_flashlight.light_color = Color(1.0, 0.95, 0.84)
-	_flashlight.light_volumetric_fog_energy = 2.0
+	_flashlight.light_volumetric_fog_energy = beam_fog
 	_flashlight.shadow_enabled = true
 	_flashlight.visible = false
 	add_child(_flashlight)
@@ -406,7 +408,7 @@ func add_shake(amount: float) -> void:
 # --- Local input ------------------------------------------------------------------------
 
 func _unhandled_input(event: InputEvent) -> void:
-	if not is_local or GameState.ui_blocking:
+	if not is_local or GameState.ui_blocking or GameState.typing:
 		return
 	if event.is_action_pressed("toggle_camera"):
 		set_first_person_camera(camera_mode == CameraMode.THIRD_PERSON)
@@ -636,6 +638,7 @@ func _update_visuals(delta: float) -> void:
 	var on := held_item_id == "flashlight" and using
 	_flashlight.visible = on
 	if on:
+		_flashlight.light_volumetric_fog_energy = beam_fog
 		var b := Basis.from_euler(Vector3(p, yw, 0.0))
 		_flashlight.global_transform = Transform3D(b, vis + Vector3(0.0, (1.0 if bracing else 1.45), 0.0) + b * Vector3(0.22, -0.1, -0.3))
 	var jet_on := held_item_id == "jetpack" and using

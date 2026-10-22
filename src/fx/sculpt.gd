@@ -27,7 +27,15 @@ uniform vec3 rim_col : source_color = vec3(0.45, 0.55, 0.7);
 uniform float veins = 0.0;        // dark branching marks under pale skin
 uniform float sss = 0.0;
 uniform vec3 tint : source_color = vec3(1.0);
+// A photo surface's grain and relief under the painted colours (the manor's stone, bark, wood),
+// projected from three sides in the mesh's own space so it rides along when the mesh moves.
+uniform sampler2D detail_albedo : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D detail_normal : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform float detail = 0.0;       // 0 (off: every monster) .. 1
+uniform float detail_span = 1.0;  // mesh units per repeat
+uniform float detail_bump = 1.0;
 varying vec3 v_obj;
+varying vec3 v_onrm;
 
 float hash(vec3 p) { p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
 float vnoise(vec3 x) {
@@ -35,7 +43,7 @@ float vnoise(vec3 x) {
 	return mix(mix(mix(hash(i), hash(i + vec3(1,0,0)), f.x), mix(hash(i + vec3(0,1,0)), hash(i + vec3(1,1,0)), f.x), f.y),
 		mix(mix(hash(i + vec3(0,0,1)), hash(i + vec3(1,0,1)), f.x), mix(hash(i + vec3(0,1,1)), hash(i + vec3(1,1,1)), f.x), f.y), f.z);
 }
-void vertex() { v_obj = VERTEX; }
+void vertex() { v_obj = VERTEX; v_onrm = NORMAL; }
 void fragment() {
 	// Vertex colours are authored in sRGB; lighting wants linear.
 	vec3 srgb = COLOR.rgb;
@@ -47,6 +55,26 @@ void fragment() {
 	if (veins > 0.0) {
 		float v = abs(vnoise(v_obj * 14.0) - 0.5) + abs(vnoise(v_obj * 31.0 + 7.0) - 0.5) * 0.5;
 		col = mix(col, col * vec3(0.35, 0.3, 0.4), veins * (1.0 - smoothstep(0.02, 0.07, v)));
+	}
+	if (detail > 0.0) {
+		vec3 an = normalize(v_onrm);
+		vec3 w = pow(abs(an), vec3(4.0));
+		w /= w.x + w.y + w.z;
+		vec3 s = vec3(an.x < 0.0 ? -1.0 : 1.0, an.y < 0.0 ? -1.0 : 1.0, an.z < 0.0 ? -1.0 : 1.0);
+		vec2 ux = vec2(-v_obj.z * s.x, -v_obj.y) / detail_span;
+		vec2 uy = vec2(v_obj.x * s.y, v_obj.z) / detail_span;
+		vec2 uz = vec2(v_obj.x * s.z, -v_obj.y) / detail_span;
+		vec3 photo = texture(detail_albedo, ux).rgb * w.x + texture(detail_albedo, uy).rgb * w.y + texture(detail_albedo, uz).rgb * w.z;
+		vec3 lw = vec3(0.299, 0.587, 0.114);
+		float ml = max(dot(textureLod(detail_albedo, vec2(0.5), 12.0).rgb, lw), 0.01);
+		col *= mix(1.0, clamp(dot(photo, lw) / ml, 0.15, 2.2), detail);
+		vec2 nx = (texture(detail_normal, ux).rg * 2.0 - 1.0) * detail_bump;
+		vec2 ny = (texture(detail_normal, uy).rg * 2.0 - 1.0) * detail_bump;
+		vec2 nz = (texture(detail_normal, uz).rg * 2.0 - 1.0) * detail_bump;
+		vec3 bend = (vec3(0.0, 0.0, -s.x) * nx.x + vec3(0.0, 1.0, 0.0) * nx.y) * w.x
+			+ (vec3(s.y, 0.0, 0.0) * ny.x + vec3(0.0, 0.0, -1.0) * ny.y) * w.y
+			+ (vec3(s.z, 0.0, 0.0) * nz.x + vec3(0.0, 1.0, 0.0) * nz.y) * w.z;
+		NORMAL = normalize((VIEW_MATRIX * vec4(normalize(MODEL_NORMAL_MATRIX * normalize(an + bend * detail)), 0.0)).xyz);
 	}
 	ALBEDO = col;
 	float r = clamp(COLOR.a, 0.04, 1.0);
@@ -115,9 +143,11 @@ func paint_capsule(a: Vector3, b: Vector3, ra: float, rb: float, color: Color, r
 	return capsule(a, b, ra, rb, color, 0.0, rough, 0.0, Op.PAINT)
 
 
-## A thin tapered tube through the points (fingers, claws, legs, fangs), part of this mesh.
-func tube_add(points: PackedVector3Array, radii: PackedFloat32Array, color: Color, rough: float = 0.5, sides: int = 8) -> Sculpt:
-	_tubes.append([points, radii, color, rough, sides])
+## A thin tapered tube through the points (fingers, claws, legs, fangs), part of this mesh. steps:
+## rings per stretch between points (1 for a straight rod).
+func tube_add(points: PackedVector3Array, radii: PackedFloat32Array, color: Color, rough: float = 0.5, sides: int = 8, steps: int = 4) -> Sculpt:
+	# The default is left out of the entry so recipes written before steps existed keep their hash.
+	_tubes.append([points, radii, color, rough, sides] if steps == 4 else [points, radii, color, rough, sides, steps])
 	return self
 
 
@@ -128,7 +158,7 @@ func _with_tubes(arrays: Array) -> Array:
 	var b := Builder.new()
 	b.add(arrays)
 	for t in _tubes:
-		b.add(tube(t[0], t[1], t[2], t[3], t[4]))
+		b.add(tube(t[0], t[1], t[2], t[3], t[4], t[5] if t.size() > 5 else 4))
 	return [b.verts, b.norms, b.cols, b.idx]
 
 
@@ -215,12 +245,13 @@ func build(cell: float) -> Array:
 		if op == Op.PAINT:
 			continue
 		var bb := _prim_aabb(p)
-		var x0 := clampi(int(floor((bb.position.x - lo.x) / cell)), 0, nx - 1)
-		var y0 := clampi(int(floor((bb.position.y - lo.y) / cell)), 0, ny - 1)
-		var z0 := clampi(int(floor((bb.position.z - lo.z) / cell)), 0, nz - 1)
-		var x1 := clampi(int(ceil((bb.end.x - lo.x) / cell)), 0, nx - 1)
-		var y1 := clampi(int(ceil((bb.end.y - lo.y) / cell)), 0, ny - 1)
-		var z1 := clampi(int(ceil((bb.end.z - lo.z) / cell)), 0, nz - 1)
+		# Two cells past the shape's box: the corners just outside its skin need true distances too.
+		var x0 := clampi(int(floor((bb.position.x - lo.x) / cell)) - 2, 0, nx - 1)
+		var y0 := clampi(int(floor((bb.position.y - lo.y) / cell)) - 2, 0, ny - 1)
+		var z0 := clampi(int(floor((bb.position.z - lo.z) / cell)) - 2, 0, nz - 1)
+		var x1 := clampi(int(ceil((bb.end.x - lo.x) / cell)) + 2, 0, nx - 1)
+		var y1 := clampi(int(ceil((bb.end.y - lo.y) / cell)) + 2, 0, ny - 1)
+		var z1 := clampi(int(ceil((bb.end.z - lo.z) / cell)) + 2, 0, nz - 1)
 		var k: float = p[2]
 		var amp: float = p[5]
 		for z in range(z0, z1 + 1):
@@ -387,10 +418,16 @@ static func _prim_aabb(p: Array) -> AABB:
 			var m := maxf(r.x, maxf(r.y, r.z)) + grow
 			return AABB(c - Vector3.ONE * m, Vector3.ONE * m * 2.0)
 		_:
+			# The turned box's own extent: a bounding cube of its diagonal made every long thin board
+			# (a table top, a shelf) sample a cube metres high.
 			var c: Vector3 = p[6]
 			var h: Vector3 = p[7]
-			var m := h.length() + grow
-			return AABB(c - Vector3.ONE * m, Vector3.ONE * m * 2.0)
+			var b: Basis = (p[8] as Basis).inverse()
+			var e := Vector3(
+				absf(b.x.x) * h.x + absf(b.y.x) * h.y + absf(b.z.x) * h.z,
+				absf(b.x.y) * h.x + absf(b.y.y) * h.y + absf(b.z.y) * h.z,
+				absf(b.x.z) * h.x + absf(b.y.z) * h.y + absf(b.z.z) * h.z) + Vector3.ONE * grow
+			return AABB(c - e, e * 2.0)
 
 
 static func _sdf(p: Array, q: Vector3) -> float:

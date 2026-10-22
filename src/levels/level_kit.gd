@@ -185,38 +185,148 @@ void fragment() {
 
 # --- Level 4: the manor grounds ---------------------------------------------------------------
 
-## Mud and dead grass, wet in the hollows: the whole estate's ground.
+## The whole estate's ground: two photo-scanned earths (ambientCG, CC0: an overgrown damp one
+## and bare dirt with leaf litter), each sampled at two unrelated scales so no repeat shows,
+## blended by large patches, darkened toward night, with black standing water in the hollows that
+## catches the moon. Planar from above: the ground is one big box and only its top is ever seen.
 const MANOR_EARTH_SHADER: String = """
 shader_type spatial;
+uniform sampler2D albedo_tex : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D normal_tex : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D rough_tex : hint_default_white, filter_linear_mipmap, repeat_enable;
+uniform sampler2D ao_tex : hint_default_white, filter_linear_mipmap, repeat_enable;
+uniform sampler2D albedo2_tex : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D normal2_tex : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D rough2_tex : hint_default_white, filter_linear_mipmap, repeat_enable;
+uniform sampler2D ao2_tex : hint_default_white, filter_linear_mipmap, repeat_enable;
+uniform vec3 overgrown = vec3(0.105, 0.1, 0.06);  // average colour of the grown-over earth
+uniform vec3 bare = vec3(0.07, 0.056, 0.042);  // and of the bare mud
+uniform float span = 3.0;  // m per repeat of each photo
+uniform float span2 = 2.6;
+uniform float bump = 1.3;
 varying vec3 wpos;
 %s
 void vertex() {
 	wpos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 }
+float lum(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
 void fragment() {
 	vec2 p = wpos.xz;
-	float big = fbm(p * 0.06);
-	float grass = smoothstep(0.38, 0.58, fbm(p * 0.3 + 7.0));
-	float blades = vnoise(p * 22.0) * 0.6 + vnoise(p * 61.0) * 0.4;
-	float clumps = smoothstep(0.55, 0.7, vnoise(p * 2.3));
+	float k = smoothstep(0.3, 0.7, vnoise(p * 0.21));  // which of the two scales shows here
+	vec2 a1 = p / span;
+	vec2 b1 = p / (span * 2.7) + vec2(0.37, 0.11);
+	vec2 a2 = p / span2;
+	vec2 b2 = p / (span2 * 3.1) + vec2(0.61, 0.29);
+	vec3 c1 = mix(texture(albedo_tex, a1).rgb, texture(albedo_tex, b1).rgb, k);
+	vec3 c2 = mix(texture(albedo2_tex, a2).rgb, texture(albedo2_tex, b2).rgb, k);
+	vec2 n1 = mix(texture(normal_tex, a1).rg, texture(normal_tex, b1).rg, k) * 2.0 - 1.0;
+	vec2 n2 = mix(texture(normal2_tex, a2).rg, texture(normal2_tex, b2).rg, k) * 2.0 - 1.0;
+	float m1 = max(lum(textureLod(albedo_tex, vec2(0.5), 12.0).rgb), 0.01);
+	float m2 = max(lum(textureLod(albedo2_tex, vec2(0.5), 12.0).rgb), 0.01);
+	float grown = smoothstep(0.36, 0.64, fbm(p * 0.07 + 5.0));
+	vec3 col = mix(bare * pow(lum(c2) / m2, 1.15), overgrown * pow(lum(c1) / m1, 1.15) * mix(vec3(1.0), c1 / max(lum(c1), 0.01), 0.35), grown);
+	col *= 0.62 + 0.62 * fbm(p * 0.045);
 	float wet = smoothstep(0.66, 0.74, fbm(p * 0.11 + 3.0));
-	float litter = smoothstep(0.7, 0.8, vnoise(p * 7.0 + 13.0));
-	vec3 mud = vec3(0.07, 0.052, 0.036) * (0.6 + 0.7 * big);
-	vec3 dead = vec3(0.26, 0.22, 0.12) * (0.45 + 0.75 * blades) * (0.75 + 0.45 * clumps);
-	vec3 col = mix(mud, dead, grass * 0.9);
-	col = mix(col, vec3(0.03, 0.025, 0.02), litter * 0.5);
 	col = mix(col, vec3(0.02, 0.022, 0.025), wet * 0.85);  // standing water, black
 	ALBEDO = col;
-	ROUGHNESS = mix(0.97, 0.06, wet);  // the puddles catch the moon
-	METALLIC = 0.0;
-	SPECULAR = mix(0.3, 0.9, wet);
+	float r = mix(texture(rough2_tex, a2).r, texture(rough_tex, a1).r, grown);
+	ROUGHNESS = mix(clamp(r + 0.05, 0.0, 1.0), 0.06, wet);  // the puddles catch the moon
+	SPECULAR = mix(0.35, 0.9, wet);
+	AO = mix(texture(ao2_tex, a2).r, texture(ao_tex, a1).r, grown);
+	AO_LIGHT_AFFECT = 0.6;
+	vec2 nm = mix(n2, n1, grown) * bump * (1.0 - wet);
+	NORMAL = normalize((VIEW_MATRIX * vec4(normalize(vec3(nm.x, 1.0, -nm.y)), 0.0)).xyz);
 }
 """
 
-## Cut stone in courses, mortar lines, moss and black streaks low down: walls, crypt, chapel.
-const MANOR_STONE_SHADER: String = """
+## A photo-scanned surface (ambientCG, CC0) mapped in world space from three sides, so any box at
+## any size and turn gets it unstretched and upright: the walls, the mansion, the slate roofs, the
+## floorboards, the woodwork, the gravel, the hedges. `tint` is the surface's average colour (night
+## dark); the photo only adds the detail round it, so every surface keeps the level's darkness.
+## Grime blotches and rain streaks break the repeat, and moss creeps up from the ground.
+const MANOR_PBR_SHADER: String = """
 shader_type spatial;
-uniform vec3 stone = vec3(0.36, 0.35, 0.33);
+uniform sampler2D albedo_tex : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D normal_tex : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D rough_tex : hint_default_white, filter_linear_mipmap, repeat_enable;
+uniform sampler2D ao_tex : hint_default_white, filter_linear_mipmap, repeat_enable;
+uniform vec3 tint = vec3(0.3);
+uniform float saturation = 0.5;  // how much of the photo's own hues survive round the tint
+uniform float contrast = 1.1;
+uniform float span = 2.0;  // m per repeat of the photo
+uniform float bump = 1.0;
+uniform float rough_bias = 0.0;
+uniform float grime = 0.4;  // dark blotches and streaks that break up the repeat
+uniform float moss = 0.0;  // green-black creeping up from the ground
+uniform float wobble = 0.0;  // m: a hedge's lumpy outline
+uniform float ground_y = 0.0;  // the estate's ground (600 m down in the building's run)
+varying vec3 wpos;
+varying vec3 wnrm;
+%s
+void vertex() {
+	wpos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	wnrm = normalize(MODEL_NORMAL_MATRIX * NORMAL);
+	if (wobble > 0.0) {
+		VERTEX += NORMAL * (vnoise(wpos.xz * 2.3 + wpos.y * 1.7) - 0.5) * wobble;
+	}
+}
+float lum(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+void fragment() {
+	vec3 n = normalize(wnrm);
+	vec3 w = pow(abs(n), vec3(4.0));
+	w /= w.x + w.y + w.z;
+	vec3 s = vec3(n.x < 0.0 ? -1.0 : 1.0, n.y < 0.0 ? -1.0 : 1.0, n.z < 0.0 ? -1.0 : 1.0);
+	// One projection per axis, each upright and unmirrored seen from outside its face.
+	vec2 ux = vec2(-wpos.z * s.x, -wpos.y) / span;
+	vec2 uy = vec2(wpos.x * s.y, wpos.z) / span;
+	vec2 uz = vec2(wpos.x * s.z, -wpos.y) / span;
+	vec3 photo = texture(albedo_tex, ux).rgb * w.x + texture(albedo_tex, uy).rgb * w.y + texture(albedo_tex, uz).rgb * w.z;
+	vec3 mean = max(textureLod(albedo_tex, vec2(0.5), 12.0).rgb, vec3(0.01));
+	vec3 rel = mix(vec3(lum(photo) / lum(mean)), photo / mean, saturation);
+	vec3 col = tint * pow(max(rel, vec3(0.0)), vec3(contrast));
+	float h = wpos.y - ground_y;
+	vec2 q = abs(n.y) > 0.5 ? wpos.xz : (abs(n.x) > 0.5 ? wpos.zy : wpos.xy);
+	col *= mix(1.0, 0.5 + 0.95 * fbm(q * 0.13), grime);
+	float along = abs(n.x) > abs(n.z) ? wpos.z : wpos.x;
+	float streak = smoothstep(0.55, 0.9, vnoise(vec2(along * 2.5, h * 0.22))) * (1.0 - abs(n.y));
+	col *= 1.0 - streak * grime * 0.6;
+	float m = moss * clamp(smoothstep(0.5, 0.72, fbm(q * 0.8 + 11.0)) + smoothstep(2.6, 0.0, h) * 0.5 + max(n.y, 0.0) * 0.35, 0.0, 1.0);
+	col = mix(col, vec3(0.05, 0.07, 0.035) * (0.6 + 0.8 * lum(photo) / lum(mean)), m * 0.8);
+	ALBEDO = col;
+	float r = texture(rough_tex, ux).r * w.x + texture(rough_tex, uy).r * w.y + texture(rough_tex, uz).r * w.z;
+	ROUGHNESS = clamp(r + rough_bias, 0.04, 1.0);
+	AO = texture(ao_tex, ux).r * w.x + texture(ao_tex, uy).r * w.y + texture(ao_tex, uz).r * w.z;
+	AO_LIGHT_AFFECT = 0.5;
+	// Each projection bends the true normal along its own two axes (green is up in the photo).
+	vec2 nx = (texture(normal_tex, ux).rg * 2.0 - 1.0) * bump;
+	vec2 ny = (texture(normal_tex, uy).rg * 2.0 - 1.0) * bump;
+	vec2 nz = (texture(normal_tex, uz).rg * 2.0 - 1.0) * bump;
+	vec3 bend = (vec3(0.0, 0.0, -s.x) * nx.x + vec3(0.0, 1.0, 0.0) * nx.y) * w.x
+		+ (vec3(s.y, 0.0, 0.0) * ny.x + vec3(0.0, 0.0, -1.0) * ny.y) * w.y
+		+ (vec3(s.z, 0.0, 0.0) * nz.x + vec3(0.0, 1.0, 0.0) * nz.y) * w.z;
+	NORMAL = normalize((VIEW_MATRIX * vec4(normalize(n + bend), 0.0)).xyz);
+}
+"""
+
+## The mansion's rooms, both floors: dark wood wainscot to a chair rail (raised panels, a skirting,
+## the grain of a real dark wood), and above it a faded patterned wallpaper (a different dark colour
+## room by room) that has broken away in patches to the plaster and brick underneath: the paint of a
+## real broken painted plaster wall (ambientCG CC0) is recoloured as the paper, its broken patches
+## are left as they are. A picture rail, a cornice, damp rising from the floor.
+const MANOR_WALL_SHADER: String = """
+shader_type spatial;
+uniform sampler2D albedo_tex : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D normal_tex : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D rough_tex : hint_default_white, filter_linear_mipmap, repeat_enable;
+uniform sampler2D ao_tex : hint_default_white, filter_linear_mipmap, repeat_enable;
+uniform sampler2D albedo2_tex : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D normal2_tex : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D rough2_tex : hint_default_white, filter_linear_mipmap, repeat_enable;
+uniform float ground_y = 0.0;  // the estate's ground (600 m down in the building's run)
+uniform float floor2_y = 5.0;  // the upper floor, measured from the ground
+uniform float span = 2.2;  // m per repeat of the plaster photo
+uniform float wood_span = 1.6;
+uniform float panel_top = 1.15;  // m: the chair rail
 varying vec3 wpos;
 varying vec3 wnrm;
 %s
@@ -224,91 +334,72 @@ void vertex() {
 	wpos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 	wnrm = normalize(MODEL_NORMAL_MATRIX * NORMAL);
 }
+float lum(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+// 1 on the wainscot's frame (stiles, rail, skirting), 0 on the panels sunk between them.
+float frame_at(float a, float y) {
+	float u = fract(a / 0.9);
+	float stile = 1.0 - smoothstep(0.06, 0.1, min(u, 1.0 - u));
+	float rail = smoothstep(panel_top - 0.18, panel_top - 0.13, y);
+	float skirt = 1.0 - smoothstep(0.2, 0.25, y);
+	return max(max(stile, rail), skirt);
+}
 void fragment() {
-	vec2 p = abs(wnrm.y) > 0.5 ? wpos.xz : (abs(wnrm.x) > 0.5 ? wpos.zy : wpos.xy);
-	vec2 b = vec2(p.x / 0.9 + 0.5 * floor(p.y / 0.42), p.y / 0.42);
-	vec2 f = fract(b);
-	float mortar = 1.0 - smoothstep(0.0, 0.06, min(min(f.x, 1.0 - f.x) * 0.9, min(f.y, 1.0 - f.y) * 2.1));
-	float n = fbm(p * 1.7);
-	float block = hash(floor(b));
-	vec3 col = stone * (0.72 + 0.35 * n + 0.18 * block);
-	float moss = smoothstep(0.55, 0.75, fbm(p * 0.9 + 11.0)) * smoothstep(2.2, 0.0, wpos.y);
-	col = mix(col, vec3(0.1, 0.13, 0.07), moss * 0.75);
-	float streak = smoothstep(0.6, 0.9, vnoise(vec2(p.x * 3.0, wpos.y * 0.3))) * 0.35;
-	col *= 1.0 - streak;
-	col = mix(col, vec3(0.08, 0.075, 0.07), mortar * 0.8);
+	vec3 n = normalize(wnrm);
+	bool side = abs(n.x) > 0.5;
+	float along = side ? wpos.z : wpos.x;
+	vec3 across = side ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+	float h = wpos.y - ground_y;
+	float storey = h >= floor2_y - 0.3 ? 1.0 : 0.0;
+	float hl = h - storey * floor2_y;  // height above this storey's floor
+	vec2 bend = vec2(0.0);
+	vec3 col;
+	float rough;
+	float ao = 1.0;
+	if (hl < panel_top) {
+		// Wainscot: raised panels between stiles, a rail on top, a skirting at the foot.
+		vec2 uv = vec2(along, -hl) / wood_span;
+		vec3 wood = texture(albedo2_tex, uv).rgb;
+		float wm = max(lum(textureLod(albedo2_tex, vec2(0.5), 12.0).rgb), 0.01);
+		float frame = frame_at(along, hl);
+		// The bevels where each panel drops behind its frame catch the light like real mouldings:
+		// the normal leans off the slope of the frame's height (15 mm proud of the panel).
+		float e = 0.006;
+		vec2 grad = vec2(frame_at(along + e, hl) - frame_at(along - e, hl), frame_at(along, hl + e) - frame_at(along, hl - e)) / (2.0 * e);
+		bend = -grad * 0.015 + (texture(normal2_tex, uv).rg * 2.0 - 1.0) * 0.6;
+		col = vec3(0.085, 0.052, 0.032) * clamp(lum(wood) / wm, 0.3, 1.8) * mix(0.8, 1.15, frame);
+		col *= 0.75 + 0.5 * fbm(vec2(along, hl) * 0.7);  // scuffs and water marks
+		rough = clamp(texture(rough2_tex, uv).r - 0.15 * frame, 0.2, 1.0);
+	} else {
+		vec2 uv = vec2(along, -h) / span;
+		vec3 photo = texture(albedo_tex, uv).rgb;
+		float pm = max(lum(textureLod(albedo_tex, vec2(0.5), 12.0).rgb), 0.01);
+		float rel = lum(photo) / pm;
+		float sat = max(max(photo.r, photo.g), photo.b) - min(min(photo.r, photo.g), photo.b);
+		float paint = smoothstep(0.92, 1.08, rel) * (1.0 - smoothstep(0.08, 0.18, sat));  // the white paint is the paper now
+		// A faded damask, and the paper's colour by room.
+		vec2 c = fract(vec2(along, hl) / vec2(0.53, 0.74)) - 0.5;
+		float motif = smoothstep(0.21, 0.17, length(c * vec2(1.0, 0.72)) + 0.07 * sin(atan(c.y, c.x) * 6.0));
+		vec2 room = floor(vec2(wpos.x / 17.0, wpos.z / 13.0)) + vec2(storey * 3.0, 0.0);
+		float pick = hash(room + 0.5);
+		vec3 paper = pick < 0.25 ? vec3(0.15, 0.045, 0.04) : (pick < 0.5 ? vec3(0.05, 0.085, 0.058) : (pick < 0.75 ? vec3(0.052, 0.062, 0.095) : vec3(0.1, 0.05, 0.085)));
+		paper *= mix(1.0, 1.55, motif) * clamp(rel, 0.6, 1.25);
+		vec3 bare = photo * 0.32;  // the plaster and brick under it, in the dark
+		col = mix(bare, paper, paint);
+		float damp = smoothstep(1.9, panel_top, hl) * (0.5 + 0.5 * fbm(vec2(along, hl) * 1.6));
+		col *= 1.0 - damp * 0.5;
+		float pr = 1.0 - smoothstep(0.0, 0.03, abs(hl - 2.95));
+		col = mix(col, vec3(0.06, 0.04, 0.025), pr);  // the picture rail
+		float ceiling = storey > 0.5 ? 4.0 : 4.6;
+		col *= mix(1.0, 0.55, smoothstep(ceiling - 0.45, ceiling - 0.1, hl));  // the cornice in shadow
+		rough = clamp(texture(rough_tex, uv).r + (paint > 0.5 ? 0.05 : 0.15), 0.0, 1.0);
+		ao = texture(ao_tex, uv).r;
+		bend = (texture(normal_tex, uv).rg * 2.0 - 1.0) * mix(1.4, 0.5, paint);
+	}
 	ALBEDO = col;
-	ROUGHNESS = 0.93;
-}
-"""
-
-## Overgrown box hedge: dense, near-black leaves.
-const HEDGE_SHADER: String = """
-shader_type spatial;
-varying vec3 wpos;
-varying vec3 wnrm;
-%s
-void vertex() {
-	wpos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
-	wnrm = normalize(MODEL_NORMAL_MATRIX * NORMAL);
-	VERTEX += NORMAL * (vnoise(wpos.xz * 2.3 + wpos.y * 1.7) - 0.5) * 0.12;
-}
-void fragment() {
-	vec2 p = abs(wnrm.y) > 0.5 ? wpos.xz : (abs(wnrm.x) > 0.5 ? wpos.zy : wpos.xy);
-	float leaves = vnoise(p * 14.0) * 0.6 + vnoise(p * 41.0) * 0.4;
-	float holes = smoothstep(0.72, 0.8, vnoise(p * 5.0));
-	float dead = smoothstep(0.6, 0.8, fbm(p * 0.7));
-	vec3 col = mix(vec3(0.07, 0.12, 0.05), vec3(0.17, 0.15, 0.07), dead) * (0.35 + 1.1 * leaves);
-	col *= 1.0 - holes * 0.8;  // gaps into the dark inside the hedge
-	ALBEDO = col;
-	ROUGHNESS = 0.9;
-}
-"""
-
-## Damask wallpaper gone grey, peeling to the plaster, damp stains rising from the floor.
-const MANOR_PAPER_SHADER: String = """
-shader_type spatial;
-varying vec3 wpos;
-varying vec3 wnrm;
-%s
-void vertex() {
-	wpos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
-	wnrm = normalize(MODEL_NORMAL_MATRIX * NORMAL);
-}
-void fragment() {
-	vec2 p = abs(wnrm.x) > 0.5 ? wpos.zy : wpos.xy;
-	vec2 c = fract(p / vec2(0.5, 0.7)) - 0.5;
-	float motif = smoothstep(0.2, 0.17, length(c * vec2(1.0, 0.7)) + 0.06 * sin(atan(c.y, c.x) * 6.0));
-	vec3 paper = mix(vec3(0.22, 0.2, 0.19), vec3(0.3, 0.27, 0.24), motif);
-	float peel = smoothstep(0.62, 0.66, fbm(p * 0.8 + 5.0));
-	vec3 col = mix(paper, vec3(0.42, 0.39, 0.34), peel);
-	float damp = smoothstep(1.6, 0.0, wpos.y) * (0.5 + 0.5 * fbm(p * 2.0));
-	col *= 1.0 - damp * 0.55;
-	if (wpos.y < 0.9) { col = vec3(0.12, 0.08, 0.05) * (0.7 + 0.5 * fbm(p * 3.0)); }
-	ALBEDO = col * (0.85 + 0.3 * fbm(p * 4.0));
-	ROUGHNESS = 0.85;
-}
-"""
-
-## Floorboards, dark and scuffed, the odd board missing its shine.
-const MANOR_PLANKS_SHADER: String = """
-shader_type spatial;
-varying vec3 wpos;
-%s
-void vertex() {
-	wpos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
-}
-void fragment() {
-	vec2 p = wpos.xz;
-	float row = floor(p.x / 0.22);
-	float seam = smoothstep(0.0, 0.04, min(fract(p.x / 0.22), 1.0 - fract(p.x / 0.22)));
-	float joint = step(0.985, fract(p.y / 2.4 + hash(vec2(row, 1.0))));
-	float grain = vnoise(vec2(p.x * 40.0, p.y * 1.5)) * 0.3 + fbm(p * 0.5) * 0.5;
-	vec3 col = vec3(0.17, 0.11, 0.07) * (0.6 + grain + 0.3 * hash(vec2(row, 3.0)));
-	col *= 0.4 + 0.6 * seam;
-	col *= 1.0 - joint * 0.6;
-	ALBEDO = col;
-	ROUGHNESS = 0.7;
+	ROUGHNESS = rough;
+	AO = ao;
+	AO_LIGHT_AFFECT = 0.5;
+	NORMAL = normalize((VIEW_MATRIX * vec4(normalize(n + across * bend.x + vec3(0.0, 1.0, 0.0) * bend.y), 0.0)).xyz);
 }
 """
 
@@ -607,13 +698,76 @@ static func _shader_mat(code: String) -> ShaderMaterial:
 ## A shader material fed with the color / normal / roughness / ao maps in a texture folder.
 static func _textured(code: String, folder: String) -> ShaderMaterial:
 	var m := _shader_mat(code)
-	for pair in [["albedo_tex", "color.jpg"], ["normal_tex", "normal.png"], ["rough_tex", "roughness.jpg"], ["ao_tex", "ao.jpg"]]:
-		var path: String = folder + String(pair[1])
-		if ResourceLoader.exists(path):
-			m.set_shader_parameter(String(pair[0]), load(path))
-		else:
-			push_warning("LevelKit: missing texture %s" % path)
+	_feed(m, folder, "")
 	return m
+
+
+## Sets albedo<suffix>_tex, normal<suffix>_tex, rough<suffix>_tex and ao<suffix>_tex from a texture
+## folder (the normal map may be a .png or a .jpg; a set without an AO map leaves it white).
+static func _feed(m: ShaderMaterial, folder: String, suffix: String) -> void:
+	for pair in [["albedo", "color.jpg"], ["normal", "normal.png"], ["rough", "roughness.jpg"], ["ao", "ao.jpg"]]:
+		var path: String = folder + String(pair[1])
+		if not ResourceLoader.exists(path) and String(pair[0]) == "normal":
+			path = folder + "normal.jpg"
+		if ResourceLoader.exists(path):
+			m.set_shader_parameter("%s%s_tex" % [pair[0], suffix], load(path))
+		elif String(pair[0]) != "ao":
+			push_warning("LevelKit: missing texture %s" % path)
+
+
+const MANOR_TEXTURES: String = "res://assets/textures/manor/"
+## The manor's photo surfaces (MANOR_PBR_SHADER): key -> [folder, tint, span m, bump, grime, moss,
+## saturation, roughness bias]. The tints are the old hand-tuned night colours.
+const MANOR_SURFACES: Dictionary = {
+	"manor_stone": ["stone_dressed", Color(0.3, 0.29, 0.275), 2.4, 1.2, 0.45, 0.45, 0.35, 0.0],
+	"manor_stone_dark": ["stone_old", Color(0.2, 0.195, 0.185), 2.2, 1.3, 0.5, 0.7, 0.35, 0.0],
+	"manor_slate": ["slate", Color(0.075, 0.08, 0.09), 1.8, 1.0, 0.35, 0.3, 0.3, -0.1],
+	"manor_planks": ["planks", Color(0.16, 0.105, 0.068), 2.6, 1.0, 0.35, 0.0, 0.2, 0.0],
+	"manor_trim": ["wood", Color(0.11, 0.072, 0.05), 1.4, 1.0, 0.25, 0.0, 0.4, 0.0],
+	"manor_gravel": ["gravel", Color(0.24, 0.232, 0.22), 1.4, 1.2, 0.3, 0.15, 0.3, 0.0],
+	"manor_hedge": ["leaves", Color(0.075, 0.105, 0.05), 1.6, 1.4, 0.3, 0.0, 0.6, 0.0],
+	"manor_ceiling": ["plaster", Color(0.2, 0.19, 0.175), 3.0, 1.1, 0.6, 0.0, 0.25, 0.05],
+	"manor_ivy": ["leaves", Color(0.05, 0.075, 0.035), 0.9, 1.5, 0.3, 0.0, 0.6, 0.0],
+	"manor_rug": ["rug", Color(0.13, 0.035, 0.035), 1.3, 1.0, 0.25, 0.0, 0.3, 0.0],
+	"manor_rug_edge": ["rug", Color(0.11, 0.08, 0.035), 1.3, 1.0, 0.25, 0.0, 0.3, 0.0],
+	"manor_sheet": ["cloth", Color(0.32, 0.31, 0.28), 0.9, 1.2, 0.35, 0.0, 0.15, 0.0],
+	"manor_runner": ["rug", Color(0.14, 0.035, 0.03), 1.0, 1.0, 0.3, 0.0, 0.3, 0.0],  # the grand stair's carpet
+}
+
+
+static func _manor_surface(key: String) -> ShaderMaterial:
+	var spec: Array = MANOR_SURFACES[key]
+	var m := _textured(MANOR_PBR_SHADER, MANOR_TEXTURES + String(spec[0]) + "/")
+	var c: Color = spec[1]
+	m.set_shader_parameter("tint", Vector3(c.r, c.g, c.b))
+	m.set_shader_parameter("span", float(spec[2]))
+	m.set_shader_parameter("bump", float(spec[3]))
+	m.set_shader_parameter("grime", float(spec[4]))
+	m.set_shader_parameter("moss", float(spec[5]))
+	m.set_shader_parameter("saturation", float(spec[6]))
+	m.set_shader_parameter("rough_bias", float(spec[7]))
+	if key == "manor_hedge" or key == "manor_ivy":
+		m.set_shader_parameter("wobble", 0.12 if key == "manor_hedge" else 0.05)
+	return m
+
+
+static func _manor_walls() -> ShaderMaterial:
+	var m := _textured(MANOR_WALL_SHADER, MANOR_TEXTURES + "plaster_painted/")
+	_feed(m, MANOR_TEXTURES + "wood/", "2")
+	return m
+
+
+static func _manor_earth() -> ShaderMaterial:
+	var m := _textured(MANOR_EARTH_SHADER, MANOR_TEXTURES + "earth_moss/")
+	_feed(m, MANOR_TEXTURES + "earth_dirt/", "2")
+	return m
+
+
+## Every manor surface that measures height from the ground learns where the estate's ground is
+## (y 0 on its own, far below the building in the Stack). Called by the Manor as it builds.
+static func set_manor_ground(y: float) -> void:
+	for key in MANOR_SURFACES.keys() + ["manor_paper"]:
+		(mat(String(key)) as ShaderMaterial).set_shader_parameter("ground_y", y)
 
 
 static func _std(color: Color, roughness: float = 0.8, metallic: float = 0.0) -> StandardMaterial3D:
@@ -637,13 +791,6 @@ static func _emissive(color: Color, energy: float) -> StandardMaterial3D:
 static func _beacon() -> StandardMaterial3D:
 	var m := _emissive(Color(1.0, 0.04, 0.03), 9.0)
 	m.disable_fog = true
-	return m
-
-
-## The stone shader in a darker, wetter stone: crypt, chapel, the estate wall's coping.
-static func _stone_dark() -> ShaderMaterial:
-	var m := _shader_mat(MANOR_STONE_SHADER)
-	m.set_shader_parameter("stone", Vector3(0.24, 0.235, 0.23))
 	return m
 
 
@@ -682,6 +829,8 @@ static func _make(key: String) -> Material:
 		"iron": return _std(Color(0.18, 0.17, 0.16), 0.55, 0.85)
 		"chain": return _std(Color(0.5, 0.5, 0.54), 0.3, 0.95)
 		"paper": return _std(Color(0.95, 0.93, 0.85), 0.9)
+		"manor_frame": return _std(Color(0.3, 0.22, 0.08), 0.45, 0.6)  # tarnished gilt
+		"manor_canvas": return _std(Color(0.05, 0.045, 0.035), 0.55)  # a portrait gone black under its varnish
 		"door": return _std(Color(0.48, 0.33, 0.19), 0.55)
 		"fixture": return _std(Color(0.78, 0.78, 0.76), 0.35, 0.6)
 		"vent": return _std(Color(0.55, 0.55, 0.53), 0.5, 0.5)
@@ -731,16 +880,10 @@ static func _make(key: String) -> Material:
 		"flour": return _std(Color(0.9, 0.88, 0.82), 1.0)
 		"brass": return _std(Color(0.75, 0.6, 0.25), 0.3, 0.9)
 		# Level 4: the manor grounds.
-		"manor_earth": return _shader_mat(MANOR_EARTH_SHADER)
-		"manor_stone": return _shader_mat(MANOR_STONE_SHADER)
-		"manor_stone_dark": return _stone_dark()
-		"manor_hedge": return _shader_mat(HEDGE_SHADER)
-		"manor_paper": return _shader_mat(MANOR_PAPER_SHADER)
+		"manor_earth": return _manor_earth()
+		"manor_stone", "manor_stone_dark", "manor_hedge", "manor_planks", "manor_slate", "manor_gravel", "manor_trim", "manor_ceiling", "manor_ivy", "manor_rug", "manor_rug_edge", "manor_sheet", "manor_runner": return _manor_surface(key)
+		"manor_paper": return _manor_walls()
 		"manor_books": return _shader_mat(MANOR_BOOKS_SHADER)
-		"manor_planks": return _shader_mat(MANOR_PLANKS_SHADER)
-		"manor_slate": return _std(Color(0.07, 0.075, 0.085), 0.55, 0.15)
-		"manor_gravel": return _std(Color(0.3, 0.29, 0.27), 1.0)
-		"manor_trim": return _std(Color(0.11, 0.07, 0.05), 0.6)
 		"manor_window": return _std(Color(0.015, 0.018, 0.022), 0.08, 0.4)
 		"manor_window_lit": return _emissive(Color(0.95, 0.55, 0.22), 0.9)
 		"manor_candle": return _emissive(Color(1.0, 0.7, 0.35), 3.0)
@@ -877,7 +1020,7 @@ static func _manor_environment(quality: int) -> Environment:
 	env.reflected_light_source = Environment.REFLECTION_SOURCE_SKY
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	env.ambient_light_color = Color(0.36, 0.42, 0.44)
-	env.ambient_light_energy = 0.06
+	env.ambient_light_energy = 0.085  # enough to read the stone and bark out of the beam; still a dark night
 	env.tonemap_mode = Environment.TONE_MAPPER_AGX
 	env.tonemap_exposure = 1.0
 	env.glow_enabled = true
@@ -886,17 +1029,24 @@ static func _manor_environment(quality: int) -> Environment:
 	env.glow_hdr_threshold = 1.05
 	env.ssao_enabled = quality >= 1
 	env.fog_enabled = true
-	env.fog_light_color = Color(0.05, 0.06, 0.06)
-	env.fog_density = 0.09  # a few tombstones deep and then nothing
+	# Far things fade into grey mist, not into black: at night unlit fog only reads as more dark.
+	env.fog_light_color = Color(0.075, 0.085, 0.085)
+	# With volumetric fog on, it carries the fog (the mansion and the crypt take it away indoors);
+	# the depth fog, which nothing can take away, only fades the distance.
+	env.fog_density = 0.016 if quality >= 1 else 0.09
 	env.fog_sky_affect = 0.85
 	env.fog_height = 1.8
-	env.fog_height_density = 0.15  # thicker still near the ground
-	env.volumetric_fog_enabled = quality >= 2
-	env.volumetric_fog_density = 0.05
-	env.volumetric_fog_albedo = Color(0.6, 0.66, 0.64)
-	env.volumetric_fog_length = 48.0
-	env.volumetric_fog_anisotropy = 0.5
-	env.volumetric_fog_ambient_inject = 0.08
+	env.fog_height_density = 0.03 if quality >= 1 else 0.15  # thicker still near the ground
+	# The moving mist and banks (Manor._build_fog_banks) are fog volumes: they need volumetric fog,
+	# so the manor has it from Medium up, not only on High.
+	env.volumetric_fog_enabled = quality >= 1
+	env.volumetric_fog_density = 0.04
+	env.volumetric_fog_albedo = Color(0.74, 0.78, 0.78)
+	env.volumetric_fog_emission = Color(0.012, 0.014, 0.014)
+	env.volumetric_fog_length = 64.0
+	env.volumetric_fog_anisotropy = 0.45
+	env.volumetric_fog_ambient_inject = 0.35
+	env.volumetric_fog_temporal_reprojection_amount = 0.8  # less smearing behind the moving banks
 	env.adjustment_enabled = true
 	env.adjustment_contrast = 1.08
 	env.adjustment_saturation = 0.72
@@ -978,7 +1128,7 @@ class BoxBatch:
 				var pmi := MultiMeshInstance3D.new()
 				pmi.name = "%s_prop_%s_%d_%d" % [prefix, key, ck.x, ck.y]
 				pmi.multimesh = pmm
-				pmi.material_override = PropMeshes.material()
+				pmi.material_override = PropMeshes.material_for(key)
 				pmi.visibility_range_end = PROP_DRAW_RANGE
 				pmi.visibility_range_end_margin = 4.0
 				pmi.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF

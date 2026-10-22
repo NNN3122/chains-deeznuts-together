@@ -717,7 +717,42 @@ func _tour_manor(m: Manor) -> void:
 	await _free_cam("81_grounds_from_above", Vector3(34.0, 26.0, 30.0), Vector3(-4.0, 0.0, -18.0))
 	await _shot("82_mansion_front", tp["m_mansion"] + Vector3(4.0, 0.0, 12.0), 0.15, 0.12, true)
 	await _shot("83_foyer", tp["foyer"], 0.0, 0.08, true)
+	var o := m.origin
+	await _shot("83b_grand_stair", o + Vector3(0.0, 0.1, -37.5), 0.0, 0.12, true)
+	await _shot("83c_up_the_stair", o + Vector3(0.0, 2.6, -49.6), 0.0, 0.18, true)
+	await _shot("83d_upstairs_gallery", o + Vector3(-1.0, Manor.FLOOR2_Y + 0.1, -59.5), PI, -0.3, true)
+	await _shot("83e_master_bedroom", o + Vector3(-11.0, Manor.FLOOR2_Y + 0.1, -42.0), PI * 0.5, -0.12, true)
+	await _shot("83f_nursery", o + Vector3(-11.0, Manor.FLOOR2_Y + 0.1, -55.0), PI * 0.5 + 0.3, -0.12, true)
+	await _shot("83g_mansion_from_the_drive", o + Vector3(3.0, 0.1, -27.0), 0.15, 0.3, true)
+	await _shot("83h_dining_room", o + Vector3(-11.0, 0.1, -38.6), 0.93, -0.18, true)
+	await _shot("83i_parlour_under_sheets", o + Vector3(11.0, 0.1, -38.2), -0.84, -0.15, true)
+	await _shot("83j_stables_yard", o + Vector3(51.0, 0.1, 10.0), -PI * 0.5 + 0.2, -0.12, true)
+	await _shot("83k_urns_down_the_drive", o + Vector3(1.5, 0.1, 21.0), PI, -0.05, true)
 	await _shot("84_library_engine", tp["engine0"] + Vector3(1.5, 0.0, 2.0), 0.4, -0.2, true)
+	# Crouched at it, the page comes up; a few words typed.
+	var e0: ManorMachine = m.machines[0]
+	var stand: Vector3 = tp["engine0"]
+	var to := e0.global_position - stand
+	var yaw0 := atan2(-to.x, -to.z)
+	var line := Net.get_chain_bodies()
+	for i in line.size():
+		line[i].teleport_to(stand + Vector3(1.1 * float(i), 0.0, -0.6 * float(i)), yaw0)
+	_host._apply_input(Vector2.ZERO, yaw0, 0.0, Player.FLAG_BRACE)
+	await _wait(0.6)
+	_host._apply_input(Vector2.ZERO, yaw0, 0.0, 0)
+	var panel := get_tree().get_first_node_in_group("typing_panel") as TypingPanel
+	if panel != null and panel.page >= 0:
+		var text: String = ManorMachine.TYPE_TEXTS[panel.page]
+		for k in 34:
+			for down: bool in [true, false]:
+				var ev := InputEventKey.new()
+				ev.unicode = text.unicode_at(ManorMachine.skip_untyped(text, panel.cursor)) if down else 0
+				ev.pressed = down
+				Input.parse_input_event(ev)
+			await _wait(0.03)
+	await _shot_here("84b_typing_an_engine", yaw0, -0.3, true)
+	if panel != null:
+		panel.close(true)
 	await _shot("85_graveyard", Vector3(-35.0, 0.1, 2.0), PI * 0.5, 0.02, true)
 	await _shot("86_crypt", Vector3(-43.0, 0.1, -12.0), PI * 0.5 - 0.15, 0.05, false)
 	await _shot("87_crypt_engine", tp["engine1"] + Vector3(0.6, 0.0, 0.0), PI * 0.5, -0.2, true)

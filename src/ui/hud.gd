@@ -64,6 +64,7 @@ var _slot_names: Array[Label] = []
 var _slot_subs: Array[Label] = []
 var _burn_label: Label
 var _machine_label: Label  # Level 4: the engine you're standing at, how far along, what to do
+var typing: TypingPanel  # Level 4: the page you type to repair an engine
 var _grabs_seen: int = 0  # grabs this world: the escape instructions show on the first
 var _hud_was_grabbed: bool = false
 var _voice_label: Label
@@ -128,8 +129,8 @@ const HINTS: Array = [
 		"THE STACKS: narrow chimneys far apart. Sprint, jump from the very edge, land, jump again. Your Ballast swings along on the chain."],
 	["l_escape_foot", "THE FIRE ESCAPE: landing by landing, walk into the side of the next one and tap Space. Whoever's below braces if someone slips.",
 		"THE FIRE ESCAPE: landing by landing, walk into the side of the next one and tap Space. Your Ballast comes up on the chain."],
-	["m_spawn", "ASHGRAVE MANOR. Four old engines are out there in the fog: crouch at one and hold Ctrl to repair it (together is faster; a crack of the wrench helps, loudly). Something with a lantern walks the grounds: it hears engines being worked and kicks the ones you leave half done.",
-		"ASHGRAVE MANOR. Four old engines are out there in the fog: crouch at one and hold Ctrl to repair it (a crack of the wrench helps, loudly). Something with a lantern walks the grounds: it hears engines being worked and kicks the ones you leave half done."],
+	["m_spawn", "ASHGRAVE MANOR. Four old engines are out there in the fog: crouch at one (Ctrl) and type out the page that comes up to repair it (together is faster; a wrong key clangs; a crack of the wrench helps, loudly). Something with a lantern walks the grounds: it hears engines being worked and kicks the ones you leave half done.",
+		"ASHGRAVE MANOR. Four old engines are out there in the fog: crouch at one (Ctrl) and type out the page that comes up to repair it (a wrong key clangs; a crack of the wrench helps, loudly). Something with a lantern walks the grounds: it hears engines being worked and kicks the ones you leave half done."],
 	["m_mansion", "THE MANOR: the low windows are climbable (walk at the sill, tap Space). It has to go round by the doors. Use that.",
 		"THE MANOR: the low windows are climbable (walk at the sill, tap Space). It has to go round by the doors."],
 	["m_generator", "THE MAIN GENERATOR: dead until all four engines run. Then hold Ctrl at it: the lamps come on and the south gate opens.",
@@ -300,6 +301,8 @@ func _ready() -> void:
 	_machine_label.grow_vertical = Control.GROW_DIRECTION_BEGIN
 	_machine_label.visible = false
 	root.add_child(_machine_label)
+	typing = TypingPanel.new()  # not under the see-through root: the page has to read clearly
+	add_child(typing)
 	_voice_label = UiTheme.text("", 14, Color(0.6, 1.0, 0.7))
 	_voice_label.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_RIGHT, Control.PRESET_MODE_MINSIZE, 20)
 	_voice_label.offset_top -= 70.0
@@ -456,6 +459,7 @@ func night_static_face() -> void:
 
 func reset() -> void:
 	_hints_shown.clear()
+	typing.close(false)
 	_night.visible = false
 	_night.clear_scare()
 	for entry in _caption_lines:
@@ -570,7 +574,7 @@ func _process(delta: float) -> void:
 		if mm != null and mm.global_position.distance_to(me.global_position) < ManorMachine.REACH + (1.6 if mm.is_main else 0.9):
 			line = mm.hud_line()
 			break
-	_machine_label.visible = line != "" and Settings.hud_mode != 2
+	_machine_label.visible = line != "" and Settings.hud_mode != 2 and not typing.visible
 	if _machine_label.visible:
 		_machine_label.text = line
 	_voice_label.text = Voice.status_text()

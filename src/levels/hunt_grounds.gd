@@ -44,6 +44,12 @@ func hire_callout(_caller: HollowHire, _target: Player) -> void:
 	pass
 
 
+## The height a hunter on floor i stands at, at p (fallback: its floor's height). The manor lifts
+## its Groundskeeper up the stair and onto the upper floor.
+func ground_y(_i: int, _p: Vector3, fallback: float) -> float:
+	return fallback
+
+
 ## Any cell of the grid, for a wander with nowhere better to go.
 func random_cell(_rng: RandomNumberGenerator) -> Vector2i:
 	return Vector2i.ZERO

@@ -78,7 +78,7 @@ func _notification(what: int) -> void:
 
 
 func _input(event: InputEvent) -> void:
-	if GameState.ui_blocking:
+	if GameState.ui_blocking or GameState.typing:
 		return
 	if event is InputEventKey:
 		var now := Time.get_ticks_msec()
@@ -186,7 +186,7 @@ func grace_ms() -> int:
 ## 0 = released, 1 = held. In Remote Controls mode a key just released is still held at reduced
 ## strength until a repeat press proves it was a real hold.
 func strength(action: String) -> float:
-	if GameState.ui_blocking:
+	if GameState.ui_blocking or GameState.typing:
 		return 0.0
 	if bool(_down.get(action, false)):
 		if Input.is_action_pressed(action):
@@ -216,6 +216,8 @@ func _axis(neg: String, pos: String) -> float:
 func move_vector() -> Vector2:
 	var v := Vector2(_axis("move_left", "move_right"), _axis("move_forward", "move_back"))
 	v.y += _axis("walk_forward_alt", "walk_back_alt")
+	if GameState.typing:
+		auto_run = false  # crouched over an engine typing, nobody walks off
 	if auto_run and v.y >= 0.0 and not held("move_back") and not held("walk_back_alt"):
 		v.y = -1.0
 	if held("move_back") or held("walk_back_alt"):
@@ -237,7 +239,7 @@ func key_look(delta: float) -> Vector2:
 ## -1..1 tilts down/up (a remote cursor stops at the window's bottom, and you could no longer look
 ## down). It only lasts EDGE_HOLD_MS after the cursor last moved, so a forgotten cursor stops.
 func edge_look() -> Vector2:
-	if not Settings.remote_mode or GameState.ui_blocking or Input.mouse_mode != Input.MOUSE_MODE_CONFINED_HIDDEN:
+	if not Settings.remote_mode or GameState.ui_blocking or GameState.typing or Input.mouse_mode != Input.MOUSE_MODE_CONFINED_HIDDEN:
 		return Vector2.ZERO
 	# Unfocused, the cursor isn't ours: it may be resting anywhere, including an edge.
 	if DisplayServer.get_name() == "headless" or not get_window().has_focus():
@@ -312,7 +314,7 @@ func slot_request() -> int:
 func use_held() -> bool:
 	if held("use_item"):
 		return true
-	if GameState.ui_blocking:
+	if GameState.ui_blocking or GameState.typing:
 		return false
 	# Left mouse fires items when the mouse is captured, or always in Remote Controls mode.
 	if Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):

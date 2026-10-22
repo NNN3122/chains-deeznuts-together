@@ -1862,6 +1862,7 @@ func _test_airlift() -> void:
 	_test_m_grid()
 	m.machines[0].debug_complete()  # the catch test wants a running engine to stay running
 	await _test_m_chase()
+	await _test_m_stairs()
 	_check("the catch was a layoff back to the manor's stables, not to the roof or the office", GameState.checkpoint_index == cp and _stack.level_index_at(_host.global_position) == 3, "checkpoint %d, host %s" % [GameState.checkpoint_index, _host.global_position])
 	await _test_m_generator()
 	_check("the run ends at the manor's south gate", GameState.escaped and GameState.escape_line.begins_with("Out of Ashgrave"), GameState.escape_line)
@@ -3216,6 +3217,14 @@ func _run_manor(m: Manor) -> void:
 	_check("manor: four engines, the main generator, the gate and the Groundskeeper; you start with a flashlight and a wrench",
 		m.machines.size() == 4 and m.generator != null and m.gate != null and m.keeper != null and kit_ok, "engines %d, kit %s" % [m.machines.size(), kit_ok])
 	_check("manor: its own task list is up", GameState.tasks.size() == Manor.TASKS.size(), "%d tasks" % GameState.tasks.size())
+	var bank0: Vector3 = (m._fog_banks[0][0] as FogVolume).position
+	var tile0: Vector3 = m._fog_tiles[0].position
+	await _wait(1.5)
+	var bank_moved: float = (m._fog_banks[0][0] as FogVolume).position.distance_to(bank0)
+	var tile_moved := m._fog_tiles[0].position.distance_to(tile0)
+	_check("manor: the fog moves: %d banks wander and %d tiles of mist drift on the wind" % [m._fog_banks.size(), m._fog_tiles.size()],
+		m._fog_banks.size() == Manor.FOG_BANKS and m._fog_tiles.size() == Manor.FOG_TILES * Manor.FOG_TILES and bank_moved > 0.3 and tile_moved > 0.3,
+		"bank moved %.2f m, mist %.2f m in 1.5 s" % [bank_moved, tile_moved])
 	if only != "":
 		await call("_test_" + only)
 		_finish()
@@ -3226,6 +3235,7 @@ func _run_manor(m: Manor) -> void:
 	await _test_m_kick()
 	await _test_m_draw()
 	await _test_m_chase()
+	await _test_m_stairs()
 	await _test_m_generator()
 	_finish()
 
@@ -3237,11 +3247,11 @@ func _test_m_grid() -> void:
 	var o := m.origin  # zero on its own; far below the building in the Stack
 	var home := m.cell_of(o + Manor.KEEPER_HOME)
 	var bad := ""
-	for key in ["engine0", "engine1", "engine2", "engine3", "generator", "gate_inside", "spawn", "foyer"]:
+	for key in ["engine0", "engine1", "engine2", "engine3", "generator", "gate_inside", "spawn", "foyer", "upstairs", "upstairs_room"]:
 		var path := m.route(0, home, m.cell_of(m.test_points[key]))
 		if path.is_empty():
 			bad += key + " "
-	_check("manor: from the graveyard the Groundskeeper's grid reaches every engine, the generator, the gate, the stables and the foyer", bad == "", bad)
+	_check("manor: from the graveyard the Groundskeeper's grid reaches every engine, the generator, the gate, the stables, the foyer and the upper floor (by the stair)", bad == "", bad)
 	var space := _host.get_world_3d().direct_space_state
 	var q := PhysicsRayQueryParameters3D.create(o + Vector3(0.0, 1.0, -8.0), o + Vector3(0.0, 1.0, Manor.GATE_Z - 1.0), ChainBody.LAYER_WORLD)
 	var hit := space.intersect_ray(q)
@@ -3250,8 +3260,10 @@ func _test_m_grid() -> void:
 		"hit %s, path %d cells" % [str(hit.get("position", "none")), drive.size()])
 
 
-## Crouched at an engine (Ctrl), it comes along; it's noise while you work; let go and it holds;
-## at 100% it runs, and the task's count goes up.
+## Crouched at an engine (Ctrl) a page of its book comes up and the keys type instead of walking
+## you; right keys bring it along (and it's noise while you type), a wrong one clangs and knocks it
+## back, Esc steps away (not into the pause menu) and it holds; typed to the end it runs for good.
+## Real key events, through the HUD's TypingPanel and the host's checks.
 func _test_m_repair() -> void:
 	var m := _manor
 	var e: ManorMachine = m.machines[0]
@@ -3260,22 +3272,66 @@ func _test_m_repair() -> void:
 	var yaw := atan2(-to.x, -to.z)
 	_place(stand, yaw)
 	await _wait(0.4)
+	var panel := get_tree().get_first_node_in_group("typing_panel") as TypingPanel
 	_bot(Vector2.ZERO, yaw, Player.FLAG_BRACE)
-	await _wait(3.0)
-	var p1 := e.progress
-	var heard := e.noise_level()
-	var was_working := e.working
+	await _wait(0.5)
 	_bot(Vector2.ZERO, yaw, 0)
-	await _wait(1.0)
+	var opened := panel != null and panel.machine == e and panel.page >= 0 and GameState.typing
+	_check("manor: crouched at an engine a page of its book comes up, and the keys are for typing now", opened,
+		"panel %s, machine %s, page %d, typing %s" % [panel != null, panel.machine == e if panel != null else false, panel.page if panel != null else -2, GameState.typing])
+	if not opened:
+		return
+	var text: String = ManorMachine.TYPE_TEXTS[panel.page]
+	var p0 := e.progress
+	var pos0 := _host.global_position
+	var heard := 0.0
+	for k in 30:
+		_type_key(text.unicode_at(ManorMachine.skip_untyped(text, panel.cursor)))
+		await _wait(0.03)
+		heard = maxf(heard, e.noise_level())
+	await _wait(0.2)
+	var p1 := e.progress
+	var moved := _host.global_position.distance_to(pos0)
+	_check("manor: each right key brings it along (30 keys, %.0f%% of it), it's noise while you type, and the letters don't walk you anywhere" % (3000.0 / ManorMachine.TYPE_CHARS),
+		absf(p1 - p0 - 30.0 / ManorMachine.TYPE_CHARS) < 0.006 and heard >= ManorMachine.NOISE_WORK and moved < 0.3, "%.3f -> %.3f, noise %.0f, moved %.2f m" % [p0, p1, heard, moved])
+	var want := text.unicode_at(ManorMachine.skip_untyped(text, panel.cursor))
+	var wrong := 113 if String.chr(want).to_lower() == "z" else 122  # q or z
+	var c0 := panel.cursor
+	_type_key(wrong)
+	await _wait(0.1)
+	_check("manor: a wrong key clangs (something hears it) and knocks the engine back, and your place on the page stays",
+		e.progress < p1 - ManorMachine.TYPE_MISS * 0.9 and e.noise_level() >= ManorMachine.NOISE_MISS and panel.cursor == c0, "%.3f -> %.3f, noise %.0f, place %d -> %d" % [p1, e.progress, e.noise_level(), c0, panel.cursor])
+	_type_key(0, KEY_ESCAPE)
+	await _wait(0.2)
 	var p2 := e.progress
-	_check("manor: crouched at an engine it comes along (a few percent in 3 s), it's noise while you work, and it holds when you stop",
-		p1 > 0.04 and was_working and heard >= ManorMachine.NOISE_WORK and absf(p2 - p1) < 0.01 and not e.working, "%.3f then %.3f, noise %.0f" % [p1, p2, heard])
+	await _wait(1.5)
+	_check("manor: Esc steps away from the page (not into the pause menu; the keys walk again), and the engine holds where it was",
+		panel.machine == null and not GameState.typing and not GameState.ui_blocking and absf(e.progress - p2) < 0.005 and not e.working, "open %s, typing %s, menu %s, %.3f -> %.3f" % [panel.machine != null, GameState.typing, GameState.ui_blocking, p2, e.progress])
 	e.progress = 0.97
 	_bot(Vector2.ZERO, yaw, Player.FLAG_BRACE)
-	await _wait(2.5)
+	await _wait(0.5)
 	_bot(Vector2.ZERO, yaw, 0)
-	var text := String(GameState.tasks[Manor.TASK_ENGINES][0])
-	_check("manor: at 100% the engine runs for good and the task counts it (1 of 4)", e.done and m.engines_running() == 1 and text.contains("1 of 4"), "%s, %s" % [e.done, text])
+	for k in 14:
+		if panel.machine == null or panel.page < 0:
+			break
+		text = ManorMachine.TYPE_TEXTS[panel.page]
+		_type_key(text.unicode_at(ManorMachine.skip_untyped(text, panel.cursor)))
+		await _wait(0.03)
+	await _wait(0.3)
+	var task := String(GameState.tasks[Manor.TASK_ENGINES][0])
+	_check("manor: typed to the end the engine runs for good, the page closes and the task counts it (1 of 4)",
+		e.done and m.engines_running() == 1 and task.contains("1 of 4") and panel.machine == null and not GameState.typing, "%s, %s, open %s" % [e.done, task, panel.machine != null])
+
+
+## A key as the keyboard sends it: down (with its character) and up.
+func _type_key(unicode: int, code: Key = KEY_NONE) -> void:
+	for down: bool in [true, false]:
+		var ev := InputEventKey.new()
+		ev.keycode = code
+		ev.physical_keycode = code
+		ev.unicode = unicode if down else 0
+		ev.pressed = down
+		Input.parse_input_event(ev)
 
 
 ## A crack of the wrench at an engine jumps it along.
@@ -3322,9 +3378,9 @@ func _test_m_kick() -> void:
 	_place(stand, atan2(-to.x, -to.z))
 	k.debug_reset(Manor.KEEPER_HOME, 0.0)
 	await _wait(0.3)
-	_bot(Vector2.ZERO, atan2(-to.x, -to.z), Player.FLAG_BRACE)
-	await _wait(1.0)
-	_bot(Vector2.ZERO, 0.0, 0)
+	e.debug_type(1, 5)  # somebody types at it again
+	await _wait(0.5)
+	e.server_end_typing(1)
 	_check("manor: the Groundskeeper kicks a half-done engine it passes (it runs down), and working it again stops that",
 		kicked and falling and not e.regressing, "kicked %s, falling %s (%.3f), regressing now %s" % [kicked, falling, p1, e.regressing])
 
@@ -3341,14 +3397,15 @@ func _test_m_draw() -> void:
 	k.debug_reset(Manor.KEEPER_HOME, 0.0)
 	k.debug_frozen = false
 	await _wait(0.3)
-	_bot(Vector2.ZERO, yaw, Player.FLAG_BRACE)
 	m._draw_t = 0.2
-	await _wait(1.0)
+	for i in 10:  # typing at it, a key every tenth of a second
+		e.debug_type(1, 1)
+		await _wait(0.1)
 	var sent := k.hstate == HollowHire.HState.INVESTIGATE and k._goal.distance_to(e.global_position) < 3.0
 	var start_d := k.global_position.distance_to(e.global_position)
 	await _wait(4.0)
 	var closer := k.global_position.distance_to(e.global_position) < start_d - 4.0
-	_bot(Vector2.ZERO, yaw, 0)
+	e.server_end_typing(1)
 	k.debug_frozen = true
 	_check("manor: work on an engine sends the Groundskeeper to it", sent and closer, "state %d, goal %.1f m off, closed %.1f m" % [k.hstate, k._goal.distance_to(e.global_position), start_d - k.global_position.distance_to(e.global_position)])
 
@@ -3388,6 +3445,58 @@ func _test_m_chase() -> void:
 	var home := _host.global_position.distance_to(m.test_points["spawn"]) < 4.0
 	_check("manor: the Groundskeeper sees you, runs you down, takes you: a layoff back to the stables, the running engine still running",
 		saw and grabbed and GameState.wipes > wipes0 and home and m.machines[0].done, "saw %s, grabbed %s, wipes %d -> %d, home %s" % [saw, grabbed, wipes0, GameState.wipes, home])
+
+
+## The grand stair, walked up for real (a ramp under the treads; the partner comes up on the chain)
+## onto the upper floor; then the Groundskeeper, sent from the foyer, follows you up it and takes you
+## there, and after the layoff it is back downstairs.
+func _test_m_stairs() -> void:
+	var m := _manor
+	var o := m.origin
+	_place(m.test_points["stair_foot"], 0.0)  # yaw 0 looks toward -z: up the stair
+	if _mate != null:
+		_mate.teleport_to(m.test_points["stair_foot"] + Vector3(0.0, 0.0, 1.2), 0.0)
+	await _wait(0.4)
+	for i in 70:
+		_bot(Vector2(0.0, -1.0), 0.0, 0)
+		_drive_mate(Vector2(0.0, -1.0), 0, false)  # a co-op partner climbs too (the Ballast is hauled)
+		await _wait(0.1)
+		if _host.global_position.z - o.z < Manor.STAIR_TOP.z + 0.5:
+			break
+	_bot(Vector2.ZERO, 0.0, 0)
+	_drive_mate(Vector2.ZERO, 0, false)
+	await _wait(0.5)
+	var up := _host.global_position.y - o.y
+	var mate_up := _mate == null or _mate.global_position.y - o.y > Manor.FLOOR2_Y - 1.5
+	_check("manor: the grand stair walks straight up onto the upper floor, nothing to jump, the partner coming up on the chain",
+		up > Manor.FLOOR2_Y - 0.3 and up < Manor.FLOOR2_Y + 0.5 and _host.global_position.z - o.z < Manor.STAIR.position.y and mate_up,
+		"host %.2f m up at z %.1f, partner %.2f m up" % [up, _host.global_position.z - o.z, (_mate.global_position.y - o.y) if _mate != null else 0.0])
+	# It comes up after you.
+	var k := m.keeper
+	_place(m.test_points["upstairs"], PI)  # on the landing, looking back over the stairwell
+	_park_mate_clear()
+	await _wait(0.3)
+	m._set_keeper_floor(false)
+	k.debug_reset(o + Vector3(0.0, 0.0, -38.5), PI)
+	k.debug_frozen = false
+	k.alert(_host.global_position, 30.0)
+	var wipes0 := GameState.wipes
+	var went_up := false
+	var grabbed := false
+	for i in 300:
+		await _wait(0.1)
+		if k.floor_index == 1 and absf(k.global_position.y - o.y - Manor.FLOOR2_Y) < 0.2:
+			went_up = true
+		if k.grab_peer != 0:
+			grabbed = true
+		if GameState.wipes > wipes0:
+			break
+	await _wait(1.6)
+	k.debug_frozen = true
+	var home := _host.global_position.distance_to(m.test_points["spawn"]) < 4.0
+	_check("manor: the Groundskeeper follows you up the stair and takes you on the upper floor; after the layoff it's back on the ground",
+		went_up and grabbed and GameState.wipes > wipes0 and home and k.floor_index == 0 and absf(k.global_position.y - o.y) < 0.2,
+		"went up %s, grabbed %s, wipes %d -> %d, home %s, its floor %d at %.1f m" % [went_up, grabbed, wipes0, GameState.wipes, home, k.floor_index, k.global_position.y - o.y])
 
 
 ## All four engines run: the main generator is armed. Held at its switch it starts, the lamps come

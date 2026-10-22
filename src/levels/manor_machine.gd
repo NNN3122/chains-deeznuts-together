@@ -1,21 +1,40 @@
 class_name ManorMachine
 extends Node3D
 ## One of the four old pump engines scattered over the Ashgrave estate, or (is_main) the main
-## generator in the courtyard. An engine is repaired by whoever crouches at it holding Ctrl
-## (braced, within REACH): one player alone takes REPAIR_SECONDS, every extra pair of hands adds
-## TEAM_BONUS of a player, and a crack of the wrench (it is "repairable") jumps it WRENCH_BOOST at
-## the cost of a bang everything hears. Work is noise: something on the grounds hears a machine
-## being worked on ("noise_source"), and Manor sends the Groundskeeper to it. Left half-done, a
-## machine the Groundskeeper walks past gets kicked (server_kick): it clangs and runs back down
-## until someone works on it again. At 100% it coughs into life and runs for good. The main
-## generator is dead until all four engines run (armed); then holding Ctrl at its switch for
-## START_SECONDS throws it, the estate's lamps come on and the south gate grinds open.
-## Host-authoritative: progress, done, working, regressing and armed are replicated.
+## generator in the courtyard. An engine is repaired by typing (the user: "make it harder than just
+## holding ctrl"): crouch at it (Ctrl, within REACH) and the HUD's TypingPanel gives you a page of
+## its maintenance book to type out; every right key is 1/TYPE_CHARS of the engine (about one page
+## each, alone), every wrong one clangs (NOISE_MISS) and costs TYPE_MISS. Everyone at it types their
+## own page, so more hands are faster. A crack of the wrench (it is "repairable") jumps it
+## WRENCH_BOOST at the cost of a bang everything hears. Work is noise: something on the grounds
+## hears a machine being worked on ("noise_source"), and Manor sends the Groundskeeper to it. Left
+## half-done, a machine the Groundskeeper walks past gets kicked (server_kick): it clangs and runs
+## back down until someone works on it again. At 100% it coughs into life and runs for good. The
+## main generator is a switch, not a repair: dead until all four engines run (armed), then holding
+## Ctrl at it for START_SECONDS throws it, the estate's lamps come on and the south gate opens.
+## Host-authoritative: progress, done, working, regressing and armed are replicated; each typist's
+## page and place in it go to that typist alone (_rpc_typing), and their keys come back one by one.
 
 const REACH: float = 2.1  # m from its middle
-const REPAIR_SECONDS: float = 45.0  # one player, braced the whole time
-const TEAM_BONUS: float = 0.7  # each extra player braced at it adds this much of a player
+const TYPE_CHARS: float = 210.0  # right keys to repair an engine from nothing: about one page
+const TYPE_MISS: float = 0.02  # of the engine a wrong key knocks off
+const TYPE_LINGER: float = 1.2  # s after a right key it still counts as being worked on
+const MISS_NOISE_TIME: float = 1.0  # s a wrong key's clang carries
+const NOISE_MISS: float = 85.0
 const WRENCH_BOOST: float = 0.03  # of the machine per crack of the wrench
+## The engines' maintenance book, a page at a time (punctuation types itself; case doesn't matter).
+const TYPE_TEXTS: Array[String] = [
+	"Prime the pump with three strokes of the handle and listen. If the engine answers, open the valve slowly. If something else answers from under the floor, close it and do not open it again tonight.",
+	"Clean the spark plug with the rag kept in the tin. The rag is not to be used for anything else, no matter what is on it, and no matter who is asking you for it.",
+	"Turn the flywheel by hand until it catches. It will catch on the fourth turn. If it catches on the third, you are not alone in here, and you should leave by the window.",
+	"Check the oil, then check it again. The level should not change between the two looks. If it has risen, something has been drinking from the reservoir and it will want more.",
+	"Tighten every bolt on the housing by a quarter turn and count them as you go. There are twelve. If you count thirteen, stop counting and do not look at the last one.",
+	"Bleed the line until the water runs clear. It runs red for a while in the autumn. The master says that is rust. The master has not been seen since the last autumn.",
+	"Open the fuel cock and wait for the smell of paraffin. If you smell lilies instead, the old mistress is standing behind you, and she does not like the noise of the engine.",
+	"Hold the choke down and pull the cord in one long breath. Do not stop halfway. Whatever is holding the other end of the cord will let go if you are steady and quick.",
+	"Replace the belt if it has stretched. Spare belts hang in the cellar beside the hooks. Do not use what hangs on the hooks. They are not belts and they never were.",
+	"When the engine runs at last, walk away and do not thank it. It does not run for you. It runs because it is afraid of the man with the lantern, the same as you are.",
+]
 const START_SECONDS: float = 4.0  # main: braced at its switch this long
 const REGRESS_SECONDS: float = 100.0  # a kicked machine runs all the way down in this long
 const NOISE_WORK: float = 48.0  # what something on the grounds hears while it's being worked on
@@ -35,8 +54,17 @@ var working: bool = false
 var regressing: bool = false
 var armed: bool = false  # main: every engine is running, its switch can be thrown
 
+# Every peer: this peer's own page here, as the server last told it (-1: not typing here).
+var local_text: int = -1
+var local_cursor: int = 0
+signal typing_changed(missed: bool)
+
 # Server.
 var _wrench_t: float = 0.0
+var _type_t: float = 0.0  # s left of "being worked on" after the last right key
+var _miss_t: float = 0.0
+var _typists: Dictionary = {}  # peer id -> [page, cursor]
+var _pages: int = 0  # pages handed out here, so each typist gets the next
 
 # Visuals.
 var _engine: AudioStreamPlayer3D
@@ -79,7 +107,7 @@ func _ready() -> void:
 	var size := size_m()
 	var mi := MeshInstance3D.new()
 	mi.mesh = PropMeshes.mesh(key)
-	mi.material_override = PropMeshes.material()
+	mi.material_override = PropMeshes.material_for(key)  # rusted iron
 	add_child(mi)
 	var body := StaticBody3D.new()
 	body.collision_layer = ChainBody.LAYER_WORLD
@@ -159,20 +187,24 @@ func server_arm() -> void:
 
 
 func noise_level() -> float:
+	if _miss_t > 0.0:
+		return NOISE_MISS
 	if working:
 		return NOISE_WORK
 	return NOISE_RUNNING if done and not is_main else 0.0
 
 
-## Players braced at it right now.
+## Within reach of it (and on its floor).
+func in_reach(p: Player) -> bool:
+	var d := p.global_position - global_position
+	return absf(d.y) < 1.5 and Vector2(d.x, d.z).length() < REACH + (0.6 if is_main else 0.0)
+
+
+## Players braced at it right now (the main generator's switch).
 func workers() -> Array[Player]:
 	var out: Array[Player] = []
-	var reach := REACH + (0.6 if is_main else 0.0)
 	for p in Net.get_players():
-		if p.state != Player.State.NORMAL or not p.is_bracing():
-			continue
-		var d := p.global_position - global_position
-		if absf(d.y) < 1.5 and Vector2(d.x, d.z).length() < reach:
+		if p.state == Player.State.NORMAL and p.is_bracing() and in_reach(p):
 			out.append(p)
 	return out
 
@@ -185,18 +217,28 @@ func _physics_process(delta: float) -> void:
 
 func _server_tick(delta: float) -> void:
 	_wrench_t = maxf(0.0, _wrench_t - delta)
+	_type_t = maxf(0.0, _type_t - delta)
+	_miss_t = maxf(0.0, _miss_t - delta)
+	# A typist who was taken, knocked down or walked off stops typing here.
+	for peer: int in _typists.keys():
+		var p := Net.find_player(peer)
+		if p == null or p.state != Player.State.NORMAL or not in_reach(p):
+			_typists.erase(peer)
+			if p != null:
+				_rpc_typing.rpc_id(peer, -1, 0, false)
 	if done or (is_main and not armed):
 		working = false
 		return
-	var n := workers().size()
-	working = n > 0 or _wrench_t > 0.0
-	if n > 0:
-		regressing = false
-		var rate := (1.0 + TEAM_BONUS * float(n - 1)) / (START_SECONDS if is_main else REPAIR_SECONDS)
-		progress = minf(1.0, progress + rate * delta)
-		if progress >= 1.0:
-			_complete()
-	elif regressing:
+	if is_main:
+		var n := workers().size()
+		working = n > 0 or _wrench_t > 0.0
+		if n > 0:
+			progress = minf(1.0, progress + float(n) / START_SECONDS * delta)
+			if progress >= 1.0:
+				_complete()
+		return
+	working = _type_t > 0.0 or _wrench_t > 0.0
+	if regressing and _type_t <= 0.0:
 		progress = maxf(0.0, progress - delta / REGRESS_SECONDS)
 		if progress <= 0.0:
 			regressing = false
@@ -207,9 +249,133 @@ func _complete() -> void:
 	done = true
 	working = false
 	regressing = false
+	for peer: int in _typists.keys():
+		_rpc_typing.rpc_id(peer, -1, 0, false)
+	_typists.clear()
 	_rpc_done.rpc()
 	if level != null:
 		level.on_machine_done(self)
+
+
+# --- Typing (engines) ------------------------------------------------------------------------------
+
+## Server: someone at it opened their page (TypingPanel). They get the next page of the book.
+func server_begin_typing(peer: int) -> void:
+	var p := Net.find_player(peer)
+	if is_main or not needs_fix() or p == null or p.state != Player.State.NORMAL or not in_reach(p):
+		_rpc_typing.rpc_id(peer, -1, 0, false)
+		return
+	if not _typists.has(peer):
+		_typists[peer] = [_next_page(), 0]
+	_send_page(peer, false)
+
+
+func server_end_typing(peer: int) -> void:
+	_typists.erase(peer)
+
+
+## Server: one key from a typist. Right: the engine comes along and their place moves on (a new page
+## at the end of one). Wrong: a clang everything on the grounds hears, and the engine slips back.
+func server_type(peer: int, code: int) -> void:
+	if done or not _typists.has(peer):
+		return
+	var st: Array = _typists[peer]
+	var text: String = TYPE_TEXTS[int(st[0])]
+	var cur := skip_untyped(text, int(st[1]))
+	if cur < text.length() and same_key(text.unicode_at(cur), code):
+		cur = skip_untyped(text, cur + 1)
+		st[1] = cur
+		if cur >= text.length():
+			st[0] = _next_page()
+			st[1] = 0
+		regressing = false
+		_type_t = TYPE_LINGER
+		progress = minf(1.0, progress + 1.0 / TYPE_CHARS)
+		if progress >= 1.0:
+			_complete()
+			return
+		_send_page(peer, false)
+	else:
+		progress = maxf(0.0, progress - TYPE_MISS)
+		_miss_t = MISS_NOISE_TIME
+		_rpc_miss.rpc()
+		_send_page(peer, true)
+
+
+func _next_page() -> int:
+	_pages += 1
+	return (index * 3 + _pages - 1) % TYPE_TEXTS.size()
+
+
+func _send_page(peer: int, missed: bool) -> void:
+	var st: Array = _typists[peer]
+	_rpc_typing.rpc_id(peer, int(st[0]), skip_untyped(TYPE_TEXTS[int(st[0])], int(st[1])), missed)
+
+
+## Past anything you don't type (punctuation): the index of the next letter, digit or space.
+static func skip_untyped(text: String, i: int) -> int:
+	while i < text.length() and not typed_char(text.unicode_at(i)):
+		i += 1
+	return i
+
+
+static func typed_char(c: int) -> bool:
+	return c == 32 or (c >= 48 and c <= 57) or (c >= 65 and c <= 90) or (c >= 97 and c <= 122)
+
+
+static func same_key(want: int, got: int) -> bool:
+	return String.chr(want).to_lower() == String.chr(got).to_lower()
+
+
+## Tests: type the next n right keys as peer (opening a page first if they had none).
+func debug_type(peer: int, n: int) -> void:
+	if not _typists.has(peer):
+		server_begin_typing(peer)
+	for k in n:
+		if not _typists.has(peer):
+			return
+		var st: Array = _typists[peer]
+		var text: String = TYPE_TEXTS[int(st[0])]
+		server_type(peer, text.unicode_at(skip_untyped(text, int(st[1]))))
+
+
+func _sender() -> int:
+	var s := multiplayer.get_remote_sender_id()
+	return s if s != 0 else multiplayer.get_unique_id()
+
+
+@rpc("any_peer", "call_local", "reliable")
+func rpc_begin_typing() -> void:
+	if multiplayer.is_server():
+		server_begin_typing(_sender())
+
+
+@rpc("any_peer", "call_local", "reliable")
+func rpc_end_typing() -> void:
+	if multiplayer.is_server():
+		server_end_typing(_sender())
+
+
+@rpc("any_peer", "call_local", "reliable")
+func rpc_key(code: int) -> void:
+	if multiplayer.is_server():
+		server_type(_sender(), code)
+
+
+## To one typist: their page and place (-1: they're done typing here).
+@rpc("authority", "call_local", "reliable")
+func _rpc_typing(page: int, cursor: int, missed: bool) -> void:
+	local_text = page
+	local_cursor = cursor
+	typing_changed.emit(missed)
+
+
+@rpc("authority", "call_local", "reliable")
+func _rpc_miss() -> void:
+	Sfx.play_at(self, "clink", fix_point(), 6.0, randf_range(0.45, 0.6), 45.0)
+	Sfx.play_at(self, "bang", fix_point(), -2.0, randf_range(0.9, 1.1), 40.0)
+	Sfx.caption(self, "metal clangs: a slip at an engine", fix_point())
+	_bulb.light_energy = 2.5  # a spark
 
 
 ## Tests: finish it now, as if someone had worked it to the end.
@@ -301,4 +467,4 @@ func hud_line() -> String:
 	var state := ""
 	if regressing:
 		state = "  (KICKED: it's running down)"
-	return "ENGINE  %d%%   hold Ctrl at it to repair; a crack of the wrench helps, loudly%s" % [int(progress * 100.0), state]
+	return "ENGINE  %d%%   crouch at it (Ctrl) to repair: type out the page; a crack of the wrench helps, loudly%s" % [int(progress * 100.0), state]

@@ -15,6 +15,7 @@ func _init() -> void:
 	lines.append("\"CHAINS DEEZNUTS TOGETHER.exe\" is the official Godot %s executable, renamed." % String(Engine.get_version_info()["string"]))
 	lines.append("Godot is free software under the MIT license below.")
 	lines.append("The ceiling and carpet textures are CC0 1.0 (public domain) from TextureCan, https://www.texturecan.com")
+	lines.append("The manor's ground, stone, wood, bark, roof, leaf and wallpaper textures are CC0 1.0 (public domain) from ambientCG, https://ambientcg.com")
 	lines.append("")
 	lines.append("==== Godot Engine ====")
 	lines.append(Engine.get_license_text())

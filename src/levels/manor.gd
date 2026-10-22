@@ -34,8 +34,26 @@ const MARGIN: float = 0.3  # m kept clear round anything solid
 const WALL_H: float = 3.6
 const GATE_Z: float = 74.0
 const EXIT_Z: float = 84.0  # past this, down the lane, you're out
-const ROOM_H: float = 4.6  # the mansion's ground floor
+const ROOM_H: float = 4.6  # the mansion's ground floor, to its ceiling
 const UPPER_H: float = 11.0  # its facade, roof starts here
+const FLOOR2_Y: float = 5.0  # m: the upper floor's boards
+const ROOM2_H: float = 4.0  # the upper rooms, floor to ceiling
+## The grand stair in the foyer: from its foot at z -44.5 straight up to the landing at -54.5, a
+## ramp under the treads (one box per step would stop every footstep). The stairwell is open over it.
+const STAIR: Rect2 = Rect2(-2.0, -54.5, 4.0, 10.0)
+const STAIR_HOLE: Rect2 = Rect2(-2.6, -54.5, 5.2, 8.5)
+const STAIR_STEPS: int = 20
+const STAIR_FOOT: Vector3 = Vector3(0.0, 0.0, -42.0)  # where the Groundskeeper starts up, and lands coming down
+const STAIR_TOP: Vector3 = Vector3(0.0, FLOOR2_Y, -56.0)
+const UP: int = 1000  # an upper-floor cell carries this on its x
+const UPSTAIRS_WANDER: float = 0.12  # how often a wander goes upstairs
+## What each piece of clutter stops you with (centred over its base; zero: nothing).
+const DRESS_SOLIDS: Dictionary = {
+	"manor_urn": Vector3(0.6, 1.4, 0.6), "manor_bench": Vector3(1.6, 0.5, 0.45), "manor_column": Vector3(0.6, 2.0, 0.6),
+	"manor_angel": Vector3(0.9, 2.2, 0.8), "manor_barrel": Vector3(0.6, 0.95, 0.6), "manor_crate": Vector3(0.9, 0.7, 0.7),
+	"manor_logs": Vector3(1.0, 0.6, 0.85), "manor_wheelbarrow": Vector3(0.6, 0.7, 1.5), "manor_chest": Vector3(0.95, 0.65, 0.55),
+}
+
 const SPAWN: Vector3 = Vector3(52.0, 0.1, 22.0)
 const SPAWN_YAW: float = PI * 0.5  # looking west across the grounds
 const KEEPER_HOME: Vector3 = Vector3(-50.0, 0.0, 4.0)  # the graveyard's middle aisle
@@ -47,11 +65,21 @@ const RESPAWN_SECONDS: float = 45.0  # a bombed Groundskeeper is back after this
 const LAYOFF_DELAY: float = 1.1
 const REGROUP_COOLDOWN_MS: int = 15000
 const ENDGAME_HUNT: float = 9.0  # s between "it knows where you are" once the generator runs
+const FOG_TILES: int = 6  # per side: the mist's drifting tiles cover FOG_TILE * this, past the wall
+const FOG_TILE: float = 36.0  # m
+const FOG_MIST_H: float = 5.0  # m: how deep the mist lies
+const FOG_MIST_DENSITY: float = 0.26
+const FOG_BANKS: int = 40
+const FOG_BANK_DENSITY: Vector2 = Vector2(0.3, 0.65)
+const BEAM_FOG: float = 0.7  # the flashlight's glow in this fog (Player.beam_fog): 2.0 lit a white wall a metre off
+const FOG_BANK_SPEED: Vector2 = Vector2(0.4, 1.3)  # m/s
+const FOG_WIND: float = 0.6  # m/s
+const FOG_GLOW: Color = Color(0.03, 0.035, 0.036)  # the fog's own faint light: pale mist, not more dark
 const TASK_ENGINES: int = 0
 const TASK_SWITCH: int = 1
 const TASK_OUT: int = 2
 const TASKS: Array[String] = [
-	"Get the four engines running (0 of 4): crouch at one and hold Ctrl",
+	"Get the four engines running (0 of 4): crouch at one (Ctrl) and type out its page",
 	"Throw the main generator's switch in the courtyard (hold Ctrl at it)",
 	"Out through the south gate and down the lane, together",
 ]
@@ -85,7 +113,8 @@ var generator: ManorMachine
 var gate: ManorGate
 var keeper: Groundskeeper
 
-var _astar: AStarGrid2D
+var _astar: AStarGrid2D  # the grounds and the mansion's ground floor
+var _astar_up: AStarGrid2D  # the mansion's upper floor
 var _batch: LevelKit.BoxBatch
 var _root: Node3D
 var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
@@ -101,7 +130,9 @@ var _shown: bool = true  # drawn and heard (in the Stack, only while the camera 
 var _populated: bool = false  # server: the estate's pickups are out
 var hang_points: Array[Vector3] = []  # where each hanged body's rope is tied (the tour looks at them)
 var _hanged: Array = []  # [Node3D pivot at the rope's top, phase, scale]: they sway and turn on every peer
-var _fog_banks: Array = []  # [FogVolume, drift m/s]: low banks of fog creeping across the grounds
+var _fog_banks: Array = []  # every peer: the wandering banks (see _build_fog_banks)
+var _fog_tiles: Array[FogVolume] = []  # every peer: the drifting mist
+var _wind_dir: float = 0.0  # rad: where the mist drifts
 # Server.
 var _arrived: bool = false
 var _draw_t: float = 18.0
@@ -119,6 +150,7 @@ var _gate_cell_open: bool = false
 func _ready() -> void:
 	position = origin
 	spawn_position = origin + SPAWN
+	LevelKit.set_manor_ground(origin.y)  # moss, damp and skirting measure from here, not from y 0
 	if not embedded:
 		add_to_group("level")
 		_we = WorldEnvironment.new()
@@ -148,6 +180,7 @@ func _ready() -> void:
 	_build_hangings()
 	_build_grass()
 	_build_forest()
+	_dress_grounds()
 	_batch.build(_root, "M")
 	_build_fog_banks()
 	_build_moon()
@@ -156,42 +189,77 @@ func _ready() -> void:
 	_test_points()
 	if embedded:
 		set_shown(false)  # the Stack shows it once the camera is down here
+	else:
+		Player.beam_fog = BEAM_FOG
+
+
+func _exit_tree() -> void:
+	Player.beam_fog = Player.BEAM_FOG  # the next world starts with the ordinary beam
 
 
 func first_objective() -> String:
-	return "Ashgrave Manor: four old engines are out on the grounds. Get them all running (crouch at one, hold Ctrl), throw the main generator's switch in the courtyard, and get out through the south gate. Something with a lantern walks the grounds."
+	return "Ashgrave Manor: four old engines are out on the grounds. Get them all running (crouch at one with Ctrl and type out the page that comes up), throw the main generator's switch in the courtyard, and get out through the south gate. Something with a lantern walks the grounds."
 
 
 # --- The grid the Groundskeeper walks -----------------------------------------------------------
+# Two layers: the grounds (and the mansion's ground floor), and the mansion's upper floor. A cell
+# of the upper layer carries UP on its x; the grand stair joins them (STAIR_FOOT to STAIR_TOP).
 
 func _setup_grid() -> void:
-	_astar = AStarGrid2D.new()
-	_astar.region = Rect2i(0, 0, GRID_N, GRID_N)
-	_astar.cell_size = Vector2(CELL, CELL)
-	_astar.diagonal_mode = AStarGrid2D.DIAGONAL_MODE_ONLY_IF_NO_OBSTACLES
-	_astar.default_compute_heuristic = AStarGrid2D.HEURISTIC_OCTILE
-	_astar.default_estimate_heuristic = AStarGrid2D.HEURISTIC_OCTILE
-	_astar.update()
+	_astar = _new_grid()
+	_astar_up = _new_grid()
+	# Upstairs there is only the inside of the mansion; its walls and furniture block the rest.
+	_astar_up.fill_solid_region(_astar_up.region, true)
+	var c0 := _cell(Vector3(MANSION.position.x + 0.5, 0.0, MANSION.position.y + 0.5))
+	var c1 := _cell(Vector3(MANSION.end.x - 0.5, 0.0, MANSION.end.y - 0.5))
+	_astar_up.fill_solid_region(Rect2i(c0, c1 - c0 + Vector2i.ONE), false)
 
 
-## Marks every cell a footprint (turned by yaw, grown by margin) touches as solid.
+func _new_grid() -> AStarGrid2D:
+	var g := AStarGrid2D.new()
+	g.region = Rect2i(0, 0, GRID_N, GRID_N)
+	g.cell_size = Vector2(CELL, CELL)
+	g.diagonal_mode = AStarGrid2D.DIAGONAL_MODE_ONLY_IF_NO_OBSTACLES
+	g.default_compute_heuristic = AStarGrid2D.HEURISTIC_OCTILE
+	g.default_estimate_heuristic = AStarGrid2D.HEURISTIC_OCTILE
+	g.update()
+	return g
+
+
+## Marks every cell a footprint (turned by yaw, grown by margin) touches as solid, on the upper
+## floor's layer for anything standing on it, on the grounds' for everything else.
 func _block(center: Vector3, size: Vector3, yaw: float = 0.0, margin: float = MARGIN) -> void:
+	var grid := _astar_up if center.y >= FLOOR2_Y - 0.01 else _astar
 	var hx := absf(cos(yaw)) * size.x * 0.5 + absf(sin(yaw)) * size.z * 0.5 + margin
 	var hz := absf(sin(yaw)) * size.x * 0.5 + absf(cos(yaw)) * size.z * 0.5 + margin
 	var c0 := _cell(Vector3(center.x - hx, 0.0, center.z - hz))
 	var c1 := _cell(Vector3(center.x + hx, 0.0, center.z + hz))
 	for x in range(c0.x, c1.x + 1):
 		for z in range(c0.y, c1.y + 1):
-			_astar.set_point_solid(Vector2i(x, z), true)
+			grid.set_point_solid(Vector2i(x, z), true)
 
 
 func is_walkable(c: Vector2i) -> bool:
-	return _astar.is_in_boundsv(c) and not _astar.is_point_solid(c)
+	var g := _astar_up if c.x >= UP else _astar
+	var p := _strip(c)
+	return g.is_in_boundsv(p) and not g.is_point_solid(p)
 
 
-## The nearest walkable cell to c (c itself if it is), searching out a few rings; (-1, -1) if none.
+## The cell without its layer, and with it.
+func _strip(c: Vector2i) -> Vector2i:
+	return Vector2i(c.x - UP, c.y) if c.x >= UP else c
+
+
+func _on_layer(c: Vector2i, upper: bool) -> Vector2i:
+	return Vector2i(c.x + UP, c.y) if upper else c
+
+
+## The nearest walkable cell to c on its own layer (c itself if it is), searching out a few rings;
+## (-1, -1) if none.
 func _nearest_free(c: Vector2i) -> Vector2i:
-	var cc := Vector2i(clampi(c.x, 0, GRID_N - 1), clampi(c.y, 0, GRID_N - 1))
+	var upper := c.x >= UP
+	var s := _strip(c)
+	var cc := _on_layer(Vector2i(clampi(s.x, 0, GRID_N - 1), clampi(s.y, 0, GRID_N - 1)), upper)
 	if is_walkable(cc):
 		return cc
 	for r in range(1, 6):
@@ -206,12 +274,14 @@ func _nearest_free(c: Vector2i) -> Vector2i:
 
 
 func cell_center(_i: int, c: Vector2i) -> Vector3:
-	return origin + Vector3(GRID_MIN + CELL * (float(c.x) + 0.5), 0.0, GRID_MIN + CELL * (float(c.y) + 0.5))
+	var s := _strip(c)
+	return origin + Vector3(GRID_MIN + CELL * (float(s.x) + 0.5), FLOOR2_Y if c.x >= UP else 0.0, GRID_MIN + CELL * (float(s.y) + 0.5))
 
 
-## World position -> cell.
+## World position -> cell (on the upper floor's layer when it's up there).
 func cell_of(p: Vector3) -> Vector2i:
-	return _cell(p - origin)
+	var l := p - origin
+	return _on_layer(_cell(l), _upstairs(l))
 
 
 ## The estate's own (local) coordinates -> cell: what the build uses.
@@ -219,18 +289,66 @@ func _cell(p: Vector3) -> Vector2i:
 	return Vector2i(clampi(floori((p.x - GRID_MIN) / CELL), 0, GRID_N - 1), clampi(floori((p.z - GRID_MIN) / CELL), 0, GRID_N - 1))
 
 
+## Local: up on the mansion's upper floor (or high on the stair).
+func _upstairs(l: Vector3) -> bool:
+	return l.y > FLOOR2_Y - 1.2 and MANSION.has_point(Vector2(l.x, l.z))
+
+
+## The stair's height over the ground at local z (0 at its foot, FLOOR2_Y at the landing).
+func _ramp_y(z: float) -> float:
+	return clampf((STAIR.end.y - z) / STAIR.size.y, 0.0, 1.0) * FLOOR2_Y
+
+
+func _on_stair(c: Vector2i) -> bool:
+	var p := cell_center(0, _strip(c)) - origin
+	return STAIR.grow(0.6).has_point(Vector2(p.x, p.z))
+
+
+## Cells to walk, both ends included. Across the floors it goes by the grand stair: up to its foot,
+## straight up it (the Groundskeeper walks centre to centre, the stair lifts it), on from the top.
 func route(_i: int, from: Vector2i, to: Vector2i) -> Array[Vector2i]:
+	var none: Array[Vector2i] = []
+	var up_to := to.x >= UP
+	var foot := _cell(STAIR_FOOT)
+	var top := _on_layer(_cell(STAIR_TOP), true)
+	if _on_stair(from):
+		var rest := _route_on(top if up_to else foot, to)
+		if rest.is_empty():
+			return none
+		var out: Array[Vector2i] = [from]
+		out.append_array(rest)
+		return out
+	if (from.x >= UP) == up_to:
+		return _route_on(from, to)
+	var first := _route_on(from, top if from.x >= UP else foot)
+	var second := _route_on(foot if from.x >= UP else top, to)
+	if first.is_empty() or second.is_empty():
+		return none
+	first.append_array(second)
+	return first
+
+
+## A route within one layer.
+func _route_on(from: Vector2i, to: Vector2i) -> Array[Vector2i]:
+	var out: Array[Vector2i] = []
 	var a := _nearest_free(from)
 	var b := _nearest_free(to)
-	if a.x < 0 or b.x < 0:
-		var none: Array[Vector2i] = []
-		return none
-	return _astar.get_id_path(a, b)
+	if a.x < 0 or b.x < 0 or (a.x >= UP) != (b.x >= UP):
+		return out
+	var upper := a.x >= UP
+	var g := _astar_up if upper else _astar
+	for c in g.get_id_path(_strip(a), _strip(b)):
+		out.append(_on_layer(c, upper))
+	return out
 
 
 ## Nothing on the grid between a and b (their own cells aside: you can stand in the margin of a
-## headstone, and so can it).
+## headstone, and so can it), and both on the same floor, off the stair.
 func clear_walk(a: Vector3, b: Vector3) -> bool:
+	var ca := cell_of(a)
+	var cb := cell_of(b)
+	if (ca.x >= UP) != (cb.x >= UP) or _on_stair(ca) or _on_stair(cb):
+		return false
 	var d := Vector2(b.x - a.x, b.z - a.z)
 	var n := int(ceilf(d.length() / 0.8))
 	for k in range(1, n):
@@ -240,6 +358,32 @@ func clear_walk(a: Vector3, b: Vector3) -> bool:
 		if not is_walkable(cell_of(p)):
 			return false
 	return true
+
+
+## Where it stands: on the stair the stair's height, upstairs the upper floor, else the ground.
+## (HuntGrounds.ground_y: the Groundskeeper's floor_index is 1 while it is upstairs.)
+func ground_y(i: int, p: Vector3, _fallback: float) -> float:
+	var l := p - origin
+	if STAIR.grow(0.05).has_point(Vector2(l.x, l.z)):
+		return origin.y + _ramp_y(l.z)
+	return origin.y + (FLOOR2_Y if i == 1 and MANSION.has_point(Vector2(l.x, l.z)) else 0.0)
+
+
+## Server: which floor the Groundskeeper is on follows where it walks: up as it passes the stair's
+## middle, down again the same way; nothing else takes it between the floors.
+func _tick_keeper_floor() -> void:
+	var l := keeper.global_position - origin
+	var up := keeper.floor_index == 1
+	if STAIR.has_point(Vector2(l.x, l.z)):
+		up = _ramp_y(l.z) > FLOOR2_Y * 0.5
+	elif not MANSION.has_point(Vector2(l.x, l.z)):
+		up = false
+	_set_keeper_floor(up)
+
+
+func _set_keeper_floor(up: bool) -> void:
+	keeper.floor_index = 1 if up else 0
+	keeper.floor_y = origin.y + (FLOOR2_Y if up else 0.0)
 
 
 ## It walks between the engines nobody has finished, so you meet it at the work.
@@ -260,7 +404,17 @@ func patrol_cells(_i: int) -> Array[Vector2i]:
 	return out
 
 
+## Any cell to wander to: now and then the mansion's upper floor, mostly the grounds.
 func random_cell(rng: RandomNumberGenerator) -> Vector2i:
+	if rng.randf() < UPSTAIRS_WANDER:
+		for _try in 30:
+			var u := _on_layer(_cell(Vector3(rng.randf_range(MANSION.position.x, MANSION.end.x), 0.0, rng.randf_range(MANSION.position.y, MANSION.end.y))), true)
+			if is_walkable(u):
+				return u
+	return _ground_cell(rng)
+
+
+func _ground_cell(rng: RandomNumberGenerator) -> Vector2i:
 	for _try in 30:
 		var c := Vector2i(rng.randi_range(2, GRID_N - 3), rng.randi_range(2, GRID_N - 3))
 		if is_walkable(c):
@@ -300,8 +454,9 @@ func _piece(key: String, base: Vector3, size: Vector3, yaw: float, solid: Vector
 
 ## A wall along z at x from z0 to z1 with openings: [centre, width, "door"|"window"|"gap"]. A door
 ## keeps a lintel above door_h; a window has a sill to 0.9 m and a head from 2.9 m (you climb
-## through it, the grid treats it as wall); a gap is open to the sky.
-func _wall_z(x: float, z0: float, z1: float, h: float, thick: float, key: String, gaps: Array = [], door_h: float = 3.2, skin: String = "", skin_side: float = 1.0) -> void:
+## through it, the grid treats it as wall); a gap is open to the sky. y0 is the floor it stands on
+## (the mansion's upper floor); the skin covers skin_h of it.
+func _wall_z(x: float, z0: float, z1: float, h: float, thick: float, key: String, gaps: Array = [], door_h: float = 3.2, skin: String = "", skin_side: float = 1.0, y0: float = 0.0, skin_h: float = ROOM_H) -> void:
 	var cur := z0
 	var sorted := gaps.filter(func(g: Array) -> bool: return float(g[0]) > z0 and float(g[0]) < z1)
 	sorted.sort_custom(func(a: Array, b: Array) -> bool: return float(a[0]) < float(b[0]))
@@ -310,17 +465,17 @@ func _wall_z(x: float, z0: float, z1: float, h: float, thick: float, key: String
 		var w := float(g[1])
 		var a := c - w * 0.5
 		if a > cur:
-			_solid(Vector3(x, h * 0.5, (cur + a) * 0.5), Vector3(thick, h, a - cur), key)
-		_opening(Vector3(x, 0.0, c), Vector3(thick, h, w), String(g[2]), key, door_h)
+			_solid(Vector3(x, y0 + h * 0.5, (cur + a) * 0.5), Vector3(thick, h, a - cur), key)
+		_opening(Vector3(x, y0, c), Vector3(thick, h, w), String(g[2]), key, door_h)
 		cur = c + w * 0.5
 	if z1 > cur:
-		_solid(Vector3(x, h * 0.5, (cur + z1) * 0.5), Vector3(thick, h, z1 - cur), key)
+		_solid(Vector3(x, y0 + h * 0.5, (cur + z1) * 0.5), Vector3(thick, h, z1 - cur), key)
 	if skin != "":
-		_skin_z(x + skin_side * (thick * 0.5 + 0.03), z0, z1, minf(h, ROOM_H), sorted, skin, door_h)
+		_skin_z(x + skin_side * (thick * 0.5 + 0.03), z0, z1, minf(h, skin_h), sorted, skin, door_h, y0)
 
 
 ## The same along x at z.
-func _wall_x(z: float, x0: float, x1: float, h: float, thick: float, key: String, gaps: Array = [], door_h: float = 3.2, skin: String = "", skin_side: float = 1.0) -> void:
+func _wall_x(z: float, x0: float, x1: float, h: float, thick: float, key: String, gaps: Array = [], door_h: float = 3.2, skin: String = "", skin_side: float = 1.0, y0: float = 0.0, skin_h: float = ROOM_H) -> void:
 	var cur := x0
 	var sorted := gaps.filter(func(g: Array) -> bool: return float(g[0]) > x0 and float(g[0]) < x1)
 	sorted.sort_custom(func(a: Array, b: Array) -> bool: return float(a[0]) < float(b[0]))
@@ -329,13 +484,13 @@ func _wall_x(z: float, x0: float, x1: float, h: float, thick: float, key: String
 		var w := float(g[1])
 		var a := c - w * 0.5
 		if a > cur:
-			_solid(Vector3((cur + a) * 0.5, h * 0.5, z), Vector3(a - cur, h, thick), key)
-		_opening(Vector3(c, 0.0, z), Vector3(w, h, thick), String(g[2]), key, door_h)
+			_solid(Vector3((cur + a) * 0.5, y0 + h * 0.5, z), Vector3(a - cur, h, thick), key)
+		_opening(Vector3(c, y0, z), Vector3(w, h, thick), String(g[2]), key, door_h)
 		cur = c + w * 0.5
 	if x1 > cur:
-		_solid(Vector3((cur + x1) * 0.5, h * 0.5, z), Vector3(x1 - cur, h, thick), key)
+		_solid(Vector3((cur + x1) * 0.5, y0 + h * 0.5, z), Vector3(x1 - cur, h, thick), key)
 	if skin != "":
-		_skin_x(z + skin_side * (thick * 0.5 + 0.03), x0, x1, minf(h, ROOM_H), sorted, skin, door_h)
+		_skin_x(z + skin_side * (thick * 0.5 + 0.03), x0, x1, minf(h, skin_h), sorted, skin, door_h, y0)
 
 
 ## What fills an opening: a lintel over a door, sill and head round a window, nothing in a gap.
@@ -354,38 +509,38 @@ func _opening(base: Vector3, size: Vector3, kind: String, key: String, door_h: f
 
 
 ## A wallpaper skin on the inside of a wall (drawn only), leaving the openings.
-func _skin_z(x: float, z0: float, z1: float, h: float, gaps: Array, key: String, door_h: float) -> void:
+func _skin_z(x: float, z0: float, z1: float, h: float, gaps: Array, key: String, door_h: float, y0: float = 0.0) -> void:
 	var cur := z0
 	for g: Array in gaps:
 		var c := float(g[0])
 		var w := float(g[1])
 		if c - w * 0.5 > cur:
-			_deco(Vector3(x, h * 0.5, (cur + c - w * 0.5) * 0.5), Vector3(0.04, h, c - w * 0.5 - cur), key)
+			_deco(Vector3(x, y0 + h * 0.5, (cur + c - w * 0.5) * 0.5), Vector3(0.04, h, c - w * 0.5 - cur), key)
 		var top := door_h if String(g[2]) == "door" else (2.9 if String(g[2]) == "window" else h)
 		if top < h:
-			_deco(Vector3(x, (top + h) * 0.5, c), Vector3(0.04, h - top, w), key)
+			_deco(Vector3(x, y0 + (top + h) * 0.5, c), Vector3(0.04, h - top, w), key)
 		if String(g[2]) == "window":
-			_deco(Vector3(x, 0.45, c), Vector3(0.04, 0.9, w), key)
+			_deco(Vector3(x, y0 + 0.45, c), Vector3(0.04, 0.9, w), key)
 		cur = c + w * 0.5
 	if z1 > cur:
-		_deco(Vector3(x, h * 0.5, (cur + z1) * 0.5), Vector3(0.04, h, z1 - cur), key)
+		_deco(Vector3(x, y0 + h * 0.5, (cur + z1) * 0.5), Vector3(0.04, h, z1 - cur), key)
 
 
-func _skin_x(z: float, x0: float, x1: float, h: float, gaps: Array, key: String, door_h: float) -> void:
+func _skin_x(z: float, x0: float, x1: float, h: float, gaps: Array, key: String, door_h: float, y0: float = 0.0) -> void:
 	var cur := x0
 	for g: Array in gaps:
 		var c := float(g[0])
 		var w := float(g[1])
 		if c - w * 0.5 > cur:
-			_deco(Vector3((cur + c - w * 0.5) * 0.5, h * 0.5, z), Vector3(c - w * 0.5 - cur, h, 0.04), key)
+			_deco(Vector3((cur + c - w * 0.5) * 0.5, y0 + h * 0.5, z), Vector3(c - w * 0.5 - cur, h, 0.04), key)
 		var top := door_h if String(g[2]) == "door" else (2.9 if String(g[2]) == "window" else h)
 		if top < h:
-			_deco(Vector3(c, (top + h) * 0.5, z), Vector3(w, h - top, 0.04), key)
+			_deco(Vector3(c, y0 + (top + h) * 0.5, z), Vector3(w, h - top, 0.04), key)
 		if String(g[2]) == "window":
-			_deco(Vector3(c, 0.45, z), Vector3(w, 0.9, 0.04), key)
+			_deco(Vector3(c, y0 + 0.45, z), Vector3(w, 0.9, 0.04), key)
 		cur = c + w * 0.5
 	if x1 > cur:
-		_deco(Vector3((cur + x1) * 0.5, h * 0.5, z), Vector3(x1 - cur, h, 0.04), key)
+		_deco(Vector3((cur + x1) * 0.5, y0 + h * 0.5, z), Vector3(x1 - cur, h, 0.04), key)
 
 
 ## Somewhere the scatter keeps off.
@@ -450,7 +605,7 @@ func _lamp_post(at: Vector3, lit: bool, dying: bool) -> void:
 
 
 ## A candle (or a candelabra's worth) burning on something: a flickering warm point.
-func _candle(at: Vector3, energy: float = 0.7, range_m: float = 6.0) -> void:
+func _candle(at: Vector3, energy: float = 0.7, range_m: float = 6.0, rng: RandomNumberGenerator = null) -> void:
 	var c := MeshInstance3D.new()
 	var cb := BoxMesh.new()
 	cb.size = Vector3(0.05, 0.16, 0.05)
@@ -474,7 +629,7 @@ func _candle(at: Vector3, energy: float = 0.7, range_m: float = 6.0) -> void:
 	l.distance_fade_begin = 35.0
 	l.distance_fade_length = 6.0
 	_root.add_child(l)
-	_flickers.append([l, cm, energy, _rng.randf() * 10.0])
+	_flickers.append([l, cm, energy, (rng if rng != null else _rng).randf() * 10.0])  # the upper floor brings its own dice: the layout's stay as they were
 
 
 # --- The grounds ---------------------------------------------------------------------------------
@@ -533,11 +688,13 @@ func _build_estate_wall() -> void:
 	_keep(Vector3(0.0, 0.0, GATE_Z - 3.0), 5.0)
 
 
-## The mansion: a long stone house, two storeys of facade with a pitched slate roof and a tower,
-## but only the ground floor is open: a foyer with the stair up (it's fallen in), the dining room
-## and the library to the west, the parlour and the study to the east. Doors front, back and both
-## sides, low windows all round (you climb through; it goes round). The first engine is in the
-## library.
+## The mansion: a long stone house of two storeys under a pitched slate roof, with a tower. Ground
+## floor: the foyer with the grand stair, the dining room and the library to the west, the parlour
+## and the study to the east; doors front, back and both sides, low windows all round (you climb
+## through; it goes round). Up the stair: a gallery round the stairwell, the master bedroom and the
+## nursery to the west, the guest room and the sickroom to the east, and windows over the grounds (a
+## long drop into the mud, but a way out). The Groundskeeper follows you up (see route). The first
+## engine is in the library.
 func _build_mansion() -> void:
 	var x0 := MANSION.position.x
 	var x1 := MANSION.end.x
@@ -546,36 +703,56 @@ func _build_mansion() -> void:
 	var t := 0.5
 	var stone := "manor_stone"
 	var paper := "manor_paper"
-	# Outside walls (stone, wallpapered inside).
-	_wall_x(z1, x0, x1, ROOM_H, t, stone, [[0.0, 3.2, "door"], [-16.0, 1.8, "window"], [16.0, 1.8, "window"], [-22.0, 1.8, "window"]], 3.4, paper, -1.0)
-	_wall_x(z0, x0, x1, ROOM_H, t, stone, [[-18.0, 3.0, "door"], [14.0, 1.8, "window"], [-2.0, 1.8, "window"]], 3.2, paper, 1.0)
-	_wall_z(x0, z0, z1, ROOM_H, t, stone, [[-42.0, 3.0, "door"], [-54.0, 1.8, "window"]], 3.2, paper, 1.0)
-	_wall_z(x1, z0, z1, ROOM_H, t, stone, [[-54.0, 3.0, "door"], [-42.0, 1.8, "window"]], 3.2, paper, -1.0)
+	var mid := Vector3((x0 + x1) * 0.5, 0.0, (z0 + z1) * 0.5)
+	var upper_rng := RandomNumberGenerator.new()  # the upper floor's own dice: the layout's stay as they were
+	upper_rng.seed = seed_value * 13 + 7
+	# Ground floor: the outside walls (stone, papered inside) up to the upper floor.
+	_wall_x(z1, x0, x1, FLOOR2_Y, t, stone, [[0.0, 3.2, "door"], [-16.0, 1.8, "window"], [16.0, 1.8, "window"], [-22.0, 1.8, "window"]], 3.4, paper, -1.0)
+	_wall_x(z0, x0, x1, FLOOR2_Y, t, stone, [[-18.0, 3.0, "door"], [14.0, 1.8, "window"], [-2.0, 1.8, "window"]], 3.2, paper, 1.0)
+	_wall_z(x0, z0, z1, FLOOR2_Y, t, stone, [[-42.0, 3.0, "door"], [-54.0, 1.8, "window"]], 3.2, paper, 1.0)
+	_wall_z(x1, z0, z1, FLOOR2_Y, t, stone, [[-54.0, 3.0, "door"], [-42.0, 1.8, "window"]], 3.2, paper, -1.0)
 	# Inside walls.
 	_wall_z(-8.0, z0, z1, ROOM_H, 0.3, paper, [[-42.0, 3.0, "door"], [-56.0, 3.0, "door"]])
 	_wall_z(8.0, z0, z1, ROOM_H, 0.3, paper, [[-42.0, 3.0, "door"], [-56.0, 3.0, "door"]])
 	_wall_x(-50.0, x0, -8.0, ROOM_H, 0.3, paper, [[-18.0, 3.0, "door"]])
 	_wall_x(-50.0, 8.0, x1, ROOM_H, 0.3, paper, [[18.0, 3.0, "door"]])
-	# Floor and ceiling.
-	_deco(Vector3((x0 + x1) * 0.5, 0.015, (z0 + z1) * 0.5), Vector3(x1 - x0, 0.03, z1 - z0), "manor_planks")
-	_over(Vector3((x0 + x1) * 0.5, ROOM_H + 0.15, (z0 + z1) * 0.5), Vector3(x1 - x0 + 1.0, 0.3, z1 - z0 + 1.0), "manor_trim")
-	# The upper storey's facade and the roof.
-	var mid := Vector3((x0 + x1) * 0.5, 0.0, (z0 + z1) * 0.5)
-	var up_h := UPPER_H - ROOM_H
-	_over(mid + Vector3(0.0, ROOM_H + up_h * 0.5, 0.0), Vector3(x1 - x0 + 0.6, up_h, z1 - z0 + 0.6), stone)
-	_deco(mid + Vector3(0.0, ROOM_H + 0.2, 0.0), Vector3(x1 - x0 + 1.2, 0.35, z1 - z0 + 1.2), "manor_stone_dark")  # a string course
+	# The floors: boards downstairs; between the storeys a slab, plaster under, boards on top, open
+	# over the stair; the upper rooms' plaster ceiling.
+	_deco(Vector3(mid.x, 0.015, mid.z), Vector3(x1 - x0, 0.03, z1 - z0), "manor_planks")
+	var hole := STAIR_HOLE
+	for r: Rect2 in [Rect2(x0, z0, hole.position.x - x0, z1 - z0), Rect2(hole.end.x, z0, x1 - hole.end.x, z1 - z0),
+			Rect2(hole.position.x, z0, hole.size.x, hole.position.y - z0), Rect2(hole.position.x, hole.end.y, hole.size.x, z1 - hole.end.y)]:
+		_over(Vector3(r.get_center().x, (ROOM_H + FLOOR2_Y) * 0.5, r.get_center().y), Vector3(r.size.x, FLOOR2_Y - ROOM_H, r.size.y), "manor_ceiling")
+		_deco(Vector3(r.get_center().x, FLOOR2_Y + 0.012, r.get_center().y), Vector3(r.size.x, 0.024, r.size.y), "manor_planks")
+	_over(Vector3(mid.x, FLOOR2_Y + ROOM2_H + 0.15, mid.z), Vector3(x1 - x0, 0.3, z1 - z0), "manor_ceiling")
+	_build_stair()
+	# Upper floor: the stone walls go on up to the roof, windows all round.
+	var front_back: Array = []
+	for k in 9:
+		front_back.append([x0 + 4.0 + float(k) * 5.5, 1.4, "window"])
+	var ends: Array = [[z0 + 6.0, 1.4, "window"], [z1 - 6.0, 1.4, "window"]]
+	_wall_x(z1, x0, x1, UPPER_H - FLOOR2_Y, t, stone, front_back, 3.2, paper, -1.0, FLOOR2_Y, ROOM2_H)
+	_wall_x(z0, x0, x1, UPPER_H - FLOOR2_Y, t, stone, front_back, 3.2, paper, 1.0, FLOOR2_Y, ROOM2_H)
+	_wall_z(x0, z0, z1, UPPER_H - FLOOR2_Y, t, stone, ends, 3.2, paper, 1.0, FLOOR2_Y, ROOM2_H)
+	_wall_z(x1, z0, z1, UPPER_H - FLOOR2_Y, t, stone, ends, 3.2, paper, -1.0, FLOOR2_Y, ROOM2_H)
+	# Upper inside walls: a wing of two rooms either side of the gallery.
+	_wall_z(-8.0, z0, z1, ROOM2_H, 0.3, paper, [[-42.0, 3.0, "door"], [-56.0, 3.0, "door"]], 2.9, "", 1.0, FLOOR2_Y)
+	_wall_z(8.0, z0, z1, ROOM2_H, 0.3, paper, [[-42.0, 3.0, "door"], [-56.0, 3.0, "door"]], 2.9, "", 1.0, FLOOR2_Y)
+	_wall_x(-50.0, x0, -8.0, ROOM2_H, 0.3, paper, [[-18.0, 3.0, "door"]], 2.9, "", 1.0, FLOOR2_Y)
+	_wall_x(-50.0, 8.0, x1, ROOM2_H, 0.3, paper, [[18.0, 3.0, "door"]], 2.9, "", 1.0, FLOOR2_Y)
+	# Now and then a candle burns on an upstairs sill: a lit window seen from the grounds.
 	for k in 9:
 		var wx := x0 + 4.0 + float(k) * 5.5
-		for face: float in [z0 - 0.33, z1 + 0.33]:
-			var lit := _rng.randf() < 0.18
-			_deco(Vector3(wx, 7.6, face), Vector3(1.4, 2.4, 0.08), "manor_window_lit" if lit else "manor_window")
-			_deco(Vector3(wx, 6.3, face), Vector3(1.7, 0.18, 0.2), "manor_stone_dark")
-	for face_x: float in [x0 - 0.33, x1 + 0.33]:
-		for wz in [z0 + 6.0, z1 - 6.0]:
-			_deco(Vector3(face_x, 7.6, float(wz)), Vector3(0.08, 2.4, 1.4), "manor_window")
+		for face: float in [z0, z1]:
+			if _rng.randf() < 0.18:
+				_candle(Vector3(wx, FLOOR2_Y + 0.92, face), 0.7, 7.0, upper_rng)
+	# A string course round the outside between the storeys.
+	for side: float in [-1.0, 1.0]:
+		_deco(Vector3(mid.x, ROOM_H + 0.2, mid.z + side * ((z1 - z0) * 0.5 + 0.35)), Vector3(x1 - x0 + 1.2, 0.35, 0.3), "manor_stone_dark")
+		_deco(Vector3(mid.x + side * ((x1 - x0) * 0.5 + 0.35), ROOM_H + 0.2, mid.z), Vector3(0.3, 0.35, z1 - z0 + 1.2), "manor_stone_dark")
+	# The roof: two pitched slabs, drawn as boxes turned about x (BoxBatch only turns about y), so
+	# built by hand; a deck closing the attic.
 	var depth := z1 - z0 + 1.6
-	# Pitch the two roof slabs: drawn as boxes turned about x (BoxBatch only turns about y), so
-	# build them by hand.
 	for side: float in [-1.0, 1.0]:
 		var slab := MeshInstance3D.new()
 		var bm := BoxMesh.new()
@@ -586,8 +763,9 @@ func _build_mansion() -> void:
 		slab.rotation.x = side * 0.5
 		_root.add_child(slab)
 	_deco(mid + Vector3(0.0, UPPER_H + 0.2, 0.0), Vector3(x1 - x0 + 1.0, 0.4, depth), "manor_slate")
-	# The tower at the east corner and the chimneys.
-	_over(Vector3(x1 - 3.0, ROOM_H + 7.0, z1 - 3.0), Vector3(6.0, 14.0, 6.0), stone)
+	# The tower at the east corner, rising out of the roof, and the chimneys.
+	var tower_base := FLOOR2_Y + ROOM2_H + 0.3
+	_over(Vector3(x1 - 3.0, (tower_base + 18.6) * 0.5, z1 - 3.0), Vector3(6.0, 18.6 - tower_base, 6.0), stone)
 	for k in 4:
 		var a := float(k) * PI * 0.5
 		var w := MeshInstance3D.new()
@@ -611,7 +789,7 @@ func _build_mansion() -> void:
 	_root.add_child(spire)
 	for cx in [x0 + 6.0, -4.0, 12.0, x1 - 10.0]:
 		_deco(Vector3(float(cx), UPPER_H + 4.5, z0 + 6.0), Vector3(1.4, 4.0, 1.4), "manor_stone_dark")
-	# The porch: steps up to nothing (it's all one floor), two columns, a pediment.
+	# The porch: two columns, a pediment.
 	for side: float in [-1.0, 1.0]:
 		_solid(Vector3(side * 3.0, ROOM_H * 0.5, z1 + 2.4), Vector3(0.7, ROOM_H, 0.7), stone)
 	_over(Vector3(0.0, ROOM_H + 0.3, z1 + 2.0), Vector3(7.6, 0.6, 4.4), "manor_stone_dark")
@@ -619,35 +797,246 @@ func _build_mansion() -> void:
 	for door: Vector3 in [Vector3(-18.0, 0.0, z0 - 1.5), Vector3(x0 - 1.5, 0.0, -42.0), Vector3(x1 + 1.5, 0.0, -54.0)]:
 		_keep(door, 3.0)
 	_mansion_rooms()
+	_upper_rooms(upper_rng)
+	_dress_facade(upper_rng)
 
 
-## What's left in the rooms: the dining table laid for a dinner nobody ate, the library's shelves,
-## the parlour's fireplace still glowing, the study's desk, the foyer's fallen stair.
+## The outside of the house: stone surrounds round every window and shutters either side of the
+## upper ones (some hanging off a hinge, some gone), quoins up the corners, a cornice under the roof,
+## iron downpipes, ivy climbing, the front doors standing open. All drawn only.
+func _dress_facade(rng: RandomNumberGenerator) -> void:
+	var x0 := MANSION.position.x
+	var x1 := MANSION.end.x
+	var z0 := MANSION.position.y
+	var z1 := MANSION.end.y
+	# [centre along the wall, width, floor y, wall: 0 front (z1), 1 back (z0), 2 west (x0), 3 east (x1)]
+	var windows: Array = [[-16.0, 1.8, 0.0, 0], [16.0, 1.8, 0.0, 0], [-22.0, 1.8, 0.0, 0], [14.0, 1.8, 0.0, 1], [-2.0, 1.8, 0.0, 1], [-54.0, 1.8, 0.0, 2], [-42.0, 1.8, 0.0, 3]]
+	for k in 9:
+		for wall in 2:
+			windows.append([x0 + 4.0 + float(k) * 5.5, 1.4, FLOOR2_Y, wall])
+	for wall in [2, 3]:
+		windows.append([z0 + 6.0, 1.4, FLOOR2_Y, wall])
+		windows.append([z1 - 6.0, 1.4, FLOOR2_Y, wall])
+	for w: Array in windows:
+		var c := float(w[0])
+		var width := float(w[1])
+		var fy := float(w[2])
+		var wall := int(w[3])
+		var out := [Vector3(0.0, 0.0, 1.0), Vector3(0.0, 0.0, -1.0), Vector3(-1.0, 0.0, 0.0), Vector3(1.0, 0.0, 0.0)][wall] as Vector3
+		var along := Vector3(1.0, 0.0, 0.0) if wall < 2 else Vector3(0.0, 0.0, 1.0)
+		var face := [z1, z0, x0, x1][wall] as float
+		var at := along * c + Vector3(0.0, fy, 0.0) + (Vector3(0.0, 0.0, face) if wall < 2 else Vector3(face, 0.0, 0.0)) + out * 0.27
+		var yaw := atan2(out.x, out.z)
+		for side: float in [-1.0, 1.0]:
+			_deco(at + along * side * (width * 0.5 + 0.1) + Vector3(0.0, 1.9, 0.0), Vector3(0.22, 2.1, 0.1), "manor_stone_dark", yaw)  # jambs
+		_deco(at + Vector3(0.0, 3.05, 0.0), Vector3(width + 0.6, 0.32, 0.12), "manor_stone_dark", yaw)  # the lintel
+		_deco(at + Vector3(0.0, 3.05, 0.03), Vector3(0.28, 0.42, 0.12), "manor_stone", yaw)  # its keystone
+		_deco(at + Vector3(0.0, 0.84, 0.05), Vector3(width + 0.5, 0.12, 0.2), "manor_stone_dark", yaw)  # the sill
+		if fy > 0.0:
+			for side: float in [-1.0, 1.0]:
+				var r := rng.randf()
+				if r < 0.12:
+					continue  # gone
+				var base := at + along * side * (width * 0.5 + 0.48) + Vector3(0.0, 0.95, 0.0) + out * 0.04
+				var tilt := Vector2(0.0, side * rng.randf_range(0.25, 0.5)) if r < 0.3 else Vector2.ZERO  # off a hinge
+				_piece("manor_shutter", base - (Vector3(0.0, 0.15, 0.0) if r < 0.3 else Vector3.ZERO), Vector3(0.7, 1.6, 0.06), yaw, Vector3.ZERO, tilt)
+	# Quoins up the corners, a course long along one face then the other, 4 cm proud of the stone
+	# and never through to the rooms (the short side is the wall's thickness).
+	var house_mid_z := (z0 + z1) * 0.5
+	for cx: float in [x0, x1]:
+		for cz: float in [z0, z1]:
+			var sx := signf(cx)
+			var sz := signf(cz - house_mid_z)
+			var y := 0.2
+			var k := 0
+			while y < UPPER_H - 0.3:
+				var ex := 1.0 if k % 2 == 0 else 0.54
+				var ez := 0.54 if k % 2 == 0 else 1.0
+				var outer := Vector2(cx + sx * 0.29, cz + sz * 0.29)
+				_deco(Vector3(outer.x - sx * ex * 0.5, y, outer.y - sz * ez * 0.5), Vector3(ex, 0.36, ez), "manor_stone_dark")
+				y += 0.42
+				k += 1
+	# The cornice under the eaves, and iron downpipes from the gutters.
+	var mid := Vector3((x0 + x1) * 0.5, 0.0, (z0 + z1) * 0.5)
+	for side: float in [-1.0, 1.0]:
+		_deco(Vector3(mid.x, UPPER_H - 0.25, mid.z + side * ((z1 - z0) * 0.5 + 0.4)), Vector3(x1 - x0 + 1.4, 0.5, 0.4), "manor_stone_dark")
+		_deco(Vector3(mid.x + side * ((x1 - x0) * 0.5 + 0.4), UPPER_H - 0.25, mid.z), Vector3(0.4, 0.5, z1 - z0 + 1.4), "manor_stone_dark")
+	for p: Vector2 in [Vector2(x0 + 1.2, z1 + 0.35), Vector2(x1 - 1.2, z1 + 0.35), Vector2(x0 + 1.2, z0 - 0.35), Vector2(x1 - 1.2, z0 - 0.35), Vector2(-9.0, z1 + 0.35), Vector2(9.0, z0 - 0.35)]:
+		_deco(Vector3(p.x, UPPER_H * 0.5, p.y), Vector3(0.12, UPPER_H, 0.12), "iron")
+		_deco(Vector3(p.x, 0.15, p.y + signf(p.y + 49.0) * 0.15), Vector3(0.18, 0.12, 0.4), "iron")  # the shoe
+	# Ivy climbing the walls, never over a door.
+	var doors: Array = [[0, 0.0], [1, -18.0], [2, -42.0], [3, -54.0]]
+	var placed := 0
+	var tries := 0
+	while placed < 16 and tries < 80:
+		tries += 1
+		var wall := rng.randi_range(0, 3)
+		var length := (x1 - x0) if wall < 2 else (z1 - z0)
+		var c := (x0 if wall < 2 else z0) + rng.randf_range(2.0, length - 2.0)
+		var near_door := false
+		for d: Array in doors:
+			if int(d[0]) == wall and absf(float(d[1]) - c) < 3.2:
+				near_door = true
+		if near_door:
+			continue
+		var w := rng.randf_range(1.6, 4.0)
+		var h := rng.randf_range(2.5, 8.5)
+		var out := [Vector3(0.0, 0.0, 1.0), Vector3(0.0, 0.0, -1.0), Vector3(-1.0, 0.0, 0.0), Vector3(1.0, 0.0, 0.0)][wall] as Vector3
+		var face := [z1, z0, x0, x1][wall] as float
+		var at := (Vector3(c, h * 0.5, face) if wall < 2 else Vector3(face, h * 0.5, c)) + out * 0.33
+		_deco(at, Vector3(w, h, 0.14) if wall < 2 else Vector3(0.14, h, w), "manor_ivy")
+		_deco(at + Vector3(0.0, h * 0.5 + 0.4, 0.0) + out * 0.02, Vector3(w * 0.55, 0.8, 0.12) if wall < 2 else Vector3(0.12, 0.8, w * 0.55), "manor_ivy")  # its ragged top
+		placed += 1
+	# The front doors, standing open into the foyer.
+	for side: float in [-1.0, 1.0]:
+		_deco(Vector3(side * 1.55, 1.65, z1 - 0.95), Vector3(0.08, 3.3, 1.45), "manor_trim", side * 0.25)
+
+
+## The grand stair: treads you see, a ramp you walk (a collision box per tread would stop every
+## footstep and catch the camera), shut off underneath, banisters both sides, and a balustrade round
+## the stairwell upstairs.
+func _build_stair() -> void:
+	var s := STAIR
+	var run := s.size.y / float(STAIR_STEPS)
+	var rise := FLOOR2_Y / float(STAIR_STEPS)
+	var cx := s.get_center().x
+	for k in STAIR_STEPS:
+		var front := s.end.y - run * float(k)
+		var top := rise * float(k + 1)
+		_deco(Vector3(cx, top * 0.5, front - run * 0.5), Vector3(s.size.x, top, run), "manor_trim")
+		_deco(Vector3(cx, top + 0.006, front - run * 0.5 + 0.03), Vector3(s.size.x - 0.9, 0.012, run - 0.02), "manor_runner")  # the stair carpet
+	var length := Vector2(s.size.y, FLOOR2_Y).length()
+	var tilt := atan2(FLOOR2_Y, s.size.y)
+	var normal := Vector3(0.0, cos(tilt), sin(tilt))  # the ramp's up, leaning toward the foot
+	var mid := Vector3(cx, FLOOR2_Y * 0.5, s.get_center().y)
+	_tilted_box(mid - normal * 0.15, Vector3(s.size.x, 0.3, length), tilt)
+	for side: float in [-1.0, 1.0]:
+		var x := cx + side * (s.size.x * 0.5 + 0.06)
+		_tilted_box(Vector3(x, mid.y, mid.z) + normal * 0.55, Vector3(0.1, 1.1, length), tilt)  # nobody steps off the side
+		for k in STAIR_STEPS:
+			_deco(Vector3(x, rise * float(k + 1) + 0.45, s.end.y - run * (float(k) + 0.5)), Vector3(0.05, 0.9, 0.05), "manor_trim")
+		_tilted_deco(Vector3(x, mid.y, mid.z) + normal * 1.0, Vector3(0.1, 0.08, length), tilt, "manor_trim")
+		_deco(Vector3(x, 0.65, s.end.y - 0.1), Vector3(0.22, 1.3, 0.22), "manor_trim")  # the newel post
+	# Underneath: solid in steps just below the ramp, and off the ground floor's grid.
+	for j in range(1, int(s.size.y)):
+		var zf := s.end.y - float(j)
+		var hgt := _ramp_y(zf) - 0.1
+		_batch.add_solid(Vector3(cx, hgt * 0.5, zf - 0.5), Vector3(s.size.x, hgt, 1.0))
+	_block(Vector3(cx, 0.5, s.get_center().y), Vector3(s.size.x, 1.0, s.size.y))
+	# Upstairs round the stairwell, on three sides; the stair comes up the fourth.
+	var h := STAIR_HOLE
+	_balustrade(Vector3(h.position.x, FLOOR2_Y, h.end.y), Vector3(h.position.x, FLOOR2_Y, h.position.y))
+	_balustrade(Vector3(h.end.x, FLOOR2_Y, h.end.y), Vector3(h.end.x, FLOOR2_Y, h.position.y))
+	_balustrade(Vector3(h.position.x, FLOOR2_Y, h.end.y), Vector3(h.end.x, FLOOR2_Y, h.end.y))
+	_block(Vector3(h.get_center().x, FLOOR2_Y + 0.5, h.get_center().y), Vector3(h.size.x, 1.0, h.size.y))
+
+
+## A rug laid on a floor whose top is at `at`: a worn plush field inside a darker border.
+func _rug(at: Vector3, size: Vector2, yaw: float = 0.0) -> void:
+	_deco(at + Vector3(0.0, 0.006, 0.0), Vector3(size.x, 0.012, size.y), "manor_rug_edge", yaw)
+	_deco(at + Vector3(0.0, 0.009, 0.0), Vector3(size.x - 0.32, 0.014, size.y - 0.32), "manor_rug", yaw)
+
+
+## A portrait gone black in a tarnished gilt frame, hung on the wall surface at `at`, facing `out`.
+func _painting(at: Vector3, out: Vector3, size: Vector2) -> void:
+	var yaw := atan2(out.x, out.z)
+	_deco(at + out * 0.03, Vector3(size.x + 0.18, size.y + 0.18, 0.05), "manor_frame", yaw)
+	_deco(at + out * 0.05, Vector3(size.x, size.y, 0.02), "manor_canvas", yaw)
+
+
+## Collision only, pitched about x (the stair's ramp and its sides).
+func _tilted_box(center: Vector3, size: Vector3, tilt: float) -> void:
+	var body := StaticBody3D.new()
+	body.collision_layer = ChainBody.LAYER_WORLD
+	body.collision_mask = 0
+	var cs := CollisionShape3D.new()
+	var box := BoxShape3D.new()
+	box.size = size
+	cs.shape = box
+	body.add_child(cs)
+	body.position = center
+	body.rotation.x = tilt
+	_root.add_child(body)
+
+
+## Drawn only, pitched about x (a handrail).
+func _tilted_deco(center: Vector3, size: Vector3, tilt: float, key: String) -> void:
+	var mi := MeshInstance3D.new()
+	var bm := BoxMesh.new()
+	bm.size = size
+	mi.mesh = bm
+	mi.material_override = LevelKit.mat(key)
+	mi.position = center
+	mi.rotation.x = tilt
+	_root.add_child(mi)
+
+
+## A balustrade from a to b along x or z, standing on a's floor: a rail, a bottom rail, turned
+## balusters between, and a waist-high wall of air you can't fall past.
+func _balustrade(a: Vector3, b: Vector3) -> void:
+	var d := b - a
+	var length := d.length()
+	var along_x := absf(d.x) > absf(d.z)
+	var c := (a + b) * 0.5
+	var bar := Vector3(length + 0.1, 0.07, 0.09) if along_x else Vector3(0.09, 0.07, length + 0.1)
+	_deco(c + Vector3(0.0, 1.0, 0.0), bar, "manor_trim")
+	_deco(c + Vector3(0.0, 0.08, 0.0), bar, "manor_trim")
+	var n := maxi(2, int(length / 0.32))
+	for k in n + 1:
+		_deco(a + d * (float(k) / float(n)) + Vector3(0.0, 0.53, 0.0), Vector3(0.05, 0.9, 0.05), "manor_trim")
+	_batch.add_solid(c + Vector3(0.0, 0.55, 0.0), Vector3(length, 1.1, 0.12) if along_x else Vector3(0.12, 1.1, length))
+
+
+## What's left in the rooms downstairs: the dining table laid for a dinner nobody ate, the
+## library's shelves, the parlour's fireplace still glowing, the study's desk, the foyer's clock.
 func _mansion_rooms() -> void:
-	# Foyer: the grand stair, collapsed at the top, against the back wall; a long-case clock.
-	for k in 10:
-		var sh := 0.4 * float(k + 1)
-		_solid(Vector3(0.0, sh * 0.5, -52.0 - 0.95 * float(k)), Vector3(5.0, sh, 0.95), "manor_trim")
-	_piece("ruin_rubble", Vector3(2.8, 0.0, -50.5), Vector3(2.2, 0.9, 2.2), 0.4, Vector3(1.4, 0.6, 1.4))
-	_solid(Vector3(-6.6, 1.15, -40.0), Vector3(0.6, 2.3, 0.5), "manor_trim")  # the clock
+	_piece("manor_clock", Vector3(-6.6, 0.0, -40.0), ManorMeshes.NATIVE["manor_clock"], PI * 0.5, Vector3(0.6, 2.3, 0.5))
 	_candle(Vector3(-6.6, 2.3, -40.0), 0.5)
-	# Dining room: a long table, a candelabra still burning.
-	_solid(Vector3(-17.0, 0.4, -43.0), Vector3(10.0, 0.8, 1.8), "manor_trim")
+	# Dining room: three tables end to end under their cloths, chairs (two of them over), candelabra
+	# still burning.
+	var r := RandomNumberGenerator.new()  # the furniture's own dice: the layout's stay as they were
+	r.seed = seed_value * 17 + 3
+	for x: float in [-20.4, -17.0, -13.6]:
+		_piece("manor_table", Vector3(x, 0.0, -43.0), ManorMeshes.NATIVE["manor_table"], 0.0, Vector3(3.4, 0.8, 1.8))
 	for k in 6:
 		for side: float in [-1.0, 1.0]:
-			_piece("manor_pew", Vector3(-21.0 + 1.6 * float(k), 0.0, -43.0 + side * 1.6), Vector3(0.6, 0.95, 0.5), PI * 0.5 + (0.0 if side > 0.0 else PI), Vector3(0.5, 0.5, 0.5))
+			var at := Vector3(-21.0 + 1.6 * float(k), 0.0, -43.0 + side * 1.35)
+			var over := r.randf() < 0.17
+			_piece("manor_chair", at + (Vector3(0.0, 0.2, side * 0.5) if over else Vector3.ZERO), ManorMeshes.NATIVE["manor_chair"], (0.0 if side > 0.0 else PI) + r.randf_range(-0.15, 0.15),
+				Vector3(0.45, 0.5, 0.45), Vector2(1.45, 0.0) if over else Vector2.ZERO)  # over on its back
 	_candle(Vector3(-17.0, 0.8, -43.0), 0.8, 7.0)
 	_candle(Vector3(-13.0, 0.8, -43.0), 0.4)
+	for x: float in [-21.0, -17.0, -13.0]:
+		_piece("manor_candelabra", Vector3(x, 0.8, -43.0), ManorMeshes.NATIVE["manor_candelabra"], r.randf_range(-0.3, 0.3))
+	_rug(Vector3(-17.0, 0.03, -43.0), Vector2(12.5, 4.6))
+	for x: float in [-22.0, -12.0]:
+		_painting(Vector3(x, 2.5, -49.85), Vector3(0.0, 0.0, 1.0), Vector2(1.3, 1.7))
+	# The foyer: a rug at the door, portraits, a side table with a candelabrum, a chair under a sheet.
+	_rug(Vector3(0.0, 0.03, -39.0), Vector2(4.0, 4.4))
+	for side: float in [-1.0, 1.0]:
+		for z: float in [-39.5, -47.0]:
+			_painting(Vector3(side * 7.85, 2.6, z), Vector3(-side, 0.0, 0.0), Vector2(1.2, 1.6))
+	_piece("manor_side_table", Vector3(6.7, 0.0, -40.0), ManorMeshes.NATIVE["manor_side_table"], -PI * 0.5, Vector3(1.2, 0.8, 0.6))
+	_piece("manor_candelabra", Vector3(6.7, 0.8, -40.0), ManorMeshes.NATIVE["manor_candelabra"], PI * 0.5)
+	_piece("manor_sheeted", Vector3(6.4, 0.0, -50.5), ManorMeshes.NATIVE["manor_sheeted"], -PI * 0.5, Vector3(0.95, 0.9, 0.9))
 	# Library: shelves floor to ceiling along the walls, the engine in the middle, a reading lamp.
+	var shelf: Vector3 = ManorMeshes.NATIVE["manor_bookcase"]
 	for z in [-60.0, -57.8, -51.2]:
-		_solid(Vector3(-24.6, 2.0, float(z)), Vector3(0.6, 4.0, 2.0), "manor_books")
+		_piece("manor_bookcase", Vector3(-24.6, 0.0, float(z)), shelf, PI * 0.5, Vector3(2.0, 4.0, 0.6))
 	for z in [-60.2, -52.0]:
-		_solid(Vector3(-9.4, 2.0, float(z)), Vector3(0.6, 4.0, 2.0), "manor_books")
+		_piece("manor_bookcase", Vector3(-9.4, 0.0, float(z)), shelf, -PI * 0.5, Vector3(2.0, 4.0, 0.6))
 	for x in [-23.5, -21.2]:
-		_solid(Vector3(float(x), 2.0, -61.2), Vector3(2.2, 4.0, 0.6), "manor_books")
+		_piece("manor_bookcase", Vector3(float(x), 0.0, -61.2), Vector3(2.2, 4.0, 0.66), 0.0, Vector3(2.2, 4.0, 0.6))
 	_candle(Vector3(-11.0, 1.0, -52.0), 0.6)
 	_piece("manor_coffin", Vector3(-21.5, 0.0, -53.0), Vector3(0.9, 0.6, 2.1), 0.3, Vector3(0.8, 0.5, 2.0))
-	# Parlour: the fireplace on the east wall, still glowing; chairs; a piano under a sheet.
+	_rug(Vector3(-15.5, 0.03, -56.5), Vector2(6.0, 4.2), 0.1)
+	_piece("manor_sheeted", Vector3(-12.0, 0.0, -60.2), ManorMeshes.NATIVE["manor_sheeted"], PI + 0.3, Vector3(0.95, 0.9, 0.9))
+	_piece("manor_chest", Vector3(-12.5, 0.0, -51.0), ManorMeshes.NATIVE["manor_chest"], 0.1, Vector3(0.95, 0.65, 0.55))
+	for at: Vector3 in [Vector3(-23.6, 0.0, -55.0), Vector3(-19.8, 0.0, -59.8), Vector3(-10.4, 0.0, -57.0)]:
+		for k in r.randi_range(2, 4):
+			_deco(at + Vector3(r.randf_range(-0.12, 0.12), 0.08 + 0.13 * float(k), r.randf_range(-0.12, 0.12)), Vector3(0.42, 0.12, 0.3), "manor_books", r.randf_range(-0.6, 0.6))  # books off the shelves
+	_painting(Vector3(-17.0, 2.6, -50.15), Vector3(0.0, 0.0, -1.0), Vector2(1.6, 1.1))
+	# Parlour: the fireplace on the east wall, still glowing; chairs under sheets; the grand piano.
 	_solid(Vector3(25.0, 1.3, -46.5), Vector3(1.4, 2.6, 3.0), "manor_stone_dark")
 	_piece("ruin_embers", Vector3(24.0, 0.0, -46.5), Vector3(1.2, 0.35, 1.6), 0.0)
 	var fire := OmniLight3D.new()
@@ -657,16 +1046,92 @@ func _mansion_rooms() -> void:
 	fire.position = Vector3(23.4, 0.6, -46.5)
 	_root.add_child(fire)
 	_flickers.append([fire, null, 1.0, 3.3])
-	_solid(Vector3(14.0, 0.6, -40.0), Vector3(2.4, 1.2, 1.4), "manor_trim")  # the piano
-	_deco(Vector3(14.0, 1.22, -40.0), Vector3(2.6, 0.05, 1.6), "paper")
-	for k in 3:
-		_piece("manor_pew", Vector3(14.0 + 3.0 * float(k - 1), 0.0, -46.5), Vector3(1.2, 0.95, 0.6), PI, Vector3(1.0, 0.6, 0.5))
+	_piece("manor_piano", Vector3(14.0, 0.0, -40.0), ManorMeshes.NATIVE["manor_piano"], -PI * 0.5, Vector3(1.5, 1.0, 2.3))  # keys to the west
+	# The parlour's furniture under dust sheets: two armchairs and a sofa round the fire.
+	var hearth := Vector3(24.0, 0.0, -46.5)
+	for seat: Array in [[Vector3(19.0, 0.0, -46.5), Vector3(2.4, 1.0, 1.05), Vector3(2.2, 0.9, 0.9)], [Vector3(20.6, 0.0, -42.8), ManorMeshes.NATIVE["manor_sheeted"], Vector3(0.95, 0.9, 0.9)],
+			[Vector3(20.6, 0.0, -49.0), ManorMeshes.NATIVE["manor_sheeted"], Vector3(0.95, 0.9, 0.9)]]:
+		var d: Vector3 = hearth - (seat[0] as Vector3)
+		_piece("manor_sheeted", seat[0], seat[1], atan2(-d.x, -d.z), seat[2])  # facing the fire
+	_rug(Vector3(19.5, 0.03, -46.0), Vector2(7.0, 5.0))
+	_painting(Vector3(25.68, 3.55, -46.5), Vector3(-1.0, 0.0, 0.0), Vector2(1.6, 1.0))  # over the fireplace
+	_painting(Vector3(13.0, 2.6, -49.85), Vector3(0.0, 0.0, 1.0), Vector2(1.2, 1.6))
 	# Study: the desk, papers, a lamp left on.
-	_solid(Vector3(17.0, 0.4, -57.0), Vector3(3.0, 0.8, 1.4), "manor_trim")
-	_deco(Vector3(17.2, 0.82, -57.0), Vector3(1.2, 0.02, 0.8), "paper", 0.3)
+	_piece("manor_desk", Vector3(17.0, 0.0, -57.0), ManorMeshes.NATIVE["manor_desk"], 0.0, Vector3(2.2, 0.8, 1.1))
+	_deco(Vector3(17.2, 0.815, -57.0), Vector3(0.8, 0.012, 0.55), "paper", 0.3)
 	_candle(Vector3(16.0, 0.8, -57.0), 0.6)
 	for k in 2:
-		_solid(Vector3(24.6, 2.0, -60.0 + 2.2 * float(k)), Vector3(0.6, 4.0, 2.0), "manor_books")
+		_piece("manor_bookcase", Vector3(24.6, 0.0, -60.0 + 2.2 * float(k)), shelf, -PI * 0.5, Vector3(2.0, 4.0, 0.6))
+	_piece("manor_chair", Vector3(17.2, 0.0, -55.6), ManorMeshes.NATIVE["manor_chair"], 0.25, Vector3(0.45, 0.5, 0.45))  # pushed back from the desk
+	_piece("manor_candelabra", Vector3(17.85, 0.8, -57.25), ManorMeshes.NATIVE["manor_candelabra"], 0.4)
+	_rug(Vector3(17.0, 0.03, -56.5), Vector2(4.2, 3.2))
+	_piece("manor_crate", Vector3(10.0, 0.0, -51.2), ManorMeshes.NATIVE["manor_crate"], 0.15, Vector3(0.9, 0.7, 0.7))
+	_piece("manor_crate", Vector3(10.05, 0.7, -51.25), ManorMeshes.NATIVE["manor_crate"] * 0.85, -0.2)
+	_piece("manor_chest", Vector3(11.5, 0.0, -61.0), ManorMeshes.NATIVE["manor_chest"], PI, Vector3(0.95, 0.65, 0.55))
+	_painting(Vector3(16.0, 2.6, -50.15), Vector3(0.0, 0.0, -1.0), Vector2(1.2, 1.6))
+
+
+## Upstairs. The master bedroom: a four-poster with someone still in it under the sheet, a coffin at
+## its foot, a black mirror. The nursery: a crib, a rocking chair, a small statue facing the corner.
+## The guest room: a bed, a wardrobe gone over. The sickroom: a tub of black water, an iron bed,
+## shelves of medicine books. The gallery: portraits, a table with a candle on the landing.
+func _upper_rooms(rng: RandomNumberGenerator) -> void:
+	var f := FLOOR2_Y
+	# Master bedroom (west, front).
+	_piece("manor_bed", Vector3(-19.0, f, -48.3), ManorMeshes.NATIVE["manor_bed"], 0.0, Vector3(2.4, 0.7, 2.8))  # someone still in it
+	_piece("manor_coffin", Vector3(-19.0, f, -45.4), ManorMeshes.NATIVE["manor_coffin"], PI * 0.5, Vector3(0.8, 0.5, 2.0))
+	_piece("manor_wardrobe", Vector3(-25.3, f, -40.0), ManorMeshes.NATIVE["manor_wardrobe"], PI * 0.5, Vector3(1.8, 2.4, 0.8))
+	_piece("manor_side_table", Vector3(-21.6, f, -49.4), Vector3(0.6, 0.7, 0.5), 0.0, Vector3(0.6, 0.7, 0.5))  # nightstand
+	_candle(Vector3(-21.6, f + 0.7, -49.4), 0.6, 6.5, rng)
+	_deco(Vector3(-25.72, f + 1.9, -45.0), Vector3(0.06, 1.6, 1.1), "manor_trim")  # the mirror's frame
+	_deco(Vector3(-25.68, f + 1.9, -45.0), Vector3(0.04, 1.4, 0.9), "manor_window")
+	# Nursery (west, back).
+	_piece("manor_crib", Vector3(-13.0, f, -59.6), ManorMeshes.NATIVE["manor_crib"], 0.0, Vector3(1.0, 1.0, 1.7))
+	_piece("manor_pew", Vector3(-19.5, f, -55.5), Vector3(0.7, 0.95, 0.6), 0.6, Vector3(0.6, 0.6, 0.5))
+	_piece("manor_mourner", Vector3(-24.8, f, -60.8), ManorMeshes.NATIVE["manor_mourner"] * 0.55, PI * 0.75, Vector3(0.5, 1.3, 0.5))
+	_piece("manor_chest", Vector3(-10.0, f, -61.2), Vector3(1.2, 0.6, 0.6), 0.0, Vector3(1.2, 0.6, 0.6))  # the toy chest
+	_candle(Vector3(-16.0, f, -53.2), 0.4, 5.0, rng)
+	# Guest room (east, front).
+	_piece("manor_cot", Vector3(19.0, f, -47.9), Vector3(1.5, 1.1, 2.3), 0.0, Vector3(1.6, 0.6, 2.4))
+	# The wardrobe, over on its back with its doors to the ceiling (a narrow one, the box it was).
+	var fallen := Basis(Vector3.UP, 0.2 - PI * 0.5) * Basis(Vector3.RIGHT, -PI * 0.5) * Basis.from_scale(Vector3(0.5, 1.0, 1.0))
+	_batch.add_prop("manor_wardrobe", Transform3D(fallen, Vector3(23.4, f + 0.4, -39.6) - fallen * Vector3(0.0, 1.2, 0.0)))
+	_batch.add_solid(Vector3(23.4, f + 0.45, -39.6), Vector3(2.4, 0.9, 0.9), 0.2)
+	_block(Vector3(23.4, f + 0.45, -39.6), Vector3(2.4, 0.9, 0.9), 0.2)
+	for k in 5:
+		_deco(Vector3(13.0 + 2.1 * float(k), f + 0.03, -43.0 + 1.3 * sin(float(k) * 2.3)), Vector3(0.3, 0.01, 0.4), "paper", float(k))
+	# Sickroom (east, back).
+	_piece("manor_tub", Vector3(22.5, f, -59.6), ManorMeshes.NATIVE["manor_tub"], 0.0, Vector3(2.0, 0.7, 0.9))
+	_piece("manor_cot", Vector3(13.5, f, -59.9), Vector3(1.0, 1.1, 2.1), 0.0, Vector3(1.0, 0.6, 2.1))
+	_piece("manor_bookcase", Vector3(25.4, f, -54.0), Vector3(2.0, 3.2, 0.6), -PI * 0.5, Vector3(2.0, 3.2, 0.6))
+	_candle(Vector3(22.5, f, -58.75), 0.5, 6.0, rng)  # on the floor by the tub
+	# The gallery: portraits either side, a table and a candle on the landing.
+	for side: float in [-1.0, 1.0]:
+		for z: float in [-46.5, -51.5]:
+			var x := side * (8.0 - 0.17)
+			_deco(Vector3(x, f + 2.1, z), Vector3(0.05, 1.6, 1.2), "manor_trim")
+			_deco(Vector3(x - side * 0.02, f + 2.1, z), Vector3(0.04, 1.4, 1.0), "manor_window")
+	_piece("manor_side_table", Vector3(6.6, f, -60.6), ManorMeshes.NATIVE["manor_side_table"], 0.0, Vector3(1.2, 0.8, 0.6))
+	_candle(Vector3(6.85, f + 0.8, -60.6), 0.6, 7.0, rng)
+	_piece("manor_candelabra", Vector3(6.3, f + 0.8, -60.6), ManorMeshes.NATIVE["manor_candelabra"], 0.2)
+	# Rugs, a chest at the foot of things, more under sheets, more portraits.
+	var top := f + 0.024  # the boards
+	_rug(Vector3(-17.5, top, -43.5), Vector2(5.0, 3.8))
+	_rug(Vector3(-15.0, top, -56.5), Vector2(4.4, 3.4), 0.2)
+	_rug(Vector3(17.0, top, -43.5), Vector2(4.4, 3.4))
+	_rug(Vector3(0.0, top, -41.0), Vector2(3.4, 7.6))
+	_rug(Vector3(0.0, top, -58.5), Vector2(3.4, 4.4))
+	_piece("manor_chest", Vector3(-25.0, f, -46.5), ManorMeshes.NATIVE["manor_chest"], PI * 0.5, Vector3(0.95, 0.65, 0.55))
+	_piece("manor_candelabra", Vector3(-21.6, f + 0.7, -49.3), ManorMeshes.NATIVE["manor_candelabra"], 0.5)
+	_piece("manor_sheeted", Vector3(12.6, f, -38.4), ManorMeshes.NATIVE["manor_sheeted"], PI * 0.75, Vector3(0.95, 0.9, 0.9))
+	_piece("manor_sheeted", Vector3(24.4, f, -45.5), Vector3(1.4, 1.5, 0.8), -PI * 0.5, Vector3(1.2, 1.3, 0.7))  # a dresser under a sheet
+	_piece("manor_chair", Vector3(17.5, f, -55.0), ManorMeshes.NATIVE["manor_chair"], 2.6, Vector3(0.45, 0.5, 0.45))
+	_piece("manor_chair", Vector3(-24.5, f, -56.5), ManorMeshes.NATIVE["manor_chair"], PI * 0.5, Vector3(0.45, 0.5, 0.45))  # facing the corner too
+	_piece("manor_crate", Vector3(10.0, f, -61.0), ManorMeshes.NATIVE["manor_crate"], 0.3, Vector3(0.9, 0.7, 0.7))
+	_painting(Vector3(-13.0, f + 2.0, -49.85), Vector3(0.0, 0.0, 1.0), Vector2(1.2, 0.9))
+	_painting(Vector3(13.0, f + 2.0, -49.85), Vector3(0.0, 0.0, 1.0), Vector2(1.0, 1.3))
+	_painting(Vector3(-8.15, f + 2.0, -60.0), Vector3(-1.0, 0.0, 0.0), Vector2(0.8, 1.0))
+	_painting(Vector3(22.5, f + 2.0, -50.15), Vector3(0.0, 0.0, -1.0), Vector2(1.1, 0.8))
 
 
 ## The graveyard: iron railings round it with three ways in, rows of headstones, crosses, a few
@@ -1066,6 +1531,8 @@ func _build_hangings() -> void:
 			var pt: Vector3 = ManorMeshes.GALLOWS_POINTS[k if n == 3 else k * 2]
 			_hang_body(at + basis * pt, _rng.randf_range(0.95, 1.06))
 		_keep(at, 3.0, false)
+	# And one from the ceiling over the stairwell, turning slowly above the treads as you climb.
+	_hang_body(Vector3(STAIR.get_center().x, FLOOR2_Y + ROOM2_H, -50.5), 1.0)
 
 
 func _hang_body(top: Vector3, sc: float) -> void:
@@ -1143,22 +1610,166 @@ func _grass_ok(q: Vector3) -> bool:
 	return is_walkable(_cell(q))
 
 
-## Low banks of fog creeping across the grounds on the wind (volumetric fog, high quality): thick
-## at knee height, thinning upward, drifting through each other.
+## Heavy fog on the move (volumetric fog: the High and Medium quality settings). A knee-to-chest
+## mist over the whole estate, laid in tiles that all drift on a slowly turning wind and wrap round
+## out past the wall, its wisps moving with it; and big thick banks that wander the grounds on
+## courses of their own, turning, swelling and thinning, swallowing the lamps as they pass. The
+## fog glows faintly (emission) so it reads as pale mist in the dark, not as more darkness.
+## Visual only: every peer runs its own (its own dice, so the layout's stay as they were).
 func _build_fog_banks() -> void:
-	for k in 24:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = seed_value * 7 + 911
+	var noise := FastNoiseLite.new()
+	noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	noise.frequency = 0.04
+	noise.fractal_octaves = 4
+	var wisps := NoiseTexture3D.new()
+	wisps.width = 64
+	wisps.height = 32
+	wisps.depth = 64
+	wisps.seamless = true
+	wisps.normalize = true
+	wisps.noise = noise
+	var span := FOG_TILE * float(FOG_TILES)
+	var mist := FogMaterial.new()
+	mist.density = FOG_MIST_DENSITY
+	mist.albedo = Color(0.72, 0.76, 0.76)
+	mist.emission = FOG_GLOW
+	mist.height_falloff = 0.7  # thickest at the ground
+	mist.edge_fade = 0.1
+	mist.density_texture = wisps
+	for i in FOG_TILES:
+		for j in FOG_TILES:
+			var fv := FogVolume.new()
+			fv.shape = RenderingServer.FOG_VOLUME_SHAPE_BOX
+			fv.size = Vector3(FOG_TILE + 1.0, FOG_MIST_H, FOG_TILE + 1.0)
+			fv.material = mist
+			fv.position = Vector3(-span * 0.5 + (float(i) + 0.5) * FOG_TILE, FOG_MIST_H * 0.5 - 0.3, -span * 0.5 + (float(j) + 0.5) * FOG_TILE)
+			_root.add_child(fv)
+			_fog_tiles.append(fv)
+	for k in FOG_BANKS:
 		var fv := FogVolume.new()
 		fv.shape = RenderingServer.FOG_VOLUME_SHAPE_ELLIPSOID
-		fv.size = Vector3(_rng.randf_range(14.0, 26.0), _rng.randf_range(2.2, 3.6), _rng.randf_range(10.0, 18.0))
+		fv.size = Vector3(rng.randf_range(16.0, 38.0), rng.randf_range(4.0, 9.0), rng.randf_range(12.0, 30.0))
 		var fm := FogMaterial.new()
-		fm.density = _rng.randf_range(0.22, 0.45)
-		fm.albedo = Color(0.62, 0.66, 0.66)
-		fm.height_falloff = 0.5
-		fm.edge_fade = 0.75
+		var density := rng.randf_range(FOG_BANK_DENSITY.x, FOG_BANK_DENSITY.y)
+		fm.density = density
+		fm.albedo = Color(0.74, 0.78, 0.78)
+		fm.emission = FOG_GLOW
+		fm.height_falloff = 0.35
+		fm.edge_fade = 0.55
+		fm.density_texture = wisps
 		fv.material = fm
-		fv.position = Vector3(_rng.randf_range(-HALF, HALF), 0.7, _rng.randf_range(-HALF, HALF))
+		fv.position = Vector3(rng.randf_range(-HALF, HALF), fv.size.y * 0.3, rng.randf_range(-HALF, HALF))
+		fv.rotation.y = rng.randf() * TAU
 		_root.add_child(fv)
-		_fog_banks.append([fv, _rng.randf_range(0.25, 0.6)])
+		# [volume, heading, speed m/s, wander phase, wander rate, density, breath phase, spin rad/s]
+		_fog_banks.append([fv, rng.randf() * TAU, rng.randf_range(FOG_BANK_SPEED.x, FOG_BANK_SPEED.y), rng.randf() * TAU,
+			rng.randf_range(0.05, 0.16), density, rng.randf() * TAU, rng.randf_range(-0.02, 0.02)])
+	_wind_dir = rng.randf() * TAU
+	# Indoors stays clear: fog volumes don't stop at walls, so the mansion's rooms and the crypt
+	# take it away again (a negative density), and only the doorways and windows let it in.
+	for pair: Array in [[MANSION, FLOOR2_Y + ROOM2_H + 0.3], [CRYPT, ROOM_H]]:
+		var r: Rect2 = pair[0]
+		var h := float(pair[1])
+		var clear := FogVolume.new()
+		clear.shape = RenderingServer.FOG_VOLUME_SHAPE_BOX
+		clear.size = Vector3(r.size.x - 0.6, h, r.size.y - 0.6)
+		var cm := FogMaterial.new()
+		cm.density = -3.0
+		cm.edge_fade = 0.05
+		clear.material = cm
+		clear.position = Vector3(r.get_center().x, h * 0.5, r.get_center().y)
+		_root.add_child(clear)
+
+
+## Every peer: the mist drifts on a wind that slowly comes round; each bank wanders, turning back
+## toward the middle when it strays out past the wall, and breathes thicker and thinner.
+func _tick_fog(delta: float) -> void:
+	_wind_dir += sin(_t * 0.011 + 1.7) * 0.035 * delta
+	var wind := Vector3(cos(_wind_dir), 0.0, sin(_wind_dir)) * FOG_WIND
+	var span := FOG_TILE * float(FOG_TILES)
+	for fv: FogVolume in _fog_tiles:
+		var p := fv.position + wind * delta
+		p.x = wrapf(p.x, -span * 0.5, span * 0.5)
+		p.z = wrapf(p.z, -span * 0.5, span * 0.5)
+		fv.position = p
+	for b: Array in _fog_banks:
+		var fv := b[0] as FogVolume
+		var heading := float(b[1]) + sin(_t * float(b[4]) + float(b[3])) * 0.45 * delta
+		var p := fv.position
+		if absf(p.x) > HALF + 6.0 or absf(p.z) > HALF + 6.0:
+			heading = lerp_angle(heading, atan2(-p.z, -p.x), clampf(delta * 0.6, 0.0, 1.0))
+		b[1] = heading
+		fv.position = p + (Vector3(cos(heading), 0.0, sin(heading)) * float(b[2]) + wind * 0.6) * delta
+		fv.rotation.y += float(b[7]) * delta
+		(fv.material as FogMaterial).density = float(b[5]) * (0.7 + 0.3 * sin(_t * 0.12 + float(b[6])))
+
+
+## The estate's clutter, from its own dice (the layout's stay as they were): urns along the drive
+## and round the courtyard, the stables' yard (firewood, casks, crates, a chest, a wheelbarrow),
+## casks, crates and firewood against the outbuildings, benches, broken columns, grieving statues
+## and urns out on the grounds (never in the graveyard's aisles, which the Groundskeeper walks), and
+## dead branches down everywhere (drawn only: you step over them).
+func _dress_grounds() -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = seed_value * 19 + 77
+	for z: float in [-31.0, 26.0, 38.0, 50.0, 62.0]:
+		for side: float in [-1.0, 1.0]:
+			_dress_piece("manor_urn", Vector3(side * 4.7, 0.0, z), rng.randf() * TAU, 0.6)
+	for p: Vector3 in [Vector3(-7.2, 0.0, -20.5), Vector3(7.2, 0.0, -20.5), Vector3(-7.2, 0.0, -7.5), Vector3(7.2, 0.0, -7.5)]:
+		_dress_piece("manor_urn", p, rng.randf() * TAU, 0.6)
+	for item: Array in [["manor_logs", Vector3(57.0, 0.0, 7.5), 0.1], ["manor_logs", Vector3(56.8, 0.0, 8.6), -0.05], ["manor_barrel", Vector3(57.2, 0.0, 11.0), 0.0],
+			["manor_barrel", Vector3(56.4, 0.0, 11.6), 0.7], ["manor_crate", Vector3(57.0, 0.0, 35.5), 0.2], ["manor_crate", Vector3(57.1, 0.0, 36.6), -0.3],
+			["manor_wheelbarrow", Vector3(54.5, 0.0, 33.0), 0.7], ["manor_chest", Vector3(57.2, 0.0, 14.0), PI * 0.5]]:
+		_dress_piece(String(item[0]), item[1], float(item[2]), 0.4)
+	var wood: Array[String] = ["manor_barrel", "manor_crate", "manor_logs", "manor_barrel", "manor_crate", "manor_wheelbarrow", "manor_chest"]
+	var sheds: Array[Rect2] = [CHAPEL, GREENHOUSE, CRYPT, MANSION]
+	var placed := 0
+	var tries := 0
+	while placed < 18 and tries < 300:
+		tries += 1
+		var rect := sheds[rng.randi_range(0, sheds.size() - 1)]
+		var t := rng.randf()
+		var off := rng.randf_range(2.6, 3.6)
+		var p := Vector3.ZERO
+		match rng.randi_range(0, 3):
+			0: p = Vector3(lerpf(rect.position.x, rect.end.x, t), 0.0, rect.position.y - off)
+			1: p = Vector3(lerpf(rect.position.x, rect.end.x, t), 0.0, rect.end.y + off)
+			2: p = Vector3(rect.position.x - off, 0.0, lerpf(rect.position.y, rect.end.y, t))
+			_: p = Vector3(rect.end.x + off, 0.0, lerpf(rect.position.y, rect.end.y, t))
+		if _dress_piece(wood[rng.randi_range(0, wood.size() - 1)], p, rng.randf() * TAU, 0.7):
+			placed += 1
+	var stone: Array[String] = ["manor_bench", "manor_column", "manor_angel", "manor_urn", "manor_bench", "manor_column"]
+	placed = 0
+	tries = 0
+	while placed < 22 and tries < 500:
+		tries += 1
+		var p := Vector3(rng.randf_range(-68.0, 68.0), 0.0, rng.randf_range(-68.0, 68.0))
+		if GRAVEYARD.grow(1.5).has_point(Vector2(p.x, p.z)):
+			continue
+		if _dress_piece(stone[rng.randi_range(0, stone.size() - 1)], p, rng.randf() * TAU, 1.1):
+			placed += 1
+	placed = 0
+	tries = 0
+	while placed < 46 and tries < 600:
+		tries += 1
+		var p := Vector3(rng.randf_range(-70.0, 70.0), 0.0, rng.randf_range(-70.0, 70.0))
+		if not _room_for(p, 1.2):
+			continue
+		var s := rng.randf_range(0.7, 1.3)
+		_batch.add_prop("manor_branch", ManorMeshes.fit("manor_branch", p, ManorMeshes.NATIVE["manor_branch"] * s, Basis.from_euler(Vector3(0.0, rng.randf() * TAU, 0.0))))
+		_keep(p, 1.0, false)
+		placed += 1
+
+
+## A piece of clutter at base if there's room for it (radius); kept off by what comes after.
+func _dress_piece(key: String, base: Vector3, yaw: float, radius: float) -> bool:
+	if not _room_for(base, radius):
+		return false
+	_piece(key, base, ManorMeshes.NATIVE[key], yaw, DRESS_SOLIDS.get(key, Vector3.ZERO), Vector2.ZERO, 0.15)
+	_keep(base, radius + 0.5, false)
+	return true
 
 
 ## Beyond the wall: a black wood, dead trunks crowding up to the stone, more and more of them lost
@@ -1188,7 +1799,7 @@ func _build_moon() -> void:
 	var moon := DirectionalLight3D.new()
 	moon.name = "Moon"
 	moon.light_color = Color(0.55, 0.62, 0.82)
-	moon.light_energy = 0.1
+	moon.light_energy = 0.16
 	moon.light_volumetric_fog_energy = 0.25
 	moon.shadow_enabled = true
 	moon.directional_shadow_max_distance = 60.0
@@ -1238,6 +1849,9 @@ func _test_points() -> void:
 	test_points["m_mansion"] = origin + Vector3(0.0, 0.1, MANSION.end.y + 2.5)
 	test_points["m_graveyard"] = origin + Vector3(GRAVEYARD.end.x + 2.0, 0.1, 0.0)
 	test_points["foyer"] = origin + Vector3(0.0, 0.1, -44.0)
+	test_points["stair_foot"] = origin + STAIR_FOOT + Vector3(0.0, 0.1, 0.0)
+	test_points["upstairs"] = origin + STAIR_TOP + Vector3(0.0, 0.1, -2.0)  # the landing
+	test_points["upstairs_room"] = origin + Vector3(-17.0, FLOOR2_Y + 0.1, -56.0)  # the nursery
 	test_points["keeper_home"] = origin + KEEPER_HOME
 
 
@@ -1247,19 +1861,12 @@ func _process(delta: float) -> void:
 	if not _shown:
 		return  # in the Stack, with the camera up in the building
 	_t += delta
-	# The hanged turn slowly on their ropes and sway a little; the fog creeps along on the wind.
+	# The hanged turn slowly on their ropes and sway a little.
 	for h: Array in _hanged:
 		var pivot := h[0] as Node3D
 		var ph := float(h[1])
 		pivot.rotation = Vector3(0.05 * sin(_t * 0.7 + ph), 0.5 * sin(_t * 0.23 + ph * 2.0), 0.06 * sin(_t * 0.55 + ph * 1.3))
-	for f: Array in _fog_banks:
-		var fv := f[0] as FogVolume
-		fv.position.x += float(f[1]) * delta
-		fv.position.z += float(f[1]) * 0.3 * delta
-		if fv.position.x > HALF + 12.0:
-			fv.position.x -= (HALF + 12.0) * 2.0
-		if fv.position.z > HALF + 12.0:
-			fv.position.z -= (HALF + 12.0) * 2.0
+	_tick_fog(delta)
 	for f: Array in _flickers:
 		var light := f[0] as OmniLight3D
 		var base := float(f[2])
@@ -1328,7 +1935,10 @@ func is_safe_spot(_p: Vector3) -> bool:
 
 func ceiling_y(p: Vector3) -> float:
 	var l := Vector2(p.x - origin.x, p.z - origin.z)
-	return origin.y + ROOM_H if MANSION.has_point(l) else (origin.y + 4.2 if CRYPT.has_point(l) else p.y + 40.0)
+	if MANSION.has_point(l):
+		var upper := p.y - origin.y > FLOOR2_Y - 0.5 or STAIR_HOLE.has_point(l)
+		return origin.y + (FLOOR2_Y + ROOM2_H if upper else ROOM_H)
+	return origin.y + 4.2 if CRYPT.has_point(l) else p.y + 40.0
 
 
 func scare_pool(_p: Vector3) -> Array:
@@ -1354,6 +1964,7 @@ func set_shown(on: bool) -> void:
 		return
 	_shown = on
 	visible = on
+	Player.beam_fog = BEAM_FOG if on else Player.BEAM_FOG
 	if on:
 		Sfx.start_loop(_wind)
 	else:
@@ -1389,7 +2000,8 @@ func _spawn_pickups() -> void:
 	_populated = true
 	for p: Array in [["decoy", Vector3(56.0, 0.0, 30.0)], ["flashlight", SPAWN + Vector3(-2.0, 0.0, 2.0)], ["drink", Vector3(4.0, 0.0, -44.0)],
 			["pistol", Vector3(17.0, 0.0, -59.0)], ["ammo", Vector3(19.0, 0.0, -59.0)], ["airhorn", Vector3(-44.0, 0.0, 50.0)],
-			["ammo", Vector3(-40.0, 0.0, 16.0)], ["decoy", Vector3(-20.0, 0.0, 44.0)], ["bomb", Vector3(66.0, 0.0, -66.0)]]:
+			["ammo", Vector3(-40.0, 0.0, 16.0)], ["decoy", Vector3(-20.0, 0.0, 44.0)], ["bomb", Vector3(66.0, 0.0, -66.0)],
+			["bomb", Vector3(-22.5, FLOOR2_Y, -44.0)], ["ammo", Vector3(-11.0, FLOOR2_Y, -60.0)], ["drink", Vector3(16.0, FLOOR2_Y, -58.0)]]:  # upstairs: worth the climb
 		Net.spawn_pickup(String(p[0]), origin + (p[1] as Vector3), 0)
 
 
@@ -1410,6 +2022,7 @@ func server_arrive() -> void:
 func _physics_process(delta: float) -> void:
 	if not multiplayer.is_server() or not _arrived or keeper == null:
 		return
+	_tick_keeper_floor()
 	_tick_draw(delta)
 	_tick_kick(delta)
 	_tick_respawn(delta)
@@ -1472,6 +2085,7 @@ func _tick_respawn(delta: float) -> void:
 	_respawn_t = RESPAWN_SECONDS
 	var spot := _hidden_spot()
 	if spot != Vector3.INF:
+		_set_keeper_floor(false)
 		keeper.respawn_at(spot)
 
 
@@ -1479,7 +2093,7 @@ func _tick_respawn(delta: float) -> void:
 func _hidden_spot() -> Vector3:
 	var space := get_world_3d().direct_space_state
 	for _try in 60:
-		var c := random_cell(_rng)
+		var c := _ground_cell(_rng)  # never upstairs: respawn_at stands it on the ground
 		var at := cell_center(0, c)
 		var ok := true
 		for p in Net.get_players():
@@ -1531,7 +2145,7 @@ func on_machine_done(m: ManorMachine) -> void:
 		_on_generator_started()
 		return
 	var n := engines_running()
-	GameState.set_task_text(TASK_ENGINES, "Get the four engines running (%d of 4): crouch at one and hold Ctrl" % n)
+	GameState.set_task_text(TASK_ENGINES, "Get the four engines running (%d of 4): crouch at one (Ctrl) and type out its page" % n)
 	if n >= machines.size():
 		GameState.complete_task(TASK_ENGINES)
 		generator.server_arm()
@@ -1590,5 +2204,6 @@ func _respawn_group() -> void:
 func server_on_respawn() -> void:
 	if keeper != null and not keeper.is_dead():
 		keeper.release(false)
+		_set_keeper_floor(false)
 		keeper.debug_reset(origin + KEEPER_HOME, _rng.randf() * TAU)
 	_draw_t = 20.0

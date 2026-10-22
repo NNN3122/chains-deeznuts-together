@@ -710,7 +710,7 @@ func _tick_attack(delta: float) -> void:
 					_t = TACKLE_WINDUP + TACKLE_DIVE  # face first into the wall: sprawled
 			elif attack_hit:
 				if valid:
-					global_position = Vector3(p.global_position.x, floor_y, p.global_position.z) - _attack_dir * 0.5
+					global_position = Vector3(p.global_position.x, level.ground_y(floor_index, p.global_position, floor_y), p.global_position.z) - _attack_dir * 0.5
 				if _t >= _hit_t + TACKLE_PIN:
 					if valid:
 						_start_grab(p)  # on top of you, then by the throat
@@ -782,7 +782,7 @@ func _dash(dir: Vector3, speed: float, delta: float) -> bool:
 	if not get_world_3d().direct_space_state.intersect_ray(q).is_empty():
 		return true
 	global_position += step
-	global_position.y = floor_y
+	global_position.y = level.ground_y(floor_index, global_position, floor_y)
 	return false
 
 
@@ -1015,7 +1015,7 @@ func _move_toward(target: Vector3, speed: float, delta: float) -> void:
 	_face(target, delta)
 	var step := to.normalized() * minf(speed * delta, to.length())
 	global_position += step
-	global_position.y = floor_y
+	global_position.y = level.ground_y(floor_index, global_position, floor_y)
 
 
 ## Straight to the target without a wall in the way, at knee height (desks don't count).

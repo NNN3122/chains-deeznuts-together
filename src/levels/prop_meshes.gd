@@ -37,6 +37,12 @@ static func material() -> ShaderMaterial:
 	return _material
 
 
+## The material a batch of `key` is drawn with: the manor's stone, bark and wood props carry a
+## photo surface (ManorMeshes.material); everything else shares the plain one.
+static func material_for(key: String) -> Material:
+	return ManorMeshes.material(key) if key.begins_with("manor_") else material()
+
+
 ## A prop's transform: standing at pos, turned yaw, optionally scaled.
 static func at(pos: Vector3, yaw: float, scale: Vector3 = Vector3.ONE) -> Transform3D:
 	return Transform3D(Basis.from_euler(Vector3(0.0, yaw, 0.0)) * Basis.from_scale(scale), pos)
