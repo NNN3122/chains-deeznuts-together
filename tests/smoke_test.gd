@@ -78,6 +78,7 @@ func _run_host() -> void:
 		_finish()
 		return
 	_test_seeds()
+	_test_way_up()
 	await _test_keyboard()
 	await _test_climb()
 	await _test_lift()
@@ -346,6 +347,83 @@ func _swing(yaw: float, pitch: float) -> void:
 	await _wait(0.1)
 	_host._apply_input(Vector2.ZERO, yaw, pitch, _seq << Player.JUMP_SEQ_SHIFT)
 	await _wait(0.05)
+
+
+## Every floor's way up can be found (the user, after the office tripled: "level 1 lost the
+## entrance"): over 40 layouts no route is longer than ROUTE_ROOMS and none is short; each floor
+## has its draft at the way up; and on B4 a standing body can walk from the Break Room to the crates.
+func _test_way_up() -> void:
+	var seeds: Array[int] = [YellowRooms.DEFAULT_SEED]
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 12345
+	for k in 39:
+		seeds.append(rng.randi() % 1000000)
+	var longest := 0
+	var shortest := 999
+	var total := 0
+	for s in seeds:
+		var y := YellowRooms.new()
+		y.seed_value = s
+		y._generate_layout()
+		for f: Dictionary in y.floors:
+			var n: int = (f["path"] as Array).size() - 1
+			longest = maxi(longest, n)
+			shortest = mini(shortest, n)
+			total += n
+		y.free()
+	var mean := float(total) / float(seeds.size() * YellowRooms.FLOORS)
+	_check("every floor's way up is at most %d rooms in, and still a long way (40 layouts)" % YellowRooms.ROUTE_ROOMS, longest <= YellowRooms.ROUTE_ROOMS and shortest >= 14 and mean >= 18.0,
+		"rooms %d to %d, mean %.1f" % [shortest, longest, mean])
+	var drafts := 0
+	for i in YellowRooms.FLOORS:
+		var d := _level.get_node_or_null("Floor%d/Draft" % i) as AudioStreamPlayer3D
+		var at := _level.cell_center(i, _level.floors[i]["ascent"])
+		if d != null and Vector2(d.global_position.x - at.x, d.global_position.z - at.z).length() < 0.1 and d.global_position.y > at.y + 2.0 and d.global_position.y < at.y + YellowRooms.CEIL_H:
+			drafts += 1
+	var reach := _walk_grid(_level, 0, _level.spawn_position, _level.test_points["crates_start"])
+	_check("a draft moans down each floor's way up, and B4's crates are a walk from the Break Room", drafts == YellowRooms.FLOORS and bool(reach["reached"]),
+		"drafts %d; walk %s" % [drafts, reach])
+
+
+## Where a standing body fits on floor i (a 0.4 m grid, anything over 0.3 m solid), flooded from
+## `from`: whether it reaches `to`, and how much of the floor it covers.
+func _walk_grid(y: YellowRooms, i: int, from: Vector3, to: Vector3) -> Dictionary:
+	const STEP := 0.4
+	var space := y.get_world_3d().direct_space_state
+	var box := BoxShape3D.new()
+	box.size = Vector3(0.6, 1.4, 0.6)
+	var q := PhysicsShapeQueryParameters3D.new()
+	q.shape = box
+	q.collision_mask = ChainBody.LAYER_WORLD
+	var ex: Array[RID] = []
+	for d in y.find_children("*", "StuckDoor", true, false):
+		for b in d.find_children("*", "StaticBody3D", true, false):
+			ex.append((b as StaticBody3D).get_rid())
+	q.exclude = ex
+	var n := int(float(YellowRooms.GRID) * YellowRooms.CELL / STEP)
+	var origin := y.global_position + Vector3(0.0, float(i) * YellowRooms.FLOOR_H, 0.0)
+	var free := {}
+	var cell_at := func(p: Vector3) -> Vector2i:
+		return Vector2i(int((p.x - origin.x) / STEP), int((p.z - origin.z) / STEP))
+	var start: Vector2i = cell_at.call(y.global_position + from)
+	var goal: Vector2i = cell_at.call(y.global_position + to)
+	var seen := {start: true}
+	var queue: Array[Vector2i] = [start]
+	var reached := false
+	while not queue.is_empty():
+		var c: Vector2i = queue.pop_front()
+		if c == goal:
+			reached = true
+		for d in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
+			var nb: Vector2i = c + d
+			if nb.x < 0 or nb.y < 0 or nb.x >= n or nb.y >= n or seen.has(nb):
+				continue
+			seen[nb] = true
+			q.transform = Transform3D(Basis.IDENTITY, origin + Vector3((float(nb.x) + 0.5) * STEP, 1.0, (float(nb.y) + 0.5) * STEP))
+			if space.intersect_shape(q, 1).is_empty():
+				free[nb] = true
+				queue.append(nb)
+	return {"reached": reached, "covered": free.size(), "of": n * n}
 
 
 ## The building is different every run: other seeds must still produce four floors with every
@@ -3115,7 +3193,24 @@ func _park_mate(_far: Vector3) -> void:
 func _park_mate_clear() -> void:
 	if _mate == null:
 		return
-	_mate.teleport_to(_host.global_position + Vector3(0.0, 0.0, -(HollowHire.RESCUE_RADIUS + 0.9)), 0.0)
+	# Behind the host (-z) if there's floor there, else the first open spot round it: put inside a
+	# wall, the partner is pushed back out within rescue reach.
+	var space := _host.get_world_3d().direct_space_state
+	var box := BoxShape3D.new()
+	box.size = Vector3(0.9, 1.4, 0.9)
+	var q := PhysicsShapeQueryParameters3D.new()
+	q.shape = box
+	q.collision_mask = ChainBody.LAYER_WORLD
+	var d := HollowHire.RESCUE_RADIUS + 0.9
+	var spot := _host.global_position + Vector3(0.0, 0.0, -d)
+	for k in 8:
+		var ang := PI + TAU * float(k) / 8.0
+		var p := _host.global_position + Vector3(sin(ang), 0.0, cos(ang)) * d
+		q.transform = Transform3D(Basis.IDENTITY, p + Vector3(0.0, 1.0, 0.0))
+		if space.intersect_shape(q, 1).is_empty():
+			spot = p
+			break
+	_mate.teleport_to(spot, 0.0)
 
 
 func _bot(move: Vector2, yaw: float, flags: int, jump: bool = false) -> void:

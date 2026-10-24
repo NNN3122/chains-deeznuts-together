@@ -30,6 +30,16 @@ const LIGHT_FADE_BEGIN: float = 38.0  # m from the camera a ceiling light starts
 const LIGHT_FADE_LENGTH: float = 8.0
 const HOLE: float = 2.6
 const CAR_HOLE: float = 3.3  # the freight car's shaft through B1's ceiling
+## Rooms from where you arrive to a floor's way up, at most: about what the furthest room of the
+## 9 x 9 floors was. The furthest room of a 13 x 13 floor was 30 rooms deep on average (up to 52),
+## and with nothing pointing to it the user couldn't find it ("level 1 lost the entrance").
+const ROUTE_ROOMS: int = 21
+## Air moans down every floor's way up (the hole, the shafts): the one thing on a floor that points
+## at it, heard most of the way across, from its own floor only.
+const DRAFT_DB: float = 4.0
+const DRAFT_PITCH: float = 0.72
+const DRAFT_UNIT: float = 6.0  # m: full volume within this, then falling off
+const DRAFT_RANGE: float = 90.0  # m
 const DEFAULT_SEED: int = 1931
 var seed_value: int = DEFAULT_SEED  # set by LevelStack before _ready: the host picks it, joiners get it in the handshake
 
@@ -39,7 +49,7 @@ enum Conn { NONE, DOOR, OPEN }
 const ASCENTS: Array = [Ascent.CRATES, Ascent.LIFT, Ascent.BOOST, Ascent.ELEVATOR]
 const FLOOR_NAMES: Array[String] = ["B4", "B3", "B2", "B1"]
 const OBJECTIVES: Array[String] = [
-	"B4 Orientation: find the maintenance hole in the ceiling and climb to B3. One Hollow Hire walks this floor. If it sees you, run.",
+	"B4 Orientation: find the maintenance hole in the ceiling (follow the draft) and climb to B3. One Hollow Hire walks this floor. If it sees you, run.",
 	"B3: the service lift is locked out until the fire alarm is pulled. Then one holds the plate, the lift carries the rest, and the floor is awake.",
 	"B2: the shelf shaft is under a hatch. Its release gives you 25 seconds. Stand on a teammate's head, or find the jetpack.",
 	"B1: find the freight elevator. Everyone inside to ride it up out of the Yellow Rooms. Don't stop.",
@@ -63,10 +73,10 @@ const SCARE_POOL: Array = [
 ## What to do on each floor, ticked off on the HUD. [text, ...]; completion is checked in
 ## _tick_tasks.
 const TASKS: Array = [
-	["Find MAINTENANCE ACCESS (a stack of crates)", "Shoulder the jammed door open (sprint into it)", "Climb the crates up through the ceiling (walk into one, tap Space)"],
-	["Pull the FIRE ALARM (hold Ctrl at it): it releases the lift", "Find the SERVICE LIFT", "One of you stands on the yellow plate: the lift rises", "Hoist the plate-holder up on the chain"],
+	["Find MAINTENANCE ACCESS (a stack of crates): follow the draft", "Shoulder the jammed door open (sprint into it)", "Climb the crates up through the ceiling (walk into one, tap Space)"],
+	["Pull the FIRE ALARM (hold Ctrl at it): it releases the lift", "Find the SERVICE LIFT: follow the draft down its shaft", "One of you stands on the yellow plate: the lift rises", "Hoist the plate-holder up on the chain"],
 	["Throw the HATCH RELEASE (hold Ctrl at it): 25 seconds", "Run to the SHELF SHAFT: jetpack, or stack up on a teammate", "Everyone up through the hatch before it slams"],
-	["Find the FREIGHT ELEVATOR", "Shoulder the jammed door open (sprint into it)", "Everyone inside before they catch you: it rides up to the pizzeria"],
+	["Find the FREIGHT ELEVATOR: follow the draft down its shaft", "Shoulder the jammed door open (sprint into it)", "Everyone inside before they catch you: it rides up to the pizzeria"],
 ]
 const HIRES_PER_FLOOR: Array[int] = [1, 1, 4, 4]  # B4 and B3 one each (the user: the first floor has only one, then "the second floor needs to only have one"); B3 also has the ceiling hunter
 const SENTRY_MIN_HIRES: int = 3  # a floor gets a sentry at the way up only when it has this many: with two, both roam where you are
@@ -96,6 +106,7 @@ var _car: FreightCar
 var _jetpack_check_t: float = 0.0
 var _boost_jetpack_pos: Vector3 = Vector3.ZERO
 var _drone: AudioStreamPlayer
+var _drafts: Array[AudioStreamPlayer3D] = []  # per floor, at its way up
 var _pending_signs: Array = []
 var _tasks_floor: int = -1
 var _hire_respawn_t: Array[float] = [RESPAWN_SECONDS, RESPAWN_SECONDS, RESPAWN_SECONDS, RESPAWN_SECONDS]
@@ -134,12 +145,16 @@ func _generate_layout() -> void:
 		rng.seed = seed_value + i * 101
 		var conn := _carve_maze(arrive, rng)
 		var dist := _bfs(arrive, conn)
+		# The way up: as deep into the maze as ROUTE_ROOMS allows, then as far across the floor.
 		var ascent := arrive
-		var best := -1
+		var best := -1.0
 		for c in dist:
 			var d: int = dist[c]
-			if c != arrive and (d > best or (d == best and rng.randf() < 0.5)):
-				best = d
+			if c == arrive or d > ROUTE_ROOMS:
+				continue
+			var score := float(d) * 100.0 + Vector2(c - arrive).length()
+			if score > best:
+				best = score
 				ascent = c
 		var path := _path(arrive, ascent, conn)
 		var types: Dictionary = {}
@@ -282,6 +297,11 @@ func cull_floors(cam_floor: int) -> void:
 		var root := get_node_or_null("Floor%d" % i) as Node3D
 		if root != null:
 			root.visible = absi(i - cam_floor) <= 1
+		if i < _drafts.size():
+			if i == cam_floor:
+				Sfx.start_loop(_drafts[i])
+			else:
+				_drafts[i].stop()
 
 
 func set_ambience(on: bool) -> void:
@@ -320,6 +340,13 @@ func _build_floor(i: int) -> void:
 			if c == ascent:
 				_holed_slab(batch, center + Vector3(0.0, CEIL_H + 0.025, 0.0), 0.05, "ceiling", hole_size)
 				_hole_lining(batch, center, base, hole_size)
+				var draft := Sfx.loop_player("wind", DRAFT_DB, DRAFT_RANGE)
+				draft.name = "Draft"
+				draft.pitch_scale = DRAFT_PITCH
+				draft.unit_size = DRAFT_UNIT
+				draft.position = center + Vector3(0.0, CEIL_H - 0.4, 0.0)
+				root.add_child(draft)
+				_drafts.append(draft)
 			else:
 				batch.add(center + Vector3(0.0, CEIL_H + 0.025, 0.0), Vector3(CELL, 0.05, CELL), "ceiling")
 	_build_walls(batch, i, conn)
