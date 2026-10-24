@@ -841,8 +841,8 @@ func _dress_cell(root: Node3D, batch: LevelKit.BoxBatch, f: int, x: int, z: int,
 
 func _receiving(root: Node3D, batch: LevelKit.BoxBatch, c: Vector3, rng: RandomNumberGenerator) -> void:
 	# The freight car parks in the middle; crates along the walls; a dock door painted shut.
-	PizzeriaProps.crates(batch, c + Vector3(-2.3, 0.0, -2.2), rng)
-	PizzeriaProps.crates(batch, c + Vector3(2.2, 0.0, 2.1), rng)
+	PizzeriaProps.crates(batch, c + Vector3(-2.3, 0.0, -2.5), rng)  # clear of the freight shaft (YellowRooms.CAR_HOLE)
+	PizzeriaProps.crates(batch, c + Vector3(2.4, 0.0, 2.35), rng)
 	PizzeriaProps.shelf(batch, c + Vector3(2.6, 0.0, -1.0), false, rng, 2.6)
 	PizzeriaProps.dock_door(root, batch, c + Vector3(0.0, 0.0, 2.9), Vector3(0.0, 0.0, -1.0), "DELIVERIES\nRING BELL\n(BELL MISSING)")
 	_punch_clock(root, batch, c + Vector3(-2.9, 0.0, 1.5), PI * 0.5, "RECEIVING")

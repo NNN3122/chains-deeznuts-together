@@ -2643,11 +2643,10 @@ func regroup(requester: String) -> void:
 func _respawn_group() -> void:
 	var bodies := Net.get_chain_bodies()
 	var facing := GameState.checkpoint_facing
-	var right := Vector3(cos(facing), 0.0, -sin(facing))
 	var n := bodies.size()
+	var spots := GameState.line_spots(n, GameState.checkpoint_position, facing)
 	for i in n:
-		var offset := right * (float(i) * 1.0 - float(n - 1) * 0.5)
-		bodies[i].teleport_to(GameState.checkpoint_position + offset + Vector3(0.0, 0.2, 0.0), facing)
+		bodies[i].teleport_to(spots[i] + Vector3(0.0, 0.2, 0.0), facing)
 	server_on_respawn()
 
 

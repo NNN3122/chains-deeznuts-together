@@ -1,8 +1,8 @@
 # CHAINS DEEZNUTS TOGETHER
 
-1–6 player co-op horror-comedy. You are chained to your friends. Climb out of the building. Don't let them see you.
+1–10 player co-op horror-comedy. You are chained to your friends. Climb out of the building. Don't let them see you.
 
-This build is **Levels 1, 2 and 3 of 5: The Yellow Rooms, then Pappy Pepperoni's Night Shift**, a haunted family pizzeria stacked on top of the office, **then the rooftops of Carrow Heights**, where the swarm is waiting between you and a helicopter. Play it solo (you're chained to the Ballast, a 35 kg iron nut with a smiley face) or with up to 5 friends online.
+This build is **Levels 1, 2 and 3 of 5: The Yellow Rooms, then Pappy Pepperoni's Night Shift**, a haunted family pizzeria stacked on top of the office, **then the rooftops of Carrow Heights**, where the swarm is waiting between you and a helicopter. Play it solo (you're chained to the Ballast, a 35 kg iron nut with a smiley face) or with up to 9 friends online.
 
 ## Download and play (Windows)
 

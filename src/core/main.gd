@@ -320,7 +320,7 @@ func _process(delta: float) -> void:
 			me.bot_controlled = true
 			(level as HordeArena).debug_spawn_all_rounds()
 			for b in Net.get_chain_bodies():
-				b.teleport_to((level as HordeArena).test_points["north"] + Vector3(1.2 * float(b.join_index % 6), 0.0, 1.0), 0.0)
+				b.teleport_to((level as HordeArena).test_points["north"] + Vector3(1.2 * float(b.join_index % Net.MAX_PLAYERS), 0.0, 1.0), 0.0)
 		elif me != null and level is LevelStack and _bench_manor:
 			me.bot_controlled = true
 			(level as LevelStack).server_land_at_manor()

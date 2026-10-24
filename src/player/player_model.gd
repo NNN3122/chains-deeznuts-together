@@ -20,6 +20,7 @@ const SKIN_TONES: Array[Color] = [
 const VEST_COLORS: Array[Color] = [
 	Color(1.0, 0.42, 0.04), Color(0.72, 0.92, 0.08), Color(0.1, 0.6, 0.95),
 	Color(0.95, 0.18, 0.4), Color(0.6, 0.32, 0.95), Color(1.0, 0.8, 0.08),
+	Color(0.0, 0.78, 0.68), Color(0.9, 0.9, 0.86), Color(0.82, 0.07, 0.05), Color(1.0, 0.58, 0.78),  # players 7-10
 ]
 const HAIR_COLORS: Array[Color] = [
 	Color(0.12, 0.08, 0.05), Color(0.35, 0.22, 0.12), Color(0.05, 0.04, 0.04), Color(0.55, 0.4, 0.22),

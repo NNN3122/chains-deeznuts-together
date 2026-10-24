@@ -29,7 +29,9 @@ const ROOM_S: float = CELL / 6.0  # the room dressing was laid out for 6 m rooms
 const LIGHT_FADE_BEGIN: float = 38.0  # m from the camera a ceiling light starts to fade out
 const LIGHT_FADE_LENGTH: float = 8.0
 const HOLE: float = 2.6
-const CAR_HOLE: float = 3.3  # the freight car's shaft through B1's ceiling
+const CAR_HOLE: float = 3.7  # the freight car's shaft through B1's ceiling (3.3 before the car grew for ten players)
+const LIFT_HOLE: float = 3.5  # the service lift's shaft through B3's ceiling: room for nine riders
+const LIFT_SIZE: float = 3.2  # m square: the plate-holder stays, everyone else rides (was 2.3, for five)
 ## Rooms from where you arrive to a floor's way up, at most: about what the furthest room of the
 ## 9 x 9 floors was. The furthest room of a 13 x 13 floor was 30 rooms deep on average (up to 52),
 ## and with nothing pointing to it the user couldn't find it ("level 1 lost the entrance").
@@ -266,7 +268,7 @@ func has_ceiling_at(p: Vector3) -> bool:
 	var i := floor_of(p.y)
 	var hole_c: Vector2i = floors[i]["ascent"]
 	var center := cell_center(i, hole_c)
-	var half := (CAR_HOLE if ASCENTS[i] == Ascent.ELEVATOR else HOLE) * 0.5 + 0.3
+	var half := hole_for(i) * 0.5 + 0.3
 	return not (absf(p.x - center.x) < half and absf(p.z - center.z) < half)
 
 
@@ -327,14 +329,14 @@ func _build_floor(i: int) -> void:
 	var types: Dictionary = f["types"]
 	var conn: Dictionary = f["conn"]
 	var floor_hole := i > 0  # the arrive cell has the hole you climbed up through
-	var hole_size: float = CAR_HOLE if ASCENTS[i] == Ascent.ELEVATOR else HOLE
+	var hole_size := hole_for(i)
 	for x in GRID:
 		for z in GRID:
 			var c := Vector2i(x, z)
 			var center := cell_center(i, c)
 			if floor_hole and c == arrive:
-				_holed_slab(batch, center + Vector3(0.0, -SLAB * 0.5, 0.0), SLAB, "carpet")
-				_hazard_ring(batch, center + Vector3(0.0, 0.006, 0.0))
+				_holed_slab(batch, center + Vector3(0.0, -SLAB * 0.5, 0.0), SLAB, "carpet", hole_for(i - 1))
+				_hazard_ring(batch, center + Vector3(0.0, 0.006, 0.0), hole_for(i - 1))
 			else:
 				batch.add(center + Vector3(0.0, -SLAB * 0.5, 0.0), Vector3(CELL, SLAB, CELL), "carpet")
 			if c == ascent:
@@ -388,6 +390,16 @@ func _build_floor(i: int) -> void:
 		test_points["checkpoint%d" % i] = cell_center(i, arrive) + Vector3(0.0, 0.1, -2.2 * ROOM_S)
 
 
+## The hole through floor i's ceiling over its way up (the same hole is in the floor above).
+func hole_for(i: int) -> float:
+	match ASCENTS[i]:
+		Ascent.ELEVATOR:
+			return CAR_HOLE
+		Ascent.LIFT:
+			return LIFT_HOLE
+	return HOLE
+
+
 ## A slab with a hole x hole opening in the middle (4 strips).
 func _holed_slab(batch: LevelKit.BoxBatch, center: Vector3, thickness: float, key: String, hole: float = HOLE) -> void:
 	var side := (CELL - hole) * 0.5
@@ -398,13 +410,13 @@ func _holed_slab(batch: LevelKit.BoxBatch, center: Vector3, thickness: float, ke
 	batch.add(center + Vector3(0.0, 0.0, off), Vector3(hole, thickness, side), key)
 
 
-func _hazard_ring(batch: LevelKit.BoxBatch, center: Vector3) -> void:
-	var r := HOLE * 0.5 + 0.12
+func _hazard_ring(batch: LevelKit.BoxBatch, center: Vector3, hole: float = HOLE) -> void:
+	var r := hole * 0.5 + 0.12
 	for k in 4:
 		var horizontal := k < 2
 		var s := -1.0 if k % 2 == 0 else 1.0
 		var pos := center + (Vector3(0.0, 0.0, s * r) if horizontal else Vector3(s * r, 0.0, 0.0))
-		var size := Vector3(HOLE + 0.48, 0.01, 0.2) if horizontal else Vector3(0.2, 0.01, HOLE + 0.48)
+		var size := Vector3(hole + 0.48, 0.01, 0.2) if horizontal else Vector3(0.2, 0.01, hole + 0.48)
 		batch.add(pos, size, "hazard", false)
 
 
@@ -805,14 +817,14 @@ func _ascent(root: Node3D, batch: LevelKit.BoxBatch, i: int, c: Vector2i, center
 			test_points["tray_start"] = center + Vector3(-1.9, tray_y + 0.1, tray_z)
 			test_points["tray_end"] = center + Vector3(2.4, tray_y + 0.1, tray_z)
 		Ascent.LIFT:
-			var plate := PressurePlate.create("PlateLift", center + Vector3(-2.0, 0.0, -2.0))
+			var plate := PressurePlate.create("PlateLift", center + Vector3(0.0, 0.0, -2.45))  # beside the lift, about as far from its riders as when it was smaller
 			plate.enabled = i != ALARM_FLOOR  # locked out until the fire alarm releases it
 			root.add_child(plate)
-			var lift := LiftPlatform.create("Lift", center + Vector3(0.0, base - 0.15 + 0.01, 0.0), base - 0.15 + 0.01, base + FLOOR_H - 0.15, plate, Vector3(2.3, 0.3, 2.3))
+			var lift := LiftPlatform.create("Lift", center + Vector3(0.0, base - 0.15 + 0.01, 0.0), base - 0.15 + 0.01, base + FLOOR_H - 0.15, plate, Vector3(LIFT_SIZE, 0.3, LIFT_SIZE))
 			root.add_child(lift)
-			test_points["plate"] = center + Vector3(-2.0, 0.1, -2.0)
-			test_points["lift"] = center + Vector3(0.0, base + 0.1, 0.0)
-			test_points["lift_top_edge"] = center + Vector3(0.0, base + FLOOR_H + 0.1, -HOLE * 0.5 - 0.45)
+			test_points["plate"] = center + Vector3(0.0, 0.1, -2.45)
+			test_points["lift"] = center + Vector3(0.0, 0.1, 0.0)  # on the lift, down at B3 (center is already at floor height)
+			test_points["lift_top_edge"] = center + Vector3(0.0, FLOOR_H + 0.1, -LIFT_HOLE * 0.5 - 0.45)
 		Ascent.BOOST:
 			batch.add(center + Vector3(0.0, 0.6, -2.0), Vector3(1.2, 1.2, 1.2), "cardboard")
 			batch.add(center + Vector3(0.0, 1.3, -0.6), Vector3(2.4, 2.6, 1.2), "metal")

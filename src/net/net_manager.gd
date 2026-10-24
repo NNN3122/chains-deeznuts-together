@@ -13,7 +13,8 @@ signal invite_changed
 signal world_mismatch(config: Dictionary)
 
 const DEFAULT_PORT: int = 7777
-const MAX_PLAYERS: int = 6
+const MAX_PLAYERS: int = 10  # the user: "make it so I can host up to 10 players" (was 6)
+const SPARE_SLOTS: int = 2  # connections past a full game, so a joiner can be told why instead of just timing out
 const PLAYER_SCENE: PackedScene = preload("res://scenes/player/player.tscn")
 const REJECT_GRACE: float = 0.6  # seconds between telling a joiner why and dropping them
 
@@ -37,6 +38,7 @@ var ballast: Ballast
 var _next_join_index: int = 0
 var _spawn_counter: int = 0
 var _registered: Dictionary = {}
+var turned_away_full: int = 0  # server: joiners told the game is full (the ten-player test)
 
 
 static func default_world_config() -> Dictionary:
@@ -110,7 +112,7 @@ func host(port: int, player_name: String) -> Error:
 	local_name = player_name
 	is_solo = false
 	var peer := ENetMultiplayerPeer.new()
-	var err := peer.create_server(port, MAX_PLAYERS)
+	var err := peer.create_server(port, MAX_PLAYERS - 1 + SPARE_SLOTS)
 	if err != OK:
 		return err
 	multiplayer.multiplayer_peer = peer
@@ -306,6 +308,13 @@ func register_player(player_name: String, build: String, config: Dictionary) -> 
 		GameState.post_message_local("%s tried to join with a different version of the game. Send them your latest copy." % player_name.strip_edges().left(16), 6.0)
 		_drop_later(id)
 		return
+	if _registered.size() >= MAX_PLAYERS:
+		print("Net: turned away peer %d: the game is full" % id)
+		turned_away_full += 1
+		_rpc_rejected.rpc_id(id, "That game is full: %d players already." % MAX_PLAYERS)
+		GameState.post_message_local("%s tried to join, but the game is full (%d players)." % [player_name.strip_edges().left(16), MAX_PLAYERS], 6.0)
+		_drop_later(id)
+		return
 	if not same_world(config, world_config):
 		# Their building isn't ours: send them the recipe. They hang up, rebuild, and come back.
 		print("Net: peer %d built world %s, we have %s; sending ours" % [id, config, world_config])
@@ -349,19 +358,28 @@ func _spawn_player_for(peer_id: int, player_name: String) -> void:
 	players_changed.emit()
 
 
-## A fresh lobby lines up at the checkpoint. A late joiner whose chain partner (the current last
-## player) is out of reach drops in on top of that partner instead of being yanked across the map.
+## A fresh lobby lines up at the checkpoint: six side by side, the rest a step behind between their
+## shoulders, running back the other way (so each stands by its chain partner). A late joiner whose
+## chain partner (the current last player) is out of reach drops in on top of that partner instead
+## of being yanked across the map.
 func _spawn_position_for(index: int) -> Vector3:
 	var slot := index % MAX_PLAYERS
 	var facing := GameState.checkpoint_facing
 	var right := Vector3(cos(facing), 0.0, -sin(facing))
-	var lineup := GameState.checkpoint_position + right * (float(slot) * 1.0 - 2.5) + Vector3(0.0, 0.2, 0.0)
+	var back := Vector3(sin(facing), 0.0, cos(facing))
+	var spot := right * (float(slot) - 2.5)
+	if slot >= GameState.LINE_ROW:
+		spot = right * (2.0 - float(slot - GameState.LINE_ROW)) + back * GameState.LINE_ROW_GAP
+	var lineup := GameState.checkpoint_position + spot + Vector3(0.0, 0.2, 0.0)
 	var existing := get_players()
+	var taken: Array[Vector3] = []
+	for p in existing:
+		taken.append(p.global_position)
 	if existing.is_empty():
-		return lineup
+		return GameState.open_spot(lineup, GameState.checkpoint_position, taken)
 	var last := existing[existing.size() - 1]
 	if last.global_position.distance_to(lineup) <= 4.5:
-		return lineup
+		return GameState.open_spot(lineup, GameState.checkpoint_position, taken)
 	return last.global_position + Vector3(0.0, 2.2, 0.0)
 
 

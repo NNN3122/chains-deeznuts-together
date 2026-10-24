@@ -9,6 +9,7 @@ extends Node
 const RATE: int = 16000  # Hz on the wire
 const FRAME_SECONDS: float = 0.05  # one packet per 50 ms while talking
 const MAX_DISTANCE: float = 22.0  # m: inaudible beyond this
+const RELAY_MARGIN: float = 6.0  # m past MAX_DISTANCE the host still sends a voice (someone walking into earshot)
 const UNIT_SIZE: float = 5.0  # keep chained teammates intelligible
 const PLAYBACK_BOOST_DB: float = 6.0
 const VAD_THRESHOLD: float = 0.012  # RMS below this is silence
@@ -147,12 +148,19 @@ func _rpc_voice(bytes: PackedByteArray) -> void:
 	_relay(multiplayer.get_remote_sender_id(), bytes)
 
 
-## Host: everyone else hears it (positional on their end), and the host hears it too.
+## Host: everyone else in earshot hears it (positional on their end), and the host hears it too.
+## Nobody past MAX_DISTANCE could hear it anyway, and with ten players sending every voice to
+## everyone is most of the host's upload.
 func _relay(sender: int, bytes: PackedByteArray) -> void:
 	_talking[sender] = Time.get_ticks_msec()
+	var talker := Net.find_player(sender)
 	for peer in multiplayer.get_peers():
-		if peer != sender:
-			_rpc_hear.rpc_id(peer, sender, bytes)
+		if peer == sender:
+			continue
+		var listener := Net.find_player(peer)
+		if talker != null and listener != null and talker.global_position.distance_to(listener.global_position) > MAX_DISTANCE + RELAY_MARGIN:
+			continue
+		_rpc_hear.rpc_id(peer, sender, bytes)
 	if sender != multiplayer.get_unique_id():
 		_hear(sender, bytes)
 

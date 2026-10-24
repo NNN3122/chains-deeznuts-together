@@ -1,7 +1,7 @@
 CHAINS DEEZNUTS TOGETHER
 ========================
 
-A 1-6 player co-op horror-comedy. You are chained to your friends.
+A 1-10 player co-op horror-comedy. You are chained to your friends.
 Climb out of the building. Stay quiet: something lives in the ceiling.
 This build has two levels: the Yellow Rooms, then Pappy Pepperoni's Night Shift
 (a haunted pizzeria, stacked on top).
@@ -28,7 +28,7 @@ https://github.com/NNN3122/chains-deeznuts-together (or ask your friend for thei
 HOST YOUR OWN GAME
 ------------------
 Click HOST CO-OP, press Esc, click COPY INVITE and send the code to your friends.
-If Windows Firewall asks about the game, click "Allow".
+Up to 10 players (you and 9 friends). If Windows Firewall asks about the game, click "Allow".
 
 
 CONTROLS

@@ -5,7 +5,7 @@ extends AnimatableBody3D
 ## the pizzeria's Receiving room, where the door rolls up again. The server drives it; height and
 ## door state are replicated so late joiners see it where it is. Bodies inside ride along.
 
-const WIDTH: float = 2.8  # inside, meters
+const WIDTH: float = 3.2  # inside, meters: ten people stand in it (2.8 held nine at a squeeze)
 const HEIGHT: float = 2.9
 const WALL: float = 0.1
 const CLOSE_TIME: float = 0.9  # s for the door to roll down

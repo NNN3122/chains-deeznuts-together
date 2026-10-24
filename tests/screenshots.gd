@@ -575,8 +575,8 @@ func _gallery(level_node: Node) -> void:  # the Stack, or the Lot on its own
 	floor_mi.material_override = fmat
 	get_tree().current_scene.add_child(floor_mi)
 	floor_mi.global_position = STUDIO - Vector3(0.0, 0.1, 0.0)
-	# Every player colour, so all six are baked into the mesh cache that ships with the game.
-	for i in 6:
+	# Every player colour, so all of them are baked into the mesh cache that ships with the game.
+	for i in Net.MAX_PLAYERS:
 		var pm := PlayerModel.new()
 		pm.build(i)
 		pm.free()

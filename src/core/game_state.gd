@@ -12,6 +12,12 @@ signal tasks_changed
 
 enum ChainConfig { LINE, RING, PAIRS }
 
+const LINE_ROW: int = 6  # bodies set down side by side, a metre apart, before the Line takes a second row
+const LINE_ROW_GAP: float = 0.85  # m: the second row stands this far behind the first (a body is 0.8 across)
+const BODY_GAP: float = 0.8  # m between two bodies set down (a body is 0.8 across)
+const OPEN_STEP: float = 0.3  # m between the rings searched for open floor round a blocked spot
+const OPEN_RINGS: int = 9  # rings searched (out to 2.7 m: Receiving is a small room round the freight car)
+
 ## The current floor's task list under the objective: [[text, done], ...]. Server-owned,
 ## pushed to everyone (and to late joiners with the rest of the state).
 var tasks: Array = []
@@ -35,6 +41,68 @@ var typing: bool = false  # local: a repair page has the keyboard (TypingPanel),
 
 func _ready() -> void:
 	_setup_input_map()
+
+
+## Where body i of n stands when the Line is set down at `at` facing `facing` (a checkpoint, the
+## roof's pad, the stables): side by side a metre apart, and past LINE_ROW in two rows, the second
+## a step behind running back the other way so chain partners stay close. Ten people in one row
+## stood nine metres wide, into the walls. (Behind, not ahead: the checkpoints stand with their
+## backs to open floor or a wall a metre off, and some face a wall close in front.)
+func line_spot(i: int, n: int, at: Vector3, facing: float) -> Vector3:
+	var right := Vector3(cos(facing), 0.0, -sin(facing))
+	if n <= LINE_ROW:
+		return at + right * (float(i) - float(n - 1) * 0.5)
+	var back := Vector3(sin(facing), 0.0, cos(facing))
+	var per := (n + 1) / 2
+	if i < per:
+		return at + right * (float(i) - float(per - 1) * 0.5)
+	var m := n - per
+	return at + right * (float(m - 1 - (i - per)) - float(m - 1) * 0.5) + back * LINE_ROW_GAP
+
+
+## Server: every body's spot when the Line is set down at `at`: line_spot, moved to the nearest
+## open floor where a wall, counter or shelf is in the way (the checkpoints were laid out for a row
+## of six, and even that stood a few people inside the furniture).
+func line_spots(n: int, at: Vector3, facing: float) -> Array[Vector3]:
+	var out: Array[Vector3] = []
+	for i in n:
+		out.append(open_spot(line_spot(i, n, at, facing), at, out))
+	return out
+
+
+## Server: the nearest place to p (rings OPEN_STEP apart, out to OPEN_RINGS) with floor under it,
+## nothing solid where a body stands, a clear line back to `from` (never through a wall into the
+## next room), and nobody in `taken` within BODY_GAP. p itself when there's nowhere, or no world.
+func open_spot(p: Vector3, from: Vector3, taken: Array[Vector3]) -> Vector3:
+	var world := get_viewport().find_world_3d() if is_inside_tree() else null
+	if world == null:
+		return p
+	var space := world.direct_space_state
+	var box := BoxShape3D.new()
+	box.size = Vector3(0.6, 1.2, 0.6)
+	var q := PhysicsShapeQueryParameters3D.new()
+	q.shape = box
+	q.collision_mask = ChainBody.LAYER_WORLD
+	for ring in OPEN_RINGS + 1:
+		var count := 1 if ring == 0 else 8 * ring
+		for k in count:
+			var a := TAU * float(k) / float(count)
+			var c := p + Vector3(cos(a), 0.0, sin(a)) * (OPEN_STEP * float(ring))
+			if _is_open(space, q, c, from, taken):
+				return c
+	return p
+
+
+func _is_open(space: PhysicsDirectSpaceState3D, q: PhysicsShapeQueryParameters3D, c: Vector3, from: Vector3, taken: Array[Vector3]) -> bool:
+	for t in taken:
+		if Vector2(t.x - c.x, t.z - c.z).length() < BODY_GAP:
+			return false
+	q.transform = Transform3D(Basis.IDENTITY, c + Vector3(0.0, 1.0, 0.0))
+	if not space.intersect_shape(q, 1).is_empty():
+		return false
+	if space.intersect_ray(PhysicsRayQueryParameters3D.create(c + Vector3(0.0, 0.5, 0.0), c + Vector3(0.0, -0.8, 0.0), ChainBody.LAYER_WORLD)).is_empty():
+		return false  # over a hole, a shaft or the street
+	return from.distance_to(c) < 0.05 or space.intersect_ray(PhysicsRayQueryParameters3D.create(from + Vector3(0.0, 1.0, 0.0), c + Vector3(0.0, 1.0, 0.0), ChainBody.LAYER_WORLD)).is_empty()
 
 
 func _process(delta: float) -> void:

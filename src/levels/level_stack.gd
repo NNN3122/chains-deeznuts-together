@@ -150,11 +150,11 @@ func _climb_to_roof() -> void:
 		return
 	var pad := lot.spawn_position
 	var facing := lot.spawn_facing
-	var right := Vector3(cos(facing), 0.0, -sin(facing))
 	var bodies := Net.get_chain_bodies()
 	var n := bodies.size()
+	var spots := GameState.line_spots(n, pad, facing)
 	for i in n:
-		bodies[i].teleport_to(pad + right * (float(i) * 1.0 - float(n - 1) * 0.5) + Vector3(0.0, 0.2, 0.0), facing)
+		bodies[i].teleport_to(spots[i] + Vector3(0.0, 0.2, 0.0), facing)
 	GameState.set_checkpoint(lot.checkpoint_index, pad, facing, lot.first_objective())
 	lot.server_arrive()
 	_rpc_roof_fx.rpc()
@@ -189,11 +189,11 @@ func server_land_at_manor() -> void:
 		return
 	var spawn := manor.spawn_position
 	var facing := manor.spawn_facing
-	var right := Vector3(cos(facing), 0.0, -sin(facing))
 	var bodies := Net.get_chain_bodies()
 	var n := bodies.size()
+	var spots := GameState.line_spots(n, spawn, facing)
 	for i in n:
-		bodies[i].teleport_to(spawn + right * (float(i) * 1.0 - float(n - 1) * 0.5) + Vector3(0.0, 0.2, 0.0), facing)
+		bodies[i].teleport_to(spots[i] + Vector3(0.0, 0.2, 0.0), facing)
 	# Over the estate wall on a jetpack is no way to play the manor: the pilot keeps them.
 	var took := false
 	for p in Net.get_players():
@@ -320,11 +320,10 @@ func regroup(requester: String) -> void:
 func _respawn_group() -> void:
 	var bodies := Net.get_chain_bodies()
 	var facing := GameState.checkpoint_facing
-	var right := Vector3(cos(facing), 0.0, -sin(facing))
 	var n := bodies.size()
+	var spots := GameState.line_spots(n, GameState.checkpoint_position, facing)
 	for i in n:
-		var offset := right * (float(i) * 1.0 - float(n - 1) * 0.5)
-		bodies[i].teleport_to(GameState.checkpoint_position + offset + Vector3(0.0, 0.2, 0.0), facing)
+		bodies[i].teleport_to(spots[i] + Vector3(0.0, 0.2, 0.0), facing)
 	yellow.server_on_respawn()
 	pizzeria.server_on_respawn()
 	if GameState.checkpoint_index >= manor_checkpoint_index():

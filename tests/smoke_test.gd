@@ -20,7 +20,9 @@ var _mate: ChainBody  # the other end of the chain: second player, or the Ballas
 
 
 func _ready() -> void:
-	if is_client:
+	if is_client and only == "full":
+		_run_client_full()
+	elif is_client:
 		_run_client()
 	else:
 		_run_host()
@@ -29,7 +31,7 @@ func _ready() -> void:
 # --- Host ---------------------------------------------------------------------------------------
 
 func _run_host() -> void:
-	var players := await _wait_for_players(expected_players, 25.0)
+	var players := await _wait_for_players(expected_players, 25.0 + 10.0 * float(maxi(0, expected_players - 2)))  # ten joiners build the building at once
 	_check("players spawned", players.size() >= expected_players, "%d of %d" % [players.size(), expected_players])
 	_host = Net.find_player(1)
 	Player.debug_infinite_stamina = true  # the route tests sprint for minutes; _test_stamina turns breath back on
@@ -79,6 +81,8 @@ func _run_host() -> void:
 		return
 	_test_seeds()
 	_test_way_up()
+	_test_lineups()
+	await _test_lineup_sites()
 	await _test_keyboard()
 	await _test_climb()
 	await _test_lift()
@@ -383,6 +387,208 @@ func _test_way_up() -> void:
 	var reach := _walk_grid(_level, 0, _level.spawn_position, _level.test_points["crates_start"])
 	_check("a draft moans down each floor's way up, and B4's crates are a walk from the Break Room", drafts == YellowRooms.FLOORS and bool(reach["reached"]),
 		"drafts %d; walk %s" % [drafts, reach])
+
+
+
+## Where the Line is set down (GameState.line_spot): for one to ten bodies, nobody stands in anyone
+## else (a body is 0.8 m across) and nobody is more than a few steps from the spot.
+func _test_lineups() -> void:
+	var worst := ""
+	for n in range(1, Net.MAX_PLAYERS + 1):
+		var spots: Array[Vector3] = []
+		for i in n:
+			spots.append(GameState.line_spot(i, n, Vector3.ZERO, 0.7))
+		for a in n:
+			if spots[a].length() > 2.8:
+				worst += " n%d: %d is %.2f m out" % [n, a, spots[a].length()]
+			for b in range(a + 1, n):
+				if spots[a].distance_to(spots[b]) < 0.8:
+					worst += " n%d: %d-%d %.2f m" % [n, a, b, spots[a].distance_to(spots[b])]
+			if a > 0 and spots[a].distance_to(spots[a - 1]) > 2.0:
+				worst += " n%d: chain %d-%d %.2f m" % [n, a - 1, a, spots[a].distance_to(spots[a - 1])]
+	_check("one to ten bodies set down at a checkpoint: nobody overlaps, chain partners side by side, all within reach of the spot", worst == "", worst)
+
+
+## Everywhere the whole Line is set down (every checkpoint, B4's spawn, the roof's pad, the manor's
+## stables), six or ten: each spot has floor under it, no wall or furniture in it, a clear line back
+## to the checkpoint, and nobody else within a body's width (GameState.line_spots). Receiving's
+## checkpoint is only ever used with the freight car up (the car fills the shaft), so it's parked
+## up for the look.
+func _test_lineup_sites() -> void:
+	var car := _level.get_node_or_null("Floor3/FreightCar") as FreightCar
+	if car != null:
+		car.server_park_top()
+	await _wait(0.3)
+	var sites: Array = [["B4 spawn", _level.spawn_position, _level.spawn_facing], ["roof pad", _stack.lot.spawn_position, _stack.lot.spawn_facing],
+		["stables", _stack.manor.spawn_position, _stack.manor.spawn_facing]]
+	for cp in get_tree().current_scene.find_children("*", "Checkpoint", true, false):
+		var c := cp as Checkpoint
+		sites.append([String(c.name), c.respawn, c.facing])
+	var space := _host.get_world_3d().direct_space_state
+	var box := BoxShape3D.new()
+	box.size = Vector3(0.6, 1.2, 0.6)
+	var q := PhysicsShapeQueryParameters3D.new()
+	q.shape = box
+	q.collision_mask = ChainBody.LAYER_WORLD
+	var bad := ""
+	var moved := 0
+	for s in sites:
+		var at: Vector3 = s[1]
+		for n in [6, Net.MAX_PLAYERS]:
+			var spots := GameState.line_spots(n, at, float(s[2]))
+			for i in n:
+				var p := spots[i]
+				if p.distance_to(GameState.line_spot(i, n, at, float(s[2]))) > 0.01:
+					moved += 1
+				q.transform = Transform3D(Basis.IDENTITY, p + Vector3(0.0, 1.0, 0.0))
+				var why := ""
+				if not space.intersect_shape(q, 1).is_empty():
+					why = "in a wall"
+				elif space.intersect_ray(PhysicsRayQueryParameters3D.create(p + Vector3(0.0, 0.5, 0.0), p + Vector3(0.0, -0.8, 0.0), ChainBody.LAYER_WORLD)).is_empty():
+					why = "over nothing"
+				for j in i:
+					if Vector2(p.x - spots[j].x, p.z - spots[j].z).length() < GameState.BODY_GAP - 0.01:
+						why = "on top of #%d" % j
+				if why != "":
+					bad += " %s %d/%d %s" % [s[0], i, n, why]
+	if car != null:
+		car.server_reset()
+	await _wait(0.3)
+	_check("six or ten set down at every checkpoint, the roof's pad and the stables: floor under each, no wall in any, nobody on anybody (%d places, %d spots moved to open floor)" % [sites.size(), moved], bad == "", bad)
+
+
+## Ten players (the user: "make it so I can host up to 10 players"): ten bodies on one chain in ten
+## different vests; a regroup stands them in two rows in the Break Room; nine ride B3's service lift
+## while the tenth holds the plate; all ten fit in the freight car and ride it up; and an eleventh
+## who tries to join is told the game is full. With real clients (the eleventh started once the
+## host has its ten):
+##   --host --port=7795 --smoke --smoke-players=10 --smoke-only=ten
+##   nine of --join=127.0.0.1 --port=7795 --smoke-client --smoke-only=ten, then one --smoke-only=full
+## Or in one process: --host --port=7795 --bots=9 --smoke --smoke-players=10 --smoke-only=ten
+func _test_ten() -> void:
+	_test_lineups()
+	var players := Net.get_players()
+	players.sort_custom(func(a: Player, b: Player) -> bool: return a.join_index < b.join_index)
+	var vests := {}
+	for p in players:
+		vests[PlayerModel.VEST_COLORS[p.join_index % PlayerModel.VEST_COLORS.size()]] = true
+	var chain := _chain()
+	var segs := chain.segments.size() if chain != null else -1
+	_check("ten players on one chain, in ten different vests", players.size() == Net.MAX_PLAYERS and vests.size() == Net.MAX_PLAYERS and segs == players.size() - 1,
+		"%d players, %d vests, %d segments" % [players.size(), vests.size(), segs])
+	# A regroup at B4's Break Room: two rows, nobody in a wall or in anyone else.
+	_stack._respawn_group()
+	await _wait(1.2)
+	var arrive: Vector2i = _level.floors[0]["arrive"]
+	var space := _host.get_world_3d().direct_space_state
+	var box := BoxShape3D.new()
+	box.size = Vector3(0.5, 1.2, 0.5)
+	var q := PhysicsShapeQueryParameters3D.new()
+	q.shape = box
+	q.collision_mask = ChainBody.LAYER_WORLD
+	var bad := ""
+	var closest := 99.0
+	for a in players.size():
+		var pa := players[a].global_position
+		q.transform = Transform3D(Basis.IDENTITY, pa + Vector3(0.0, 1.0, 0.0))
+		if _level.cell_of(pa) != arrive or absf(pa.y) > 0.5 or not space.intersect_shape(q, 1).is_empty():
+			bad += " %s at %s" % [players[a].display_name, pa - _level.cell_center(0, arrive)]
+		for b in range(a + 1, players.size()):
+			closest = minf(closest, Vector2(pa.x, pa.z).distance_to(Vector2(players[b].global_position.x, players[b].global_position.z)))
+	_check("a regroup stands all ten in the Break Room in two rows: none in a wall, none in each other", bad == "" and closest > 0.6, "closest %.2f m;%s" % [closest, bad])
+	# B3's service lift: the host holds the plate (an end of the Line), the other nine ride.
+	_level.alarm().server_pull()
+	var plate: Vector3 = _level.test_points["plate"]
+	var lift: Vector3 = _level.test_points["lift"]
+	_host.teleport_to(plate, 0.0)
+	for k in range(1, players.size()):
+		var j := k - 1
+		players[k].teleport_to(lift + Vector3((float(j % 3) - 1.0) * 0.95, 0.25, (float(j / 3) - 1.0) * 0.95), 0.0)
+	await _wait(0.9)
+	var aboard := 0
+	for k in range(1, players.size()):
+		var r := players[k].global_position - lift
+		if absf(r.x) < YellowRooms.LIFT_SIZE * 0.5 + 0.15 and absf(r.z) < YellowRooms.LIFT_SIZE * 0.5 + 0.15 and absf(r.y) < 0.6:
+			aboard += 1
+	# Counted at the top: then the chain hoists the plate-holder off the plate and the lift sinks
+	# again with whoever didn't step off (these bodies stand still).
+	var up := 0
+	for s in 14:
+		await _wait(0.5)
+		var now := 0
+		for k in range(1, players.size()):
+			if players[k].global_position.y > lift.y + YellowRooms.FLOOR_H - 0.6:
+				now += 1
+		up = maxi(up, now)
+	_check("nine fit on B3's service lift and ride it up to B2 while the tenth holds the plate", aboard == players.size() - 1 and up == players.size() - 1,
+		"%d of %d stood on it, %d reached B2" % [aboard, players.size() - 1, up])
+	# The freight car: all ten inside, the door shuts, up it goes.
+	var exit: Vector3 = _level.test_points["exit"]
+	for i in players.size():
+		players[i].teleport_to(exit + Vector3(-1.2 + 0.8 * float(i % 4), 0.1, -0.8 + 0.85 * float(i / 4)), 0.0)
+	var car := _level.get_node_or_null("Floor3/FreightCar") as FreightCar
+	var closed := false
+	for i in 200:
+		await _wait(0.1)
+		if car != null and car.door_closed:
+			closed = true
+		if car != null and car.has_arrived() and not car.door_closed:
+			break
+	var rode := 0
+	for p in players:
+		if is_instance_valid(p) and p.global_position.y > _pizzeria.base_y() - 0.5:
+			rode += 1
+	_check("all ten fit in the freight car: the door shuts and it carries them up to the pizzeria", closed and car != null and car.has_arrived() and rode == players.size(),
+		"door shut %s, arrived %s, %d of %d up" % [closed, car != null and car.has_arrived(), rode, players.size()])
+	if multiplayer.get_peers().size() >= Net.MAX_PLAYERS - 1:
+		var t := 0.0
+		while t < 120.0 and Net.turned_away_full == 0:
+			await _wait(0.5)
+			t += 0.5
+		_check("an eleventh player is turned away: the game is full", Net.turned_away_full >= 1 and Net.get_players().size() == Net.MAX_PLAYERS, "turned away %d, players %d" % [Net.turned_away_full, Net.get_players().size()])
+		await _wait(3.0)  # let the clients see the car arrive before the host goes
+
+
+## A client of the ten-player test: ten players and one chain replicated, and the freight car
+## carries this client up with the rest.
+func _run_client_ten(me: Player) -> void:
+	var t := 0.0
+	var chain := _chain()
+	while t < 120.0 and (Net.get_players().size() < Net.MAX_PLAYERS or chain == null or chain.segments.size() < Net.MAX_PLAYERS - 1):
+		await _wait(0.25)
+		t += 0.25
+		chain = _chain()
+	_check("client: ten players replicated, on one chain", Net.get_players().size() == Net.MAX_PLAYERS and chain != null and chain.segments.size() == Net.MAX_PLAYERS - 1,
+		"%d players, %d segments" % [Net.get_players().size(), chain.segments.size() if chain != null else -1])
+	var stack := get_tree().get_first_node_in_group("level") as LevelStack
+	var rode := false
+	t = 0.0
+	while t < 240.0 and not rode and multiplayer.multiplayer_peer != null and multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
+		await _wait(0.25)
+		t += 0.25
+		var car := get_tree().current_scene.get_node_or_null("World/Level/YellowRooms/Floor3/FreightCar") as FreightCar
+		rode = car != null and car.has_arrived() and stack != null and me.global_position.y > stack.pizzeria.base_y() - 0.5
+	_check("client: rode the freight car up with the other nine", rode, "y %.1f" % me.global_position.y)
+	# Stay on until the host is done with its checks (it reads every player's position).
+	t = 0.0
+	while t < 150.0 and multiplayer.multiplayer_peer != null and multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
+		await _wait(0.5)
+		t += 0.5
+	_finish()
+
+
+## The eleventh: the host says the game is full and drops us.
+var _turned_away: String = ""
+
+
+func _run_client_full() -> void:
+	Net.disconnected_from_game.connect(func(reason: String) -> void: _turned_away = reason)
+	var t := 0.0
+	while t < 120.0 and _turned_away == "":
+		await _wait(0.25)
+		t += 0.25
+	_check("client: an eleventh joiner is told the game is full", _turned_away.contains("full"), _turned_away)
+	_finish()
 
 
 ## Where a standing body fits on floor i (a 0.4 m grid, anything over 0.3 m solid), flooded from
@@ -1426,7 +1632,7 @@ func _test_exit() -> void:
 	var exit: Vector3 = _level.test_points["exit"]
 	var bodies := Net.get_chain_bodies()
 	for i in bodies.size():
-		bodies[i].teleport_to(exit + Vector3(-0.6 + 0.6 * float(i), 0.1, 0.0), 0.0)
+		bodies[i].teleport_to(exit + Vector3(-1.2 + 0.8 * float(i % 4), 0.1, -0.8 + 0.85 * float(i / 4)), 0.0)  # a grid inside the car, up to twelve
 	var car := _level.get_node_or_null("Floor3/FreightCar") as FreightCar
 	var closed := false
 	for i in 160:
@@ -3052,6 +3258,9 @@ func _run_client() -> void:
 	_check("client: own player spawned and is local", me != null, "peer %d" % multiplayer.get_unique_id())
 	if me != null:
 		me.bot_controlled = true  # the host's script drives this body; our own input packets would fight it
+	if only == "ten" and me != null:
+		await _run_client_ten(me)
+		return
 	await _wait(1.5)
 	var lvl := get_tree().get_first_node_in_group("level")
 	if lvl is HordeArena:
