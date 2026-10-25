@@ -2,8 +2,9 @@ class_name HireBody
 extends Node3D
 ## What a Hollow Hire looks like: someone who started here and never left. Gaunt and a head too
 ## tall, grey veined skin over ribs that show through a torn shirt and a faded vest, a lanyard
-## still round its neck, arms that hang to its knees and end in long fingers. No face: two empty
-## sockets and a lipless slit full of teeth, under a hard hat a size too small.
+## still round its neck, arms that hang to its knees and end in long fingers. Barely a face: two sunk
+## sockets with eyes in them that don't match and won't keep still, and a lipless slit full of
+## teeth, under a hard hat a size too small.
 ## The rig HollowHire animates: hips (the torso and head ride on it), head, one pivot per arm and
 ## per leg. Positions match the old block body so its gameplay points (head, chest) still hold.
 
@@ -36,6 +37,82 @@ const RAW: Color = Color(0.46, 0.07, 0.06)  # flesh where the skin has come away
 const BRUISE: Color = Color(0.26, 0.1, 0.28)
 const PUS: Color = Color(0.56, 0.5, 0.13)
 const JAW_HINGE: Vector3 = Vector3(0.0, 0.2, 0.0)  # head-local: where the jaw swings from
+# The eyes (24 Oct, the user: "add some freaky looking eyes for the hire"): two that don't match,
+# sunk in the sockets, wet, yellowed and bloodshot. The left is milky with a pinprick pupil, the
+# right bigger and bulging with its pupil blown black. They follow whoever is looking at it, darting
+# like they can't settle, and now and then one rolls off on its own. A torch in its face comes
+# straight back off the backs of them, a pale flash (eyeshine).
+const EYE_L: Vector3 = Vector3(-0.042, 0.271, -0.089)  # head-local centres, sunk in the sockets (the face is at z -0.11)
+const EYE_R: Vector3 = Vector3(0.043, 0.265, -0.09)
+const EYE_L_R: float = 0.0135  # m radius: a person's eye is about 0.012; at 0.02 they read as a cartoon's
+const EYE_R_R: float = 0.016  # bulging
+const EYE_TRACK_RANGE: float = 30.0  # m: it watches a camera this close
+const EYE_MAX_TURN: float = 0.75  # rad either way an eye can turn in its socket
+const EYE_TURN_RATE: float = 22.0  # how fast they snap to where they look (a dart, not a drift)
+const EYE_SHADER: String = """
+shader_type spatial;
+uniform vec3 sclera : source_color = vec3(0.58, 0.5, 0.31);
+uniform vec3 vein : source_color = vec3(0.55, 0.03, 0.04);
+uniform vec3 iris : source_color = vec3(0.74, 0.76, 0.72);
+uniform vec3 ring : source_color = vec3(0.07, 0.05, 0.04);
+uniform float iris_size = 0.45;  // rad from the front of the eye
+uniform float pupil_size = 0.07;
+uniform float bloodshot = 1.0;
+uniform float glow = 0.05;  // a trace of pale light in the dark
+uniform float eyeshine = 2.2;
+varying vec3 dir;
+varying float front;
+
+float hash(vec3 p) {
+	p = fract(p * 0.3183099 + vec3(0.11, 0.17, 0.13));
+	p *= 17.0;
+	return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+}
+
+float vnoise(vec3 p) {
+	vec3 i = floor(p);
+	vec3 f = fract(p);
+	f = f * f * (3.0 - 2.0 * f);
+	return mix(mix(mix(hash(i), hash(i + vec3(1, 0, 0)), f.x), mix(hash(i + vec3(0, 1, 0)), hash(i + vec3(1, 1, 0)), f.x), f.y),
+		mix(mix(hash(i + vec3(0, 0, 1)), hash(i + vec3(1, 0, 1)), f.x), mix(hash(i + vec3(0, 1, 1)), hash(i + vec3(1, 1, 1)), f.x), f.y), f.z);
+}
+
+void vertex() {
+	dir = VERTEX;
+}
+
+void fragment() {
+	vec3 d = normalize(dir);
+	float a = acos(clamp(-d.z, -1.0, 1.0));  // from the front (-Z), where it looks
+	float n = vnoise(d * 7.0) * 0.6 + vnoise(d * 19.0) * 0.4;
+	float veins = smoothstep(0.045, 0.0, abs(n - 0.5)) * smoothstep(iris_size * 0.9, 1.4, a) * bloodshot;
+	vec3 white = mix(sclera, sclera * vec3(0.95, 0.5, 0.45), smoothstep(0.7, 2.4, a));
+	vec3 col = mix(white, vein, clamp(veins * 1.3, 0.0, 1.0));
+	float in_iris = 1.0 - smoothstep(iris_size - 0.03, iris_size, a);
+	float streak = vnoise(vec3(atan(d.x, d.y) * 5.0, a * 24.0, 1.7));
+	vec3 ir = iris * (0.78 + 0.3 * streak);
+	col = mix(col, ir, in_iris);
+	col = mix(col, ring, smoothstep(iris_size - 0.1, iris_size - 0.02, a) * in_iris * 0.9);
+	float in_pupil = 1.0 - smoothstep(pupil_size - 0.02, pupil_size, a);
+	col = mix(col, vec3(0.005), in_pupil);
+	ALBEDO = col;
+	ROUGHNESS = 0.07;
+	SPECULAR = 0.75;
+	EMISSION = ir * glow * in_iris * (1.0 - in_pupil);
+	front = 1.0 - smoothstep(iris_size * 0.55, iris_size * 0.8, a);  // the shine comes out of the middle of it
+}
+
+void light() {
+	DIFFUSE_LIGHT += clamp(dot(NORMAL, LIGHT), 0.0, 1.0) * ATTENUATION * LIGHT_COLOR / PI;
+	vec3 h = normalize(VIEW + LIGHT);
+	SPECULAR_LIGHT += pow(clamp(dot(NORMAL, h), 0.0, 1.0), 180.0) * ATTENUATION * LIGHT_COLOR * 1.5;
+	// A light from right beside the one looking (a torch) comes straight back out of it.
+	float retro = pow(clamp(dot(LIGHT, VIEW), 0.0, 1.0), 30.0);
+	SPECULAR_LIGHT += vec3(0.78, 0.95, 0.82) * eyeshine * retro * front * ATTENUATION * LIGHT_COLOR / PI;
+}
+"""
+
+static var _eye_mats: Array[ShaderMaterial] = []
 
 var hips: Node3D
 var head: Node3D
@@ -45,6 +122,14 @@ var thigh_l: Node3D
 var thigh_r: Node3D
 var jaw: Node3D  # rotation.x negative opens it
 var hat: Node3D
+var eye_l: Node3D  # turned to look (-Z is where it looks)
+var eye_r: Node3D
+var _eye_rng: RandomNumberGenerator = RandomNumberGenerator.new()
+var _dart_t: Array[float] = [0.0, 0.0]  # s until each eye darts somewhere new
+var _dart: Array[Vector2] = [Vector2.ZERO, Vector2.ZERO]  # rad off where it looks, each eye
+var _roll_t: float = 3.0  # s until one eye rolls away on its own
+var _roll_eye: int = -1  # which, while it's away
+var _roll_left: float = 0.0
 
 
 func build() -> void:
@@ -58,6 +143,10 @@ func build() -> void:
 	head.position = Vector3(0.0, 0.7, 0.0)
 	hips.add_child(head)
 	Sculpt.put(head, skull(true), flesh)
+	var eyes := add_eyes(head)
+	eye_l = eyes[0]
+	eye_r = eyes[1]
+	_eye_rng.randomize()
 	jaw = Node3D.new()
 	jaw.position = JAW_HINGE
 	head.add_child(jaw)
@@ -70,6 +159,85 @@ func build() -> void:
 	arm_r.rotation.z = 0.1
 	thigh_l = _limb(Vector3(-0.11, 0.0, 0.0), leg(), flesh, hips)
 	thigh_r = _limb(Vector3(0.11, 0.0, 0.0), leg(), flesh, hips)
+
+
+## Puts the two eyes in the skull's sockets under `parent` (the head, or a scare's face moved by
+## `offset`): [left, right], each a pivot whose -Z is where it looks.
+static func add_eyes(parent: Node3D, offset: Vector3 = Vector3.ZERO) -> Array[Node3D]:
+	if _eye_mats.is_empty():
+		var sh := Shader.new()
+		sh.code = EYE_SHADER
+		var milky := ShaderMaterial.new()
+		milky.shader = sh
+		var blown := ShaderMaterial.new()
+		blown.shader = sh
+		blown.set_shader_parameter("iris", Color(0.42, 0.1, 0.06))  # a thin rim of bloody brown round the black
+		blown.set_shader_parameter("pupil_size", 0.36)
+		blown.set_shader_parameter("iris_size", 0.43)
+		blown.set_shader_parameter("bloodshot", 1.6)
+		blown.set_shader_parameter("glow", 0.02)
+		_eye_mats.append(milky)
+		_eye_mats.append(blown)
+	var out: Array[Node3D] = []
+	for k in 2:
+		var pivot := Node3D.new()
+		pivot.name = "EyeL" if k == 0 else "EyeR"
+		pivot.position = (EYE_L if k == 0 else EYE_R) + offset
+		parent.add_child(pivot)
+		var r := EYE_L_R if k == 0 else EYE_R_R
+		var mi := MeshInstance3D.new()
+		var sm := SphereMesh.new()
+		sm.radius = r
+		sm.height = r * 2.0
+		sm.radial_segments = 20
+		sm.rings = 10
+		mi.mesh = sm
+		mi.material_override = _eye_mats[k]
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		pivot.add_child(mi)
+		out.append(pivot)
+	return out
+
+
+## Every peer: the eyes find whoever's camera is looking (each player sees them on themself), dart
+## round it, and now and then one wanders off by itself.
+func _process(delta: float) -> void:
+	if eye_l == null or not is_visible_in_tree():
+		return
+	var cam := get_viewport().get_camera_3d()
+	if cam == null:
+		return
+	var target := cam.global_position
+	var watching := head.global_position.distance_to(target) < EYE_TRACK_RANGE
+	_roll_t -= delta
+	if _roll_left > 0.0:
+		_roll_left -= delta
+		if _roll_left <= 0.0:
+			_roll_eye = -1
+	elif _roll_t <= 0.0:
+		_roll_t = _eye_rng.randf_range(3.0, 8.0)
+		_roll_eye = _eye_rng.randi() % 2
+		_roll_left = _eye_rng.randf_range(0.5, 1.3)
+	var eyes: Array[Node3D] = [eye_l, eye_r]
+	for k in 2:
+		_dart_t[k] -= delta
+		if _dart_t[k] <= 0.0:
+			_dart_t[k] = _eye_rng.randf_range(0.12, 0.8)
+			_dart[k] = Vector2(_eye_rng.randf_range(-0.12, 0.12), _eye_rng.randf_range(-0.08, 0.08))
+		var e := eyes[k]
+		var look := Vector3(0.0, 0.0, -1.0)
+		if watching:
+			look = (head.global_transform.affine_inverse() * target - e.position).normalized()
+		var off := _dart[k]
+		if k == _roll_eye:
+			off = Vector2(0.55 if k == 1 else -0.55, 0.45)  # rolled up and out, nothing behind it
+		look = (Basis(Vector3.UP, off.x) * Basis(Vector3.RIGHT, off.y)) * look
+		var fwd := Vector3(0.0, 0.0, -1.0)
+		var turn := fwd.angle_to(look)
+		if turn > EYE_MAX_TURN:
+			look = fwd.slerp(look, EYE_MAX_TURN / turn)
+		var want := Basis.looking_at(look, Vector3.UP)
+		e.basis = e.basis.slerp(want, clampf(delta * EYE_TURN_RATE, 0.0, 1.0)).orthonormalized()
 
 
 func _limb(at: Vector3, m: Mesh, mat: Material, parent: Node3D) -> Node3D:

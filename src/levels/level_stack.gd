@@ -208,6 +208,37 @@ func server_land_at_manor() -> void:
 	_rpc_manor_fx.rpc()
 
 
+## Server: a continued run (RunSave) picks up at checkpoint `index`, as if the Line had just come
+## back there after a layoff: the freight car waits upstairs past B1, the roof's list and crowd are
+## up past the pizzeria, and the helicopter has already set them down at the manor past the roof.
+func server_resume(index: int) -> void:
+	if not multiplayer.is_server() or index <= GameState.checkpoint_index:
+		return
+	if index >= YellowRooms.FLOORS:
+		yellow.server_park_car_top()  # as the Line left it: up in Receiving, filling the shaft
+	if index >= manor_checkpoint_index():
+		server_land_at_manor()
+		return
+	if index >= lot.checkpoint_index:
+		_climb_to_roof()
+		if index == lot.checkpoint_index:
+			return
+		GameState.complete_task(0)  # the fence and the gap are behind you
+		GameState.complete_task(1)
+	var cp := _checkpoint(index)
+	if cp == null:
+		return
+	GameState.set_checkpoint(index, cp.respawn, cp.facing, cp.objective)
+	_respawn_group()
+
+
+func _checkpoint(index: int) -> Checkpoint:
+	for c in find_children("*", "Checkpoint", true, false):
+		if (c as Checkpoint).index == index:
+			return c as Checkpoint
+	return null
+
+
 @rpc("authority", "call_local", "reliable")
 func _rpc_airlift_fx() -> void:
 	var hud := get_tree().get_first_node_in_group("hud")

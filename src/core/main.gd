@@ -18,6 +18,8 @@ extends Node
 ##   --bench=SECONDS               print the frame rate after that long, then quit
 ##   --bench-manor                 (the building) bench at the manor's stables: the Line is flown straight there
 ##   --bots=N                      host N extra players nobody controls (load tests: a six-body Line)
+##   --resume=N                    (the building) pick the run up at checkpoint N, as Continue does
+##   --save-path=FILE              save this run's checkpoints to FILE (a title run saves to RunSave.path)
 ##
 ## The host's world config (seed, lot or building, crowd size) travels in the join handshake: a
 ## joiner who built something else is sent the host's config, rebuilds, and joins again.
@@ -42,6 +44,9 @@ var _bench_manor: bool = false
 var _bench_frames: int = 0
 var _bench_sample_t: float = 1.0
 var _bench_samples: Array[int] = []
+var _save_runs: bool = false  # this session's building run is the host's to save (RunSave) at every checkpoint
+var _save_forced: bool = false  # --save-path: command-line runs save too (tests)
+var _continue_run: Dictionary = {}  # the run to pick up once the world is up (Continue, --resume)
 
 
 func _ready() -> void:
@@ -89,6 +94,7 @@ func _ready() -> void:
 	Net.connection_failed.connect(_leave_to_title)
 	Net.world_mismatch.connect(_on_world_mismatch)
 	GameState.escaped_changed.connect(_on_escaped)
+	GameState.checkpoint_changed.connect(_on_checkpoint)
 	_show_title("")
 	if Settings.remote_autodetected:
 		title.show_status("TeamViewer detected: Remote Controls are ON (smooth keys over TeamViewer; arrows walk/turn, R auto-walk). Change it in Settings.")
@@ -106,6 +112,7 @@ func _exit_tree() -> void:
 	LevelKit._sky = null
 	HordeMesh._meshes.clear()
 	HordeMesh._materials.clear()
+	HireBody._eye_mats.clear()
 	ItemRegistry._by_id.clear()
 	UiTheme._theme = null
 	UiTheme._title = null
@@ -169,16 +176,24 @@ func _handle_cmdline(args: PackedStringArray) -> void:
 			_bench_t = maxf(1.0, a.trim_prefix("--bench=").to_float())
 		elif a == "--bench-manor":
 			_bench_manor = true
+		elif a.begins_with("--resume="):
+			_continue_run = {"checkpoint": a.trim_prefix("--resume=").to_int()}
+		elif a.begins_with("--save-path="):
+			RunSave.path = a.trim_prefix("--save-path=")
+			_save_forced = true
+			title.refresh_continue(true)
 		elif a.begins_with("--bots="):
 			bots = clampi(a.trim_prefix("--bots=").to_int(), 0, Net.MAX_PLAYERS - 1)
 		elif a.begins_with("--title-shot="):
-			title.set_choice(Net.level_choice(cfg))
+			if Net.level_choice(cfg) != 0:
+				title.set_choice(Net.level_choice(cfg))
 			var cam_title: Node = load("res://tests/screenshots.gd").new()
 			cam_title.set("out_dir", a.trim_prefix("--title-shot="))
 			cam_title.set("title_only", true)
 			add_child(cam_title)
 			return
-	title.set_choice(Net.level_choice(cfg))
+	if mode != "" or Net.level_choice(cfg) != 0:
+		title.set_choice(Net.level_choice(cfg))  # a plain launch keeps the title's Continue
 	if mode == "":
 		return
 	if player_name == "":
@@ -212,7 +227,16 @@ func _handle_cmdline(args: PackedStringArray) -> void:
 ## the default building and is handed the host's config if it differs.
 func _start(mode: String, player_name: String, ip: String, port: int, from_title: bool) -> void:
 	if from_title:
-		Net.world_config = Net.random_world_config(title.arena_selected(), title.manor_selected()) if mode != "join" else Net.default_world_config()
+		_continue_run = {}
+		if mode == "join":
+			Net.world_config = Net.default_world_config()
+		elif title.continue_selected():
+			_continue_run = RunSave.load_run()
+			Net.world_config = Net.default_world_config()
+			Net.world_config["seed"] = int(_continue_run.get("seed", YellowRooms.DEFAULT_SEED))  # the same building as last time
+		else:
+			Net.world_config = Net.random_world_config(title.arena_selected(), title.manor_selected())
+	_save_runs = (from_title or _save_forced) and mode != "join" and Net.level_choice(Net.world_config) == 0
 	_rejoined = false
 	_join_ip = ip
 	_join_port = port
@@ -235,6 +259,8 @@ func _start(mode: String, player_name: String, ip: String, port: int, from_title
 		var level := world.get_node("Level")
 		level.call("server_populate")
 		ScareDirector.reset_director()
+		if not _continue_run.is_empty() and level is LevelStack:
+			_resume_run(level as LevelStack, _continue_run)
 		if mode == "host":
 			GameState.post_message("You're hosting. Press Esc to copy the invite code for your friends.", 6.0)
 	else:
@@ -258,6 +284,7 @@ func _enter_game(role: String, player_name: String) -> void:
 func _show_title(reason: String) -> void:
 	in_game = false
 	title.visible = true
+	title.refresh_continue(true)
 	title.show_status(reason)
 	hud.visible = false
 	pause_menu.visible = false
@@ -273,6 +300,7 @@ func _show_title(reason: String) -> void:
 
 
 func _leave_to_title(reason: String) -> void:
+	_save_progress()
 	Net.leave()
 	_teardown_world()
 	_show_title(reason)
@@ -380,12 +408,49 @@ func _on_settings_closed() -> void:
 func _on_escaped(escaped: bool) -> void:
 	if not escaped:
 		return
+	if _save_runs and multiplayer.is_server():
+		RunSave.clear()  # out of the building: nothing left to continue
 	await get_tree().create_timer(2.0).timeout
 	if not in_game:
 		return
 	pause_menu.visible = false
 	end_screen.show_results()
 	_set_ui_blocking(true)
+
+
+# --- Continue -----------------------------------------------------------------------------------
+
+## Server: a continued run, once the world and the host are up (and the colliders are in the
+## physics world, for where everyone is set down): the clock and layoffs so far, then the Line to
+## its checkpoint.
+func _resume_run(stack: LevelStack, run: Dictionary) -> void:
+	for k in 3:
+		await get_tree().physics_frame
+	if world == null or not is_instance_valid(stack) or not multiplayer.is_server():
+		return
+	var index := clampi(int(run.get("checkpoint", 0)), 0, stack.manor_checkpoint_index())
+	GameState.wipes = int(run.get("wipes", 0))
+	GameState.run_seconds = float(run.get("seconds", 0.0))
+	stack.server_resume(index)
+	if index > 0:
+		GameState.post_message("Picking up where you left off: %s." % RunSave.place(index), 5.0)
+
+
+## Server: each checkpoint of the host's building run is saved, so Continue can pick it up there.
+func _on_checkpoint(index: int) -> void:
+	if _save_runs and multiplayer.is_server() and index >= 1 and not GameState.escaped:
+		RunSave.save_run(int(Net.world_config.get("seed", 0)), index, GameState.wipes, GameState.run_seconds)
+
+
+## Leaving or closing mid-run keeps the layoffs and the clock up to date in the save.
+func _save_progress() -> void:
+	if _save_runs and in_game and world != null and multiplayer.is_server() and GameState.checkpoint_index >= 1 and not GameState.escaped:
+		RunSave.save_run(int(Net.world_config.get("seed", 0)), GameState.checkpoint_index, GameState.wipes, GameState.run_seconds)
+
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_WM_CLOSE_REQUEST:
+		_save_progress()
 
 
 # --- World ------------------------------------------------------------------------------------

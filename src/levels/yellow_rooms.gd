@@ -1450,6 +1450,12 @@ func car_busy() -> bool:
 	return _car != null and _car.is_busy()
 
 
+## Server: the freight car up in Receiving, its door open (a continued run that's past B1).
+func server_park_car_top() -> void:
+	if _car != null:
+		_car.server_park_top()
+
+
 func _physics_process(delta: float) -> void:
 	if not multiplayer.is_server():
 		return

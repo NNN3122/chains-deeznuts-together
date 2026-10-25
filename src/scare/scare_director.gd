@@ -526,6 +526,8 @@ func _spawn_face(pos: Vector3) -> void:
 			mat = Sculpt.material(0.3, 0.5, 0.75, 0.15, 0.5)
 			center = Vector3(0.0, 0.22, -0.1)
 	Sculpt.put(face, m, mat, -center)
+	if idx == 0:
+		HireBody.add_eyes(face, -center)
 	if idx == 0 or idx == 3:
 		var jaw := Node3D.new()  # its jaw hanging open, far too wide
 		jaw.position = HireBody.JAW_HINGE - center
@@ -823,6 +825,7 @@ func _face_node(idx: int) -> Node3D:
 			mat = Sculpt.material(0.3, 0.5, 0.75, 0.15, 0.5)
 			var center := Vector3(0.0, 0.22, -0.1)
 			Sculpt.put(face, HireBody.skull(true), mat, -center)
+			HireBody.add_eyes(face, -center)
 			var jaw := Node3D.new()
 			jaw.position = HireBody.JAW_HINGE - center
 			jaw.rotation.x = -0.35

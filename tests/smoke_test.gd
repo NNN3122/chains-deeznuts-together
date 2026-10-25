@@ -60,7 +60,8 @@ func _run_host() -> void:
 	_mate = bodies[1] if bodies.size() > 1 else null
 	var missing_kit := ""
 	for p in Net.get_players():
-		if not p.has_item("flashlight") or not p.has_item("wrench") or p.held_item == null or p.held_item.data.id != "flashlight":
+		# A continued run can set someone down on a pickup (a Break Room's loot), which goes in their hands.
+		if not p.has_item("flashlight") or not p.has_item("wrench") or (only != "resumed" and (p.held_item == null or p.held_item.data.id != "flashlight")):
 			missing_kit = p.display_name
 	_check("every player starts with a flashlight (in hand) and a wrench", missing_kit == "", missing_kit)
 	_check("level built: 4 floors with test points", _level.floors.size() == 4 and _level.test_points.has("exit"), "%d floors, %d points" % [_level.floors.size(), _level.test_points.size()])
@@ -83,6 +84,9 @@ func _run_host() -> void:
 	_test_way_up()
 	_test_lineups()
 	await _test_lineup_sites()
+	_test_run_save()
+	await _test_items_rest()
+	await _test_hire_eyes()
 	await _test_keyboard()
 	await _test_climb()
 	await _test_lift()
@@ -589,6 +593,174 @@ func _run_client_full() -> void:
 		t += 0.25
 	_check("client: an eleventh joiner is told the game is full", _turned_away.contains("full"), _turned_away)
 	_finish()
+
+
+## The saved run (RunSave): what's written comes back, a run at B4's start isn't worth continuing,
+## the title can name every checkpoint, and a cleared save is gone. On a test file, never the real one.
+func _test_run_save() -> void:
+	var real := RunSave.path
+	RunSave.path = "user://smoke_run_save.cfg"
+	RunSave.save_run(4242, 5, 3, 1234.5)
+	var run := RunSave.load_run()
+	var back: bool = run.get("seed") == 4242 and run.get("checkpoint") == 5 and run.get("wipes") == 3 and absf(float(run.get("seconds", 0.0)) - 1234.5) < 0.01
+	RunSave.save_run(4242, 0, 0, 10.0)
+	var at_start := RunSave.load_run().is_empty()
+	RunSave.save_run(4242, 2, 0, 10.0)
+	RunSave.clear()
+	var cleared := RunSave.load_run().is_empty()
+	RunSave.path = real
+	var names := []
+	for i in _stack.manor_checkpoint_index() + 1:
+		names.append(RunSave.place(i))
+	var named: bool = names[1] == "Level 1, B3" and names[YellowRooms.FLOORS] == "Level 2, the Dining Hall" and names[_stack.lot.checkpoint_index] == "Level 3, the roof" \
+		and names[_stack.lot.helipad_checkpoint_index()] == "Level 3, the helipad" and names[_stack.manor_checkpoint_index()] == "Level 4, Ashgrave Manor"
+	var ages: bool = RunSave.age(int(Time.get_unix_time_from_system()) - 7300) == "2 hours ago" and RunSave.age(int(Time.get_unix_time_from_system())) == "just now"
+	_check("the run save: written and read back, B4's start isn't saved, cleared is gone, every checkpoint has a name", back and at_start and cleared and named and ages,
+		"back %s %s, start %s, cleared %s, ages %s, names %s" % [back, run, at_start, cleared, ages, names])
+
+
+## Which level checkpoint `index` of the building is on: 0 the office ... 3 the manor.
+func _level_for(index: int) -> int:
+	if index >= _stack.manor_checkpoint_index():
+		return 3
+	if index >= _stack.lot.checkpoint_index:
+		return 2
+	return 1 if index >= YellowRooms.FLOORS else 0
+
+
+## A continued run (--resume=N does what the title's Continue does): the Line at checkpoint N of the
+## same building, everyone standing by its spot on the right level, the level set up for it, and
+## (with --save-path) the save saying N. Run it for every N:
+##   --solo --smoke --smoke-only=resumed --resume=N --save-path=user://smoke_resume.cfg
+func _test_resumed() -> void:
+	var want := 0
+	for a in OS.get_cmdline_user_args():
+		if a.begins_with("--resume="):
+			want = clampi(a.trim_prefix("--resume=").to_int(), 0, _stack.manor_checkpoint_index())
+	await _wait(2.5)
+	var at := GameState.checkpoint_position
+	var off := ""
+	for b in Net.get_chain_bodies():
+		var r := b.global_position - at
+		if Vector2(r.x, r.z).length() > 4.5 or absf(r.y) > 1.2:
+			off += " %s %s" % [b.name, r]
+	var lvl := _stack.level_index_at(_host.global_position)
+	_check("Continue picks the run up at checkpoint %d (%s): everyone standing by it, on its level" % [want, RunSave.place(want)],
+		GameState.checkpoint_index == want and off == "" and lvl == _level_for(want), "checkpoint %d, level %d, off the spot:%s" % [GameState.checkpoint_index, lvl, off])
+	var ready := not GameState.tasks.is_empty()
+	var detail := "%d tasks" % GameState.tasks.size()
+	var car := _level.get_node_or_null("Floor3/FreightCar") as FreightCar
+	if want >= YellowRooms.FLOORS and want < _stack.manor_checkpoint_index():
+		ready = ready and car != null and car.has_arrived()  # the car waits upstairs, filling the shaft
+		detail += ", car up %s" % (car != null and car.has_arrived())
+	if want > _stack.lot.checkpoint_index and want < _stack.manor_checkpoint_index():
+		ready = ready and GameState.task_done(0) and GameState.task_done(1)
+		detail += ", fence and gap done %s" % (GameState.task_done(0) and GameState.task_done(1))
+	if want >= _stack.manor_checkpoint_index():
+		var down := 0
+		for p in get_tree().get_nodes_in_group("pickups"):
+			if (p as Node3D).global_position.y < LevelStack.MANOR_Y + LevelStack.MANOR_TOP:
+				down += 1
+		ready = ready and not _stack.manor.keeper.asleep and down > 0
+		detail += ", keeper awake %s, %d pickups at the manor" % [not _stack.manor.keeper.asleep, down]
+	_check("... and the level is set up for it (its list, the freight car, the roof's list, the manor awake)", ready, detail)
+	if RunSave.path != "user://run_save.cfg":
+		var run := RunSave.load_run()
+		_check("... and the save says so: the same building, checkpoint %d" % want, run.get("checkpoint") == want and run.get("seed") == int(Net.world_config["seed"]), str(run))
+		RunSave.clear()
+	if multiplayer.get_peers().size() > 0:
+		await _wait(4.0)  # the client checks where it stands before the host goes
+
+
+## A client of a continued run: it joins (rebuilding the host's building if it's another seed) and
+## is put down at the run's checkpoint, on its level.
+func _run_client_resumed(me: Player) -> void:
+	var t := 0.0
+	var ok := false
+	var stack: LevelStack = null
+	while t < 90.0 and not ok:
+		await _wait(0.25)
+		t += 0.25
+		stack = get_tree().get_first_node_in_group("level") as LevelStack
+		if GameState.checkpoint_index >= 1 and stack != null and is_instance_valid(me):
+			var at := GameState.checkpoint_position
+			ok = me.global_position.distance_to(at) < 5.5 and stack.level_index_at(me.global_position) == stack.level_index_at(at)
+	_check("client: joined the continued run at its checkpoint (%d), on its level" % GameState.checkpoint_index, ok,
+		"me %s, checkpoint at %s" % [me.global_position if is_instance_valid(me) else Vector3.INF, GameState.checkpoint_position])
+	t = 0.0
+	while t < 60.0 and multiplayer.multiplayer_peer != null and multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
+		await _wait(0.5)
+		t += 0.5
+	_finish()
+
+
+## Items lie where they're left (the user: "the items kinda just float around"): one set down on the
+## floor rests on it, still, and one dropped from a hand falls and lands there.
+func _test_items_rest() -> void:
+	var spot: Vector3 = _level.test_points["spawn"] + Vector3(0.0, 0.0, 3.5)
+	_place(_level.test_points["spawn"], 0.0)  # facing away, well clear of them
+	Net.spawn_pickup("pistol", spot, 0)
+	Net.spawn_pickup("bomb", spot + Vector3(1.2, 0.0, 0.0), 1)  # out of the host's hand
+	await _wait(0.12)
+	var placed := _pickup_near(spot)
+	var dropped := _pickup_near(spot + Vector3(1.2, 0.0, 0.0))
+	var floor_y := spot.y - 0.1  # the spawn point stands 0.1 m over the Break Room floor
+	var falling := dropped != null and _bottom(dropped) - floor_y > 0.2
+	var y0 := _bottom(placed) - floor_y if placed != null else INF
+	await _wait(1.6)
+	var y1 := _bottom(placed) - floor_y if placed != null else INF
+	var landed := _bottom(dropped) - floor_y if dropped != null else INF
+	_check("items lie on the floor, still (no floating, no bobbing), and a dropped one falls out of the hand and lands", absf(y0) < 0.03 and absf(y1 - y0) < 0.002 and falling and absf(landed) < 0.03,
+		"placed bottom %.3f then %.3f, dropped falling %s, landed %.3f" % [y0, y1, falling, landed])
+	for p in [placed, dropped]:
+		if p != null:
+			p.queue_free()
+
+
+func _pickup_near(at: Vector3) -> ItemPickup:
+	for p in get_tree().get_nodes_in_group("pickups"):
+		if (p as Node3D).global_position.distance_to(at) < 0.2:
+			return p as ItemPickup
+	return null
+
+
+## The lowest point of a pickup's drawn model (world height).
+func _bottom(p: ItemPickup) -> float:
+	var low := INF
+	for mi in p.find_children("*", "MeshInstance3D", true, false):
+		var m := mi as MeshInstance3D
+		var b := m.global_transform * m.get_aabb()
+		low = minf(low, b.position.y)
+	return low
+
+
+## The Hire's eyes (the user: "add some freaky looking eyes for the hire"): two of them in its
+## sockets, not the same, and they turn to whoever's camera is on it.
+func _test_hire_eyes() -> void:
+	var cam := get_viewport().get_camera_3d()
+	if cam == null:
+		_check("the Hire has two mismatched eyes in its sockets, and they turn to look at you", false, "no camera")
+		return
+	var body := HireBody.new()
+	add_child(body)
+	body.build()
+	var ahead := -cam.global_basis.z
+	ahead.y = 0.0
+	body.global_position = cam.global_position + ahead.normalized() * 3.0 + Vector3(0.6, -1.85, 0.0)
+	body.look_at(cam.global_position * Vector3(1.0, 0.0, 1.0) + Vector3(0.0, body.global_position.y, 0.0), Vector3.UP)
+	body.rotate_y(0.35)  # facing near it (bodies face -z, as look_at turns them), not straight at it: the eyes have to turn
+	await _wait(0.6)
+	var worst := 0.0
+	var eyes: Array[Node3D] = [body.eye_l, body.eye_r]
+	for e in eyes:
+		if e == null:
+			worst = INF
+			continue
+		var to_cam := (cam.global_position - e.global_position).normalized()
+		worst = maxf(worst, (-e.global_basis.z).angle_to(to_cam))
+	var differ := body.eye_l != null and body.eye_r != null and HireBody.EYE_L_R != HireBody.EYE_R_R
+	_check("the Hire has two mismatched eyes in its sockets, and they turn to look at you", differ and worst < 0.35, "worst %.2f rad off the camera" % worst)
+	body.queue_free()
 
 
 ## Where a standing body fits on floor i (a 0.4 m grid, anything over 0.3 m solid), flooded from
@@ -3260,6 +3432,9 @@ func _run_client() -> void:
 		me.bot_controlled = true  # the host's script drives this body; our own input packets would fight it
 	if only == "ten" and me != null:
 		await _run_client_ten(me)
+		return
+	if only == "resumed" and me != null:
+		await _run_client_resumed(me)
 		return
 	await _wait(1.5)
 	var lvl := get_tree().get_first_node_in_group("level")

@@ -50,6 +50,22 @@ func _ready() -> void:
 	var spawn: Vector3 = _level.test_points["spawn"]
 	await _shot("01_spawn_room", spawn, PI, -0.12, false)
 	await _shot("02_spawn_first_person", spawn, PI, -0.05, true)
+	# Items lying where they were left (they used to float and spin), and one dropped from a hand.
+	var lay: Vector3 = spawn + Vector3(0.0, 0.0, 3.6)
+	var ids: Array[String] = ["flashlight", "pistol", "drink", "decoy", "bomb", "ammo", "jetpack", "wrench", "airhorn", "popper"]
+	for k in ids.size():
+		var a := TAU * float(k) / float(ids.size())
+		Net.spawn_pickup(ids[k], lay + Vector3(cos(a), 0.0, sin(a)) * 1.25, 0)
+	await _shot("02b_items_on_the_floor", spawn + Vector3(0.0, 0.0, 0.9), PI, -0.6, true)
+	_host.server_drop_item(true)
+	await _wait(0.1)
+	await _capture_to(out_dir.path_join("02c_item_dropped_falling.png"))
+	await _wait(1.2)
+	await _capture_to(out_dir.path_join("02d_item_dropped_landed.png"))
+	for p in get_tree().get_nodes_in_group("pickups"):
+		if (p as Node3D).global_position.distance_to(lay) < 4.5:
+			p.queue_free()
+	_host.server_give_item(ItemRegistry.get_data("flashlight").create_logic())
 	var f0: Dictionary = _level.floors[0]
 	var cubicle := _find_cell(0, "cubicles")
 	if cubicle != Vector2i(-1, -1):
@@ -599,6 +615,10 @@ func _gallery(level_node: Node) -> void:  # the Stack, or the Lot on its own
 			var sub: Vector3 = STUDIO + (sh[0] as Vector3)
 			var eye: Vector3 = STUDIO + (sh[1] as Vector3)
 			await _studio(cam, sub, eye, "%s_%s" % [s[0], sh[2]])
+		if s[0] == "g02_hollow_hire":
+			# Its eyes in a torch beam: the eyeshine.
+			await _torch(cam, STUDIO + Vector3(0.0, 1.9, 0.0), STUDIO + Vector3(0.05, 1.86, -2.4), "g02_hollow_hire_torch")
+			await _torch(cam, STUDIO + Vector3(0.0, 1.9, 0.0), STUDIO + Vector3(0.03, 1.9, -0.55), "g02_hollow_hire_eyes")
 		node.queue_free()
 		await _wait(0.1)
 	cam.fov = Settings.fov  # the scares as a player sees them
@@ -679,6 +699,23 @@ func _studio(cam: Camera3D, subject: Vector3, eye: Vector3, file: String) -> voi
 	await _wait(0.35)
 	await _capture_to(out_dir.path_join(file + ".png"))
 	rig.queue_free()
+
+
+## A close-up lit only by a torch held beside the camera, as a player with a flashlight sees it.
+func _torch(cam: Camera3D, subject: Vector3, eye: Vector3, file: String) -> void:
+	var torch := SpotLight3D.new()
+	torch.light_energy = 4.5
+	torch.spot_range = 16.0
+	torch.spot_angle = 24.0
+	torch.shadow_enabled = true
+	get_tree().current_scene.add_child(torch)
+	torch.global_position = eye + Vector3(0.12, -0.06, 0.0)
+	torch.look_at(subject, Vector3.UP)
+	cam.global_position = eye
+	cam.look_at(subject, Vector3.UP)
+	await _wait(0.5)
+	await _capture_to(out_dir.path_join(file + ".png"))
+	torch.queue_free()
 
 
 func _capture_to(path: String) -> void:

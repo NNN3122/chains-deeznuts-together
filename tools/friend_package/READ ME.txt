@@ -29,6 +29,8 @@ HOST YOUR OWN GAME
 ------------------
 Click HOST CO-OP, press Esc, click COPY INVITE and send the code to your friends.
 Up to 10 players (you and 9 friends). If Windows Firewall asks about the game, click "Allow".
+The game saves your run at every checkpoint. Next time, the title says CONTINUE: click
+PLAY SOLO or HOST CO-OP and you pick up where you left off (friends join as usual).
 
 
 CONTROLS
