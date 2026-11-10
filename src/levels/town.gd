@@ -33,10 +33,10 @@ const WRECK_S: float = -8.0  # the helicopter, burning, behind the cars
 const STRIDER_START: float = -70.0  # m along the route it comes from (over the wall at the crash site)
 const COUNTDOWN: float = 3.0  # s from sitting in the cars to GO
 const STRIDER_DELAY: float = 4.0  # s after GO before it comes over the wall
-const STRIDER_SPEED: float = 18.0  # m/s at first (a car flat out does 36, and a clean run through the corners about 22)
-const STRIDER_RAMP: float = 0.08  # m/s faster every second it runs
-const STRIDER_TOP: float = 27.0
-const RUBBER_GAP: float = 75.0  # m: further behind the slowest car than this and it closes faster
+const STRIDER_SPEED: float = 9.5  # m/s at first (a car flat out does 38, but through the streets a good driver averages about 13)
+const STRIDER_RAMP: float = 0.035  # m/s faster every second it runs
+const STRIDER_TOP: float = 21.0
+const RUBBER_GAP: float = 55.0  # m: further behind the slowest car than this and it closes faster
 const RUBBER_K: float = 0.22
 const CATCH_GAP: float = 4.0  # m of route: closer than this behind a car and it has it
 const OFF_ROUTE: float = 12.0  # m from the route's line a car stops counting progress (a wrong turn)
@@ -62,7 +62,7 @@ const SURGE_FIRST: float = 16.0  # s after GO before it first sprints at the car
 const SURGE_EVERY_MIN: float = 22.0
 const SURGE_EVERY_MAX: float = 36.0
 const SURGE_SECONDS: float = 5.0
-const SURGE_BOOST: float = 12.0  # m/s on top of its pace while it sprints: only the navigator's gun holds it off
+const SURGE_BOOST: float = 9.0  # m/s on top of its pace while it sprints: only the navigator's gun holds it off
 # The mountain road (after the bridge out of town): narrow, winding, through a dead forest, no lamps.
 const MOUNTAIN_ROAD: float = 9.0  # m wide
 const MOUNTAIN_SHOULDER: float = 1.6  # m of gravel each side; past it the dirt grabs the car (RallyCar.rough)
@@ -1511,7 +1511,7 @@ func _tick_calls() -> void:
 			if p == null:
 				continue
 			human_nav = true
-			var raw := Vector3(p.input_move.x, 0.0, p.input_move.y).rotated(Vector3.UP, -p.input_yaw)
+			var raw := Vector3(p.input_move.x, 0.0, p.input_move.y)  # the keys as they are, wherever the navigator is looking
 			var kind := Call.NONE
 			if raw.x < -0.6:
 				kind = Call.LEFT
@@ -1605,6 +1605,8 @@ func _process(delta: float) -> void:
 	var k := clampf(delta * 6.0, 0.0, 1.0)
 	_cam.global_position = _cam.global_position.lerp(want.origin, k)
 	_cam.global_basis = _cam.global_basis.slerp(want.basis, clampf(delta * 8.0, 0.0, 1.0)).orthonormalized()
+	# Speed is something you see: the view widens and the car pulls away from the camera a little.
+	_cam.fov = lerpf(_cam.fov, 66.0 + 20.0 * clampf(absf(car.speed) / RallyCar.MAX_SPEED, 0.0, 1.0), clampf(delta * 3.0, 0.0, 1.0))
 	if _panel == null:
 		var hud := get_tree().get_first_node_in_group("hud")
 		if hud != null:
@@ -1617,8 +1619,10 @@ func _cam_target(car: RallyCar) -> Transform3D:
 	var fwd := -car.global_basis.z
 	fwd.y = 0.0
 	fwd = fwd.normalized()
-	var eye := car.global_position - fwd * 7.5 + Vector3.UP * 3.3
-	var look := car.global_position + fwd * 6.0 + Vector3.UP * 1.0
+	var pace := clampf(absf(car.speed) / RallyCar.MAX_SPEED, 0.0, 1.0)
+	var right := Vector3(-fwd.z, 0.0, fwd.x)
+	var eye := car.global_position - fwd * (6.6 + 1.6 * pace) + Vector3.UP * (3.0 - 0.5 * pace)
+	var look := car.global_position + fwd * 6.0 + right * tan(car.wheel) * 9.0 + Vector3.UP * 1.0  # it looks into the bend
 	return Transform3D(Basis.looking_at(look - eye, Vector3.UP), eye)
 
 

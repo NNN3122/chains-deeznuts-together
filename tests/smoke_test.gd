@@ -2326,7 +2326,7 @@ func _test_town() -> void:
 		await _wait(0.1)
 	await _wait(2.2)
 	var went := car.global_position.distance_to(start)
-	_check("the countdown holds the car on the line; on GO the driver's keys drive it", held and went > 12.0 and car.speed > 8.0, "held %s, then %.1f m at %.1f m/s" % [held, went, car.speed])
+	_check("the countdown holds the car on the line; on GO the throttle pulls it away like a car (not all at once)", held and went > 5.0 and went < 20.0 and car.speed > 6.0 and car.speed < 16.0 and car.gear <= 1, "held %s, then %.1f m at %.1f m/s" % [held, went, car.speed])
 	# A call to the driver: the navigator's keys in co-op, the co-driver's in solo.
 	var nav := _mate as Player
 	if nav != null and car.occupants.size() > 1 and car.occupants[1] == nav.peer_id:
@@ -2419,14 +2419,23 @@ func _test_town() -> void:
 	t.threats.server_reset()
 	var path: Array = []
 	for k in range(1, t.route_pts.size()):
-		path.append(t.origin + t.route_pts[k])
+		var pt: Vector3 = t.origin + t.route_pts[k]
+		for rb in t.road_blocks:  # round whatever lies across half the road, on the open side
+			var gap := Vector2(pt.x - rb.x, pt.z - rb.z).length()
+			if gap < 18.0:
+				var tan := t.route_tangent(t.route_s[k])
+				var side := Vector3(-tan.z, 0.0, tan.x)
+				var road_mid: Vector3 = t.origin + t.route_pts[k]
+				var block_side := signf((rb - t.route_point(t.project(rb, t.route_s[k] - 30.0, t.route_s[k] + 30.0))).dot(side))
+				pt = road_mid - side * block_side * 2.3 * smoothstep(18.0, 8.0, gap)
+		path.append(pt)
 	th.debug_auto_gun = true  # a co-op test's navigator is a bot that never presses F
 	for c in t.cars:
 		if c.in_use:
 			c.autopilot = path.duplicate()
 	var timer := 0.0
 	var top := 0.0
-	while timer < 260.0 and GameState.checkpoint_index < _stack.manor_checkpoint_index():
+	while timer < 330.0 and GameState.checkpoint_index < _stack.manor_checkpoint_index():
 		await _wait(0.5)
 		timer += 0.5
 		top = maxf(top, car.speed)
@@ -3626,7 +3635,7 @@ func _run_client() -> void:
 	var saw_manor := false
 	var saw_keeper_grab := false
 	t = 0.0
-	while t < 600.0 and not GameState.escaped:  # the whole building, the town and its mountain road, the manor
+	while t < 1000.0 and not GameState.escaped:  # the whole building, the town and its mountain road, the manor
 		await _wait(0.2)
 		t += 0.2
 		if stack != null and me != null and stack.level_index_at(me.global_position) == 3 and stack.manor.visible:

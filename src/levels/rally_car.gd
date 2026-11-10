@@ -1,28 +1,47 @@
 class_name RallyCar
 extends CharacterBody3D
 ## A rally car from Kettle Hollow's night rally, keys still in it (Level 4, the chase). Two of the
-## Line ride in each: the driver (W/S throttle and brake, A/D or the turn keys to steer, Ctrl the
+## Line ride in each: the driver (W the throttle, S the brake and then reverse, A/D to steer, Ctrl the
 ## handbrake for a slide) and the navigator, who has the map and calls the turns. The server drives
-## it from the driver's input packets with an arcade model: speed along the nose, a sideways slip
-## that grips back (slowly with the handbrake on, so the tail comes round), steering that tightens
-## as it slows. Pose and speed are replicated; every peer draws it smoothly between packets.
+## it from the driver's input packets with a real car's outline (see _server_drive): gears, pedals,
+## brakes that need distance, tyres with a grip limit, a handbrake that lets the back go. Pose and speed are replicated; every peer draws it smoothly between packets.
 
 const WIDTH: float = 1.9
 const LENGTH: float = 4.1
 const HEIGHT: float = 1.4
-const MAX_SPEED: float = 36.0  # m/s flat out (about 130 km/h): faster than the Strider at full stride
+const MAX_SPEED: float = 38.0  # m/s where top gear runs out (about 137 km/h)
 const REVERSE_SPEED: float = 7.0
-const ACCEL: float = 14.0  # m/s^2 on the throttle
+const GEAR_TOP: Array[float] = [13.0, 21.0, 28.0, 34.0, 39.5]  # m/s at the red line in each gear
+const GEAR_PULL: Array[float] = [6.2, 4.6, 3.4, 2.5, 1.9]  # m/s^2 at peak torque in each gear (0-100 km/h in about 7 s)
+const REVERSE_PULL: float = 3.5
+const SHIFT_UP: float = 0.93  # of the red line: up a gear
+const SHIFT_DOWN: float = 0.62  # of the gear below's red line: down one
+const SHIFT_TIME: float = 0.22  # s with no drive while it changes
+const THROTTLE_DOWN: float = 4.5  # /s the pedal goes down (a key is all or nothing: a foot isn't)
+const THROTTLE_UP: float = 9.0
+const BRAKE_DOWN: float = 6.0
+const BRAKE_UP: float = 10.0
+const BRAKE_FORCE: float = 10.0  # m/s^2 with the pedal on the floor (about 1 g: 130 km/h to a stop takes 65 m)
+const ENGINE_BRAKE: float = 0.55  # m/s^2 off the throttle (more in the low gears): lift and it rolls on a long way
+const ROLL: float = 0.15  # m/s^2 of rolling drag
+const DRAG: float = 0.00095  # /m of air drag (x speed squared)
+const GRIP: float = 10.5  # m/s^2: all the tyres have, shared between turning, braking and driving
+const ROUGH_GRIP: float = 0.55  # of it off the road
+const ROUGH_DRAG: float = 2.5  # m/s^2 the dirt costs
+const WHEELBASE: float = 2.6
+const STEER_LOCK: float = 0.55  # rad: full lock
+const STEER_OVER: float = 1.2  # full lock at speed asks this much of the grip: held too fast, it pushes wide
+const STEER_SPEED: float = 1.5  # rad/s the wheel turns
+const STEER_BACK: float = 2.6  # rad/s it centres when let go
+const TURN_OVER: float = 1.1  # the car can be turned this much past what the tyres hold (the rest is a slide)
+const HAND_GRIP: float = 0.38  # of the side grip with the handbrake on: the back lets go
+const HAND_TURN: float = 2.6  # and it rotates this much faster
+const HAND_DRAG: float = 3.0  # m/s^2 the handbrake costs
+const SLIDE_SPEED: float = 2.5  # m/s sideways: past this the tyres are sliding
+const SLIDE_GRIP: float = 0.8  # of the grip left to sliding tyres
+const SLIDE_SCRUB: float = 0.5  # /s of the slide that comes off the speed
+const REVERSE_HOLD: float = 0.3  # s on the brake at a standstill before it goes into reverse
 const FALL: float = 24.0  # m/s^2 down when nothing is under the wheels (off the edge)
-const BRAKE: float = 26.0
-const COAST: float = 3.5  # m/s^2 off the throttle
-const STEER_RATE: float = 2.1  # rad/s at walking pace and up
-const STEER_HIGH_SPEED: float = 0.45  # of the steering left at top speed
-const GRIP: float = 11.0  # /s the sideways slip grips back at
-const HANDBRAKE_GRIP: float = 1.6
-const HANDBRAKE_STEER: float = 1.55  # x the turn rate with the handbrake on
-const HANDBRAKE_DRAG: float = 6.0  # m/s^2 the handbrake costs
-const SLIP_FROM_TURN: float = 0.32  # of speed x turn rate that becomes a slide
 const BANG_SPEED: float = 7.0  # m/s lost in one hit that bangs
 const CRASH_SPEED: float = 10.0  # m/s lost in one hit that wrecks it for a moment (a tree, a wall, head on)
 const CRASH_STALL: float = 2.6  # s the engine's dead after a crash: the Strider closes in
@@ -36,6 +55,17 @@ var index: int = 0
 var in_use: bool = false  # replicated: carrying some of the Line
 var speed: float = 0.0  # replicated: m/s along the nose
 var slip: float = 0.0  # replicated: m/s sideways (the tail out)
+var wheel: float = 0.0  # replicated: rad the front wheels are turned (+ right)
+var rpm: float = 0.0  # replicated: the engine, 0 to 1 (the red line)
+var gear: int = 0  # replicated: 0 is first
+var pedal: float = 0.0  # replicated: the throttle (+) or the brake (-)
+var _throttle: float = 0.0
+var _brake: float = 0.0
+var _shift_t: float = 0.0
+var _reverse_t: float = 0.0
+var _body: Node3D
+var _last_speed: float = 0.0
+var _lean: Vector2 = Vector2.ZERO  # pitch, roll
 var synced_xform: Transform3D = Transform3D.IDENTITY  # replicated
 var occupants: PackedInt32Array = PackedInt32Array()  # replicated: peer ids, driver first; -1 the Ballast
 var progress: float = 0.0  # replicated: metres along the town's route it has got to (Town)
@@ -73,7 +103,7 @@ func _enter_tree() -> void:
 	var sync := MultiplayerSynchronizer.new()
 	sync.name = "Sync"
 	var cfg := SceneReplicationConfig.new()
-	for prop in ["in_use", "speed", "slip", "synced_xform", "occupants", "progress"]:
+	for prop in ["in_use", "speed", "slip", "synced_xform", "occupants", "progress", "wheel", "rpm", "gear", "pedal"]:
 		var path := NodePath(".:" + prop)
 		cfg.add_property(path)
 		cfg.property_set_replication_mode(path, SceneReplicationConfig.REPLICATION_MODE_ALWAYS)
@@ -107,6 +137,7 @@ func _build_visual() -> void:
 	var paint := LIVERIES[index % LIVERIES.size()]
 	var body := Sculpt.put(self, car_mesh(paint), Sculpt.material(0.35, 0.0, 0.0, 0.0, 0.05))
 	body.name = "Body"
+	_body = body
 	# Number roundels on the doors.
 	for s: float in [-1.0, 1.0]:
 		var n := Label3D.new()
@@ -230,20 +261,24 @@ func _physics_process(delta: float) -> void:
 
 
 func _driver_input() -> Vector3:
-	# x steer (right +), y throttle (forward +), z handbrake (1/0).
+	# x steer (right +), y throttle (forward +, back is the brake), z handbrake (1/0).
 	if not autopilot.is_empty():
 		return _autopilot_input()
 	if driver == null or not is_instance_valid(driver):
 		return Vector3(0.0, 0.0, 1.0)  # nobody at the wheel: it rolls to a stop
-	var raw := Vector3(driver.input_move.x, 0.0, driver.input_move.y).rotated(Vector3.UP, -driver.input_yaw)
+	# The keys as they are: where the driver happens to be looking has nothing to do with the car.
 	var hand := 1.0 if (driver.input_flags & Player.FLAG_BRACE) != 0 else 0.0
-	return Vector3(clampf(raw.x, -1.0, 1.0), clampf(-raw.z, -1.0, 1.0), hand)
+	return Vector3(clampf(driver.input_move.x, -1.0, 1.0), clampf(-driver.input_move.y, -1.0, 1.0), hand)
 
 
-## Tests: drive the route by itself (steer for the next point, lift off for the corners).
+## The most the front wheels turn at a speed (rad): full lock at a crawl, and at pace about what
+## the tyres can use (a little more, so full lock too fast pushes wide).
+static func steer_limit(v: float) -> float:
+	return minf(STEER_LOCK, atan(STEER_OVER * GRIP * WHEELBASE / maxf(v * v, 1.0)))
+
+
+## Tests: drive the route by itself (pure pursuit down the middle of the road, braking for bends).
 func _autopilot_input() -> Vector3:
-	# Pure pursuit down the middle of the road: a point a little ahead along the route (cutting
-	# straight at the next corner ran it into wrecks parked just round it), and slowing for a turn.
 	var here := Vector3(global_position.x, 0.0, global_position.z)
 	if _auto_i == 0:
 		autopilot.push_front(global_position)  # the first leg runs from where the car is
@@ -260,7 +295,8 @@ func _autopilot_input() -> Vector3:
 	var b0: Vector3 = flat.call(autopilot[_auto_i])
 	var dir := (b0 - a0).normalized()
 	var proj := a0 + dir * clampf((here - a0).dot(dir), 0.0, a0.distance_to(b0))
-	var look := clampf(absf(speed) * 0.45, 5.0, 11.0)
+	var reach := clampf(absf(speed) * 0.55, 6.0, 15.0)
+	var look := reach
 	var target := proj
 	var k := _auto_i
 	var from := proj
@@ -277,81 +313,133 @@ func _autopilot_input() -> Vector3:
 	var fwd := -global_basis.z
 	fwd.y = 0.0
 	var ang := fwd.signed_angle_to(to.normalized(), Vector3.UP)  # + is to the left
-	var steer := clampf(-ang * 2.2, -1.0, 1.0)
-	# Brake for what's coming: every bend in the next 140 m has a speed the steering can hold it at
-	# (the car turns tighter slower), and the car has to be down to it by the time it gets there.
+	# The wheel angle whose arc passes through the point ahead, as a share of what the wheel can do.
+	var wheel_want := atan(2.0 * WHEELBASE * sin(ang) / maxf(to.length(), 1.0))
+	var steer := clampf(-wheel_want / steer_limit(absf(speed)) * 1.3, -1.0, 1.0)
+	# Brake for what's coming: every bend in the next stretch has a speed the tyres can hold it at,
+	# and the car has to be down to it by the time it gets there (it brakes far gentler than it could).
 	var want := MAX_SPEED
 	var dist := -here.distance_to(a0)  # the corner just reached is still being taken
 	var j := _auto_i - 1
 	if j < 1:
 		j = _auto_i
 		dist = here.distance_to(b0)
-	while j < autopilot.size() - 1 and dist < 140.0:
+	while j < autopilot.size() - 1 and dist < 200.0:
 		var d1: Vector3 = flat.call(autopilot[j]) - flat.call(autopilot[j - 1])
 		var d2: Vector3 = flat.call(autopilot[j + 1]) - flat.call(autopilot[j])
 		if d1.length() > 0.01 and d2.length() > 0.01:
 			var bend := absf(d1.signed_angle_to(d2, Vector3.UP))
 			if bend > 0.02:
 				var r := minf(d1.length(), d2.length()) / bend
-				var hold := maxf(7.0, 0.7 * STEER_RATE * r / (1.0 + STEER_RATE * r * (1.0 - STEER_HIGH_SPEED) / MAX_SPEED))
+				var hold := maxf(6.0, sqrt(0.6 * GRIP * r))
 				if bend > 0.6:
-					hold = 10.0  # a street corner: a right angle all at once
-				want = minf(want, sqrt(hold * hold + 2.0 * 14.0 * maxf(dist, 0.0)))
+					hold = 8.0  # a street corner: a right angle all at once
+				want = minf(want, sqrt(hold * hold + 2.0 * 5.5 * maxf(dist - 4.0, 0.0)))
 		dist += d2.length()
 		j += 1
-	var throttle := 1.0 if speed < want else -0.7
+	var throttle := 1.0 if speed < want - 0.5 else (-0.8 if speed > want + 0.5 else 0.0)
 	return Vector3(steer, throttle, 0.0)
 
 
+## The car, one tick. A real one in outline: an engine pulling through five gears (hard off the
+## line, less and less up the box, an automatic shift with a gap in the drive), pedals that take a
+## moment to go down, brakes that need distance, air and rolling drag, and tyres with only so much
+## grip to share between braking, driving and turning. The wheel turns at its own pace and less at
+## speed; ask for more than the tyres have and the car pushes wide, sliding (and scrubbing speed);
+## the handbrake lets the back go so it rotates. Off the road the dirt halves the grip.
 func _server_drive(delta: float) -> void:
 	_bang_cool = maxf(0.0, _bang_cool - delta)
 	_skid_cool = maxf(0.0, _skid_cool - delta)
 	if not in_use or locked:
 		speed = 0.0
 		slip = 0.0
+		pedal = 0.0
+		rpm = 0.12 if in_use else 0.0
+		gear = 0
+		_throttle = 0.0
+		_brake = 0.0
+		wheel = move_toward(wheel, 0.0, STEER_SPEED * delta)
+		_settle(delta)
 		return
 	var inp := _driver_input()
-	var steer := inp.x
-	var throttle := inp.y
+	var hand := inp.z > 0.5
+	var want_go := maxf(inp.y, 0.0)
+	var want_stop := maxf(-inp.y, 0.0)
+	# Back on the brake at a standstill, held a moment: reverse.
+	if want_stop > 0.1 and speed < 0.6:
+		_reverse_t += delta
+	elif want_stop < 0.1:
+		_reverse_t = 0.0
+	var reversing := _reverse_t > REVERSE_HOLD and speed < 0.6
+	if reversing:
+		want_go = want_stop
+		want_stop = 0.0
+	elif speed < -0.3 and inp.y > 0.1:
+		want_stop = want_go  # rolling backwards with the throttle down: it's the brake first
+		want_go = 0.0
 	if stall_t > 0.0:
 		stall_t -= delta
-		throttle = 0.0  # the engine coughs and won't catch
-	var hand := inp.z > 0.5
-	if throttle > 0.05:
-		if speed < 0.0:
-			speed = move_toward(speed, 0.0, BRAKE * delta)
-		else:
-			speed = move_toward(speed, MAX_SPEED, ACCEL * throttle * (1.0 - 0.55 * speed / MAX_SPEED) * delta)
-	elif throttle < -0.05:
-		if speed > 0.0:
-			speed = move_toward(speed, 0.0, BRAKE * -throttle * delta)
-		else:
-			speed = move_toward(speed, -REVERSE_SPEED, ACCEL * 0.6 * delta)
-	else:
-		speed = move_toward(speed, 0.0, COAST * delta)
+		want_go = 0.0  # the engine coughs and won't catch
+	_throttle = move_toward(_throttle, want_go, (THROTTLE_DOWN if want_go > _throttle else THROTTLE_UP) * delta)
+	_brake = move_toward(_brake, want_stop, (BRAKE_DOWN if want_stop > _brake else BRAKE_UP) * delta)
+	pedal = _throttle - _brake
+	# The gearbox.
+	var v := absf(speed)
+	_shift_t = maxf(0.0, _shift_t - delta)
+	if not reversing and _shift_t <= 0.0:
+		if gear < GEAR_TOP.size() - 1 and v > GEAR_TOP[gear] * SHIFT_UP:
+			gear += 1
+			_shift_t = SHIFT_TIME
+		elif gear > 0 and v < GEAR_TOP[gear - 1] * SHIFT_DOWN:
+			gear -= 1
+			_shift_t = SHIFT_TIME * 0.6
+	if reversing:
+		gear = 0
+	var top: float = REVERSE_SPEED * 1.6 if reversing else GEAR_TOP[gear]
+	var rev := clampf(v / top, 0.0, 1.05)
+	rpm = lerpf(rpm, maxf(maxf(rev, 0.12), 0.35 * _throttle if v < 4.0 else 0.0), clampf(delta * 14.0, 0.0, 1.0))  # the clutch slips off the line
+	# Along the car: the engine, the brakes, the drag.
+	var along := 0.0
+	if _throttle > 0.0 and _shift_t <= 0.0 and rev < 1.02:
+		var torque := clampf(1.0 - 1.7 * (rev - 0.62) * (rev - 0.62), 0.45, 1.0)
+		along += _throttle * (REVERSE_PULL if reversing else GEAR_PULL[gear]) * torque * (-1.0 if reversing else 1.0)
+	var drag := ROLL + DRAG * v * v + (ENGINE_BRAKE * (1.0 - _throttle) * (1.6 - 0.25 * float(gear)) if v > 1.0 else 0.0)
+	var grip := GRIP * (ROUGH_GRIP if rough else 1.0)
+	if rough:
+		drag += ROUGH_DRAG + (9.0 if v > ROUGH_TOP else 0.0)
+	var stop := _brake * BRAKE_FORCE + (HAND_DRAG if hand else 0.0) + drag
+	stop = minf(stop, grip + drag)
+	along = clampf(along, -grip, grip)  # wheelspin: the tyres can only push so hard
+	speed += along * delta
+	speed = move_toward(speed, 0.0, stop * delta)
+	# The wheel: it turns at its own pace, and less far the faster the car goes.
+	var limit := steer_limit(v)
+	wheel = move_toward(wheel, inp.x * limit, (STEER_SPEED if absf(inp.x) > 0.05 else STEER_BACK) * delta)
+	wheel = clampf(wheel, -limit * 1.15, limit * 1.15)
+	# What the tyres have left for turning, after what braking and driving take.
+	var used := clampf((absf(along) + _brake * BRAKE_FORCE) / grip, 0.0, 0.92)
+	var side_grip := grip * sqrt(1.0 - used * used)
 	if hand:
-		speed = move_toward(speed, 0.0, HANDBRAKE_DRAG * delta)
-	if rough and absf(speed) > ROUGH_TOP:
-		speed = move_toward(speed, signf(speed) * ROUGH_TOP, 14.0 * delta)  # the dirt grabs the wheels
-	var pace := clampf(absf(speed) / 8.0, 0.0, 1.0)
-	var high := clampf(absf(speed) / MAX_SPEED, 0.0, 1.0)
-	var rate := -steer * STEER_RATE * pace * lerpf(1.0, STEER_HIGH_SPEED, high) * signf(speed if absf(speed) > 0.1 else 1.0)
-	if hand:
-		rate *= HANDBRAKE_STEER
-	rotate_y(rate * delta)
-	slip += rate * speed * SLIP_FROM_TURN * delta  # the body turns, the car keeps going: the tail steps out
-	slip = move_toward(slip, 0.0, (HANDBRAKE_GRIP if hand else GRIP) * absf(slip) * delta + 0.5 * delta)
+		side_grip *= HAND_GRIP
+	if absf(slip) > SLIDE_SPEED:
+		side_grip *= SLIDE_GRIP  # tyres that are sliding grip less than tyres that are rolling
+	var omega := -speed * tan(wheel) / WHEELBASE
+	var omega_max := side_grip * (HAND_TURN if hand else TURN_OVER) / maxf(v, 2.5)
+	omega = clampf(omega, -omega_max, omega_max)
+	var world := -global_basis.z * speed + global_basis.x * slip
+	rotate_y(omega * delta)
 	var fwd := -global_basis.z
 	var right := global_basis.x
+	speed = world.dot(fwd)
+	slip = world.dot(right)
+	slip = move_toward(slip, 0.0, side_grip * delta)
+	speed = move_toward(speed, 0.0, absf(slip) * SLIDE_SCRUB * delta)  # a slide costs speed
 	velocity = fwd * speed + right * slip
-	_vy = -1.0 if is_on_floor() else _vy - FALL * delta
-	velocity.y = _vy
+	velocity.y = _settle(delta)
 	var before := Vector2(velocity.x, velocity.z).length()  # the fall is not a crash
 	var ahead_before := speed
 	move_and_slide()
 	var after := Vector3(velocity.x, 0.0, velocity.z)
-	if is_on_floor():
-		_vy = -1.0
 	speed = after.dot(fwd)
 	slip = after.dot(right)
 	var lost := maxf(before - after.length(), absf(ahead_before) - absf(speed))  # into something, even at an angle (the rest turns into a slide)
@@ -363,9 +451,25 @@ func _server_drive(delta: float) -> void:
 	elif lost > BANG_SPEED and _bang_cool <= 0.0:
 		_bang_cool = 0.6
 		_rpc_bang.rpc(lost)
-	if absf(slip) > 4.0 and _skid_cool <= 0.0:
-		_skid_cool = 0.5
+	if absf(slip) > SLIDE_SPEED and v > 6.0 and _skid_cool <= 0.0:
+		_skid_cool = 0.45
 		_rpc_skid.rpc()
+
+
+## The ground under the car (a ray down: the body floats, it has no floor of its own): on it, the
+## car sits at its height; with nothing there (off the mountain's edge) it falls. Returns m/s up.
+func _settle(delta: float) -> float:
+	var from := global_position + Vector3.UP * 1.0
+	var q := PhysicsRayQueryParameters3D.create(from, from + Vector3.DOWN * 1.5, ChainBody.LAYER_WORLD)
+	q.exclude = [get_rid()]
+	var hit := get_world_3d().direct_space_state.intersect_ray(q)
+	if hit.is_empty():
+		_vy -= FALL * delta
+		return _vy
+	_vy = 0.0
+	var gy: float = (hit.position as Vector3).y + 0.02
+	global_position.y = move_toward(global_position.y, gy, 6.0 * delta)
+	return 0.0
 
 
 @rpc("authority", "call_local", "unreliable")
@@ -426,21 +530,25 @@ func _local_inside() -> bool:
 
 
 func _animate(delta: float) -> void:
-	var steer_target := 0.0
-	if multiplayer.is_server():
-		steer_target = _driver_input().x if in_use else 0.0
-	else:
-		steer_target = clampf(slip * -0.08, -0.6, 0.6)
-	_steer_vis = lerpf(_steer_vis, steer_target * 0.45, clampf(delta * 10.0, 0.0, 1.0))
 	_wheel_spin += speed * delta / 0.34
 	for k in _wheels.size():
 		var w := _wheels[k]
-		w.rotation.y = -_steer_vis if k < 2 else 0.0
+		w.rotation.y = -wheel if k < 2 else 0.0
 		(w.get_child(0) as Node3D).rotation.x = -_wheel_spin
-	_brake_mat.emission_energy_multiplier = 3.0 if (in_use and speed > 1.0 and multiplayer.is_server() and _driver_input().y < -0.1) else 0.6
+	# The body on its springs: the nose up under power and down under the brakes, and it leans out
+	# of a bend.
+	var accel := clampf((speed - _last_speed) / maxf(delta, 0.001), -14.0, 14.0)
+	_last_speed = speed
+	var side := clampf(speed * speed * tan(wheel) / WHEELBASE, -12.0, 12.0)
+	_lean = _lean.lerp(Vector2(accel * 0.0065, side * 0.007 + slip * 0.01), clampf(delta * 6.0, 0.0, 1.0))
+	if _body != null:
+		_body.rotation = Vector3(_lean.x, 0.0, _lean.y)
+		_body.position.y = -absf(_lean.x) * 0.25
+	_brake_mat.emission_energy_multiplier = 3.0 if (in_use and pedal < -0.08) else 0.6
 	if in_use:
 		Sfx.start_loop(_engine)
-		_engine.pitch_scale = 0.55 + 1.1 * clampf(absf(speed) / MAX_SPEED, 0.0, 1.0)
+		_engine.pitch_scale = 0.5 + 1.25 * clampf(rpm, 0.0, 1.05)
+		_engine.volume_db = -9.0 + 5.0 * clampf(pedal, 0.0, 1.0)
 	elif _engine.playing:
 		_engine.stop()
 
@@ -454,5 +562,10 @@ func server_park(at: Transform3D) -> void:
 	velocity = Vector3.ZERO
 	_auto_i = 0
 	_vy = 0.0
+	wheel = 0.0
+	gear = 0
+	_throttle = 0.0
+	_brake = 0.0
+	_reverse_t = 0.0
 	stall_t = 0.0
 	rough = false

@@ -94,10 +94,10 @@ func _ready() -> void:
 	env.background_color = Color(0.05, 0.06, 0.05)
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	env.ambient_light_color = Color(1.0, 0.98, 0.94)
-	env.ambient_light_energy = 2.2
+	env.ambient_light_energy = 0.7
 	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
 	env.adjustment_enabled = true
-	env.adjustment_saturation = 0.85
+	env.adjustment_saturation = 1.1
 	env.adjustment_contrast = 1.15
 	_sat_cam.environment = env
 	_sat_vp.add_child(_sat_cam)
@@ -180,19 +180,22 @@ func _process(delta: float) -> void:
 	_count.size = Vector2(size.x, 160.0)
 	var behind := car.progress - town.strider.s
 	var kmh := int(absf(car.speed) * 3.6)
+	# The dash: speed, the gear and the revs (a bar that fills to the red line).
+	var bars := int(round(clampf(car.rpm, 0.0, 1.0) * 12.0))
+	var dash := "%d km/h   %s   %s%s" % [kmh, "R" if car.speed < -0.5 else str(car.gear + 1), "|".repeat(bars), ".".repeat(12 - bars)]
 	if town.strider.active:
-		_info.text = "IT'S %d m BEHIND    %d km/h" % [maxi(0, int(behind)), kmh]
+		_info.text = "IT'S %d m BEHIND    %s" % [maxi(0, int(behind)), dash]
 		var hot := behind < 40.0 and fmod(_t, 0.4) < 0.22
 		_info.add_theme_color_override("font_color", UiTheme.DANGER if hot else UiTheme.PAPER)
 	else:
-		_info.text = "%d km/h" % kmh
+		_info.text = dash
 		_info.add_theme_color_override("font_color", UiTheme.PAPER)
 	_info.position = Vector2(0.0, 18.0)
 	_info.size = Vector2(size.x, 30.0)
 	if navigator:
 		_hint.text = "YOU HAVE THE MAP AND THE GUN. Call the turns: talk, or A = LEFT, D = RIGHT, W = STRAIGHT ON, S = BRAKE. F or SPACE: SHOOT what's in the road, or the Strider when it's close."
 	else:
-		_hint.text = "YOU'RE DRIVING BLIND: listen to your navigator. W/S go and brake, A/D steer, Ctrl handbrake. The mirror shows what's behind."
+		_hint.text = "YOU'RE DRIVING BLIND: listen to your navigator. W gas, S brake (hold it when stopped: reverse), A/D steer, Ctrl handbrake. The mirror shows what's behind."
 	# The mirror (the driver's; the navigator has the map where it would be).
 	var show_mirror := not navigator
 	_mirror_frame.visible = show_mirror
