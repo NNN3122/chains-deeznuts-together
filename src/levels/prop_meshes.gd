@@ -40,6 +40,8 @@ static func material() -> ShaderMaterial:
 ## The material a batch of `key` is drawn with: the manor's stone, bark and wood props carry a
 ## photo surface (ManorMeshes.material); everything else shares the plain one.
 static func material_for(key: String) -> Material:
+	if key == "town_tree":
+		return ManorMeshes.material("manor_tree")
 	return ManorMeshes.material(key) if key.begins_with("manor_") else material()
 
 
@@ -67,6 +69,9 @@ static func mesh(key: String) -> ArrayMesh:
 		"long_table": m = _long_table()
 		_ when key.begins_with("ruin_"):
 			m = RuinMeshes.mesh(key)  # Carrow Heights' wreckage
+		"town_wreck": m = RallyCar.car_mesh(Color(0.07, 0.06, 0.05))  # a rally car, burnt out
+		"town_heli": m = _crashed_heli()
+		"town_tree": m = ManorMeshes.mesh("manor_tree")  # the mountain's dead forest (drawn further: you see it at speed)
 		_ when key.begins_with("manor_"):
 			m = ManorMeshes.mesh(key)  # Ashgrave Manor's grounds
 		_:
@@ -233,6 +238,24 @@ static func _slab() -> ArrayMesh:
 	s.paint_box(Vector3(0.0, 0.025, -0.45), Vector3(0.45, 0.01, 0.05), LAMINATE.lightened(0.12), 0.7)
 	s.paint_ellipsoid(Vector3(0.25, 0.025, 0.1), Vector3(0.04, 0.01, 0.04), LAMINATE.darkened(0.4), 0.4)
 	return s.mesh("prop_slab", 0.01, 300)
+
+
+## Kettle Hollow's crash site: the helicopter that brought the Line, on its side and broken, the
+## tail boom snapped off and a rotor blade bent into the road. Origin at its middle.
+static func _crashed_heli() -> ArrayMesh:
+	var s := Sculpt.new()
+	var skin := Color(0.62, 0.6, 0.54)
+	var burnt := Color(0.07, 0.06, 0.05)
+	s.ellipsoid(Vector3(0.0, 0.0, 0.0), Vector3(1.3, 1.25, 2.6), skin, 0.1, 0.45)
+	s.carve_ellipsoid(Vector3(0.0, 0.2, -2.3), Vector3(1.0, 0.9, 0.8), skin, 0.05)  # the nose stove in
+	s.capsule(Vector3(0.0, 0.3, 2.2), Vector3(0.6, 0.9, 5.2), 0.4, 0.2, skin, 0.08, 0.45)  # the boom, snapped
+	s.paint_ellipsoid(Vector3(0.3, 0.2, 0.6), Vector3(1.2, 1.1, 1.5), burnt, 0.9)
+	s.paint_ellipsoid(Vector3(0.4, 0.7, 3.8), Vector3(0.5, 0.5, 1.2), burnt, 0.9)
+	s.paint_box(Vector3(0.0, 0.5, -1.3), Vector3(1.32, 0.45, 0.6), Color(0.05, 0.06, 0.07), 0.2)  # the cabin glass, gone dark
+	s.box(Vector3(0.0, 1.35, 0.0), Vector3(0.25, 0.15, 0.25), 0.05, Color(0.2, 0.2, 0.2), 0.03, 0.4)  # the mast
+	s.box(Vector3(2.2, 1.3, 0.3), Vector3(2.3, 0.04, 0.16), 0.02, Color(0.15, 0.15, 0.16), 0.02, 0.4, 0.0, Basis(Vector3.FORWARD, 0.4))
+	s.box(Vector3(-1.8, 0.8, -0.6), Vector3(1.9, 0.04, 0.16), 0.02, Color(0.15, 0.15, 0.16), 0.02, 0.4, 0.0, Basis(Vector3.FORWARD, -0.9))
+	return s.noise_scale(8.0).mesh("town_heli", 0.06, 2600)
 
 
 ## A meeting table (3.2 x 1.2 top at 0.74 m) on two pedestal legs.

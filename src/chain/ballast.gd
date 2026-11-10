@@ -178,6 +178,8 @@ func is_on_floor_visual() -> bool:
 
 
 func _server_tick(delta: float) -> void:
+	if ride_tick():
+		return
 	dragged_this_tick = 0.0
 	velocity.y -= GRAVITY * delta
 	if is_on_floor():

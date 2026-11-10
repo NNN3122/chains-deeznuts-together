@@ -14,6 +14,7 @@ var join_index: int = 0  # chain order; the Ballast uses a large index so it is 
 var synced_position: Vector3 = Vector3.ZERO
 var external_velocity: Vector3 = Vector3.ZERO  # added once on the next tick (blasts, items)
 var dragged_this_tick: float = 0.0  # meters the chain moved this body this tick (scrape noise)
+var seat: Node3D = null  # server: riding in something (a rally car's seat): carried by it, never by its own physics or the chain
 
 
 func _setup_body_layers() -> void:
@@ -54,8 +55,23 @@ func noise_level() -> float:
 	return 0.0
 
 
+## Server: a rider goes where its seat goes, facing the way it faces. True while it rides.
+func ride_tick() -> bool:
+	if seat == null or not is_instance_valid(seat):
+		seat = null
+		return false
+	global_position = seat.global_position
+	velocity = Vector3.ZERO
+	external_velocity = Vector3.ZERO
+	dragged_this_tick = 0.0
+	synced_position = global_position
+	return true
+
+
 ## Move with collision, sliding along surfaces, so a pull drags you along floors and up walls.
 func chain_move(motion: Vector3) -> void:
+	if seat != null:
+		return  # strapped in: the chain runs between the seats
 	var start := global_position
 	var remaining := motion
 	for i in 3:

@@ -47,6 +47,10 @@ func _ready() -> void:
 	var hud := get_tree().current_scene.get("hud") as Hud
 	if hud != null:
 		hud.set_help_visible(false)
+	if _stack.town.active:  # --town: straight in, just the town
+		await _tour_town()
+		get_tree().quit()
+		return
 	var spawn: Vector3 = _level.test_points["spawn"]
 	await _shot("01_spawn_room", spawn, PI, -0.12, false)
 	await _shot("02_spawn_first_person", spawn, PI, -0.05, true)
@@ -308,11 +312,104 @@ func _tour_pizzeria() -> void:
 		l.debug_frozen = true
 	await _shot("43_roof_lot", lot.spawn_position, 0.0, -0.05, false)
 	await _shot("44_roof_lot_first_person", lot.spawn_position + Vector3(0.0, 0.0, -6.0), 0.0, 0.0, true)
+	await _tour_town()
 	# Then on: the helicopter sets the Line down at the manor's stables, far below the building (the
 	# same view as the manor tour's 80, which should look the same).
 	_stack.server_land_at_manor()
 	_stack.manor.keeper.debug_frozen = true
 	await _shot("45_manor_from_the_stack", _stack.manor.spawn_position, PI * 0.5, -0.05, false)
+
+
+## Kettle Hollow (Level 4; also --town --shots=DIR): the start line under the countdown, the crash
+## site, a car through the streets, the navigator's map, and the Strider right behind.
+func _tour_town() -> void:
+	var t := _stack.town
+	if not t.active:
+		_stack.server_crash_in_town()
+	for i in 60:
+		if t.active and t.countdown > 0.0:
+			break
+		await _wait(0.1)
+	t.debug_hold_strider = true
+	_host.bot_controlled = true
+	await _wait(1.0)
+	var car: RallyCar = t.cars[0]
+	await _capture_to(out_dir.path_join("46_town_start_line.png"))
+	t.debug_cam_free = true
+	await _free_cam("46b_town_crash_site", t.route_point(car.progress + 16.0) + Vector3(3.0, 4.5, 0.0), t.route_point(4.0) + Vector3(0.0, 1.5, 0.0))
+	await _free_cam("46i_town_shopfronts", t.route_point(70.0) + Vector3(-3.5, 1.7, 0.0), t.route_point(84.0) + Vector3(8.0, 4.5, 0.0))
+	if not t.collapse_points.is_empty():  # a wrong turn: the street ends in a building come down across it
+		var cp: Vector3 = t.collapse_points[0]
+		var best_d := INF
+		for p in t.collapse_points:
+			if p.distance_to(t.route_point(car.progress)) < best_d:
+				best_d = p.distance_to(t.route_point(car.progress))
+				cp = p
+		var dir := Vector3(1.0, 0.0, 0.0) if absf(fposmod(cp.x - t.origin.x, Town.SPACING)) < 1.0 else Vector3(0.0, 0.0, 1.0)
+		await _free_cam("46m_town_collapse", cp + dir * 14.0 + Vector3(0.0, 1.6, 0.0), cp + Vector3(0.0, 1.5, 0.0))
+	for mc in t.mountain_corners:  # the mountain road: a tight bend in the dead forest
+		if int(mc[3]) <= 2:
+			var s0: float = mc[0]
+			await _free_cam("46n_town_mountain_bend", t.route_point(s0 - 22.0) + Vector3(0.0, 1.5, 0.0), t.route_point((s0 + float(mc[1])) * 0.5) + Vector3(0.0, 1.0, 0.0))
+			await _free_cam("46o_town_mountain_above", t.route_point(s0) + Vector3(0.0, 45.0, 30.0), t.route_point(s0 + 20.0))
+			break
+	var th := t.threats
+	for i in th.kinds.size():
+		if th.kinds[i] == RoadThreats.Kind.SHAMBLER:
+			var p: Vector3 = th.pos[i]
+			var away := (t.route_point(t.project(p, 0.0, t.finish_s) - 9.0) - p).normalized()
+			await _free_cam("46j_town_shamblers", p + away * 6.5 + Vector3(0.0, 1.6, 0.0), p + Vector3(0.0, 1.4, 0.0))
+			break
+	for i in th.kinds.size():
+		if th.kinds[i] == RoadThreats.Kind.FLYER:
+			var p: Vector3 = th.pos[i]
+			await _free_cam("46k_town_flyer", p + Vector3(4.0, -1.0, 4.0), p)
+			break
+	for i in 60:
+		if t.countdown < 0.0:
+			break
+		await _wait(0.1)
+	var path: Array = []
+	for k in range(1, t.route_pts.size()):
+		path.append(t.origin + t.route_pts[k])
+	car.autopilot = path
+	await _wait(8.0)
+	t.debug_cam_free = false
+	await _wait(0.3)
+	await _capture_to(out_dir.path_join("46c_town_driving.png"))
+	t.debug_cam_free = true
+	await _free_cam("46d_town_streets_above", t.route_point(car.progress - 25.0) + Vector3(0.0, 34.0, 0.0), car.global_position + Vector3(0.0, 0.0, 0.0) + (car.global_position - t.route_point(car.progress - 25.0)) * 1.5)
+	t.debug_cam_free = false
+	var occ := car.occupants
+	car.occupants = PackedInt32Array([occ[1], occ[0]])  # the host in the navigator's seat, for the map
+	await _wait(0.8)
+	await _capture_to(out_dir.path_join("46e_town_navigator_map.png"))
+	car.occupants = occ
+	for i in th.kinds.size():  # a Flyer on the glass, as the driver sees it
+		if th.kinds[i] == RoadThreats.Kind.FLYER:
+			th.alive[i] = 1
+			th._nodes[i].visible = true
+			th._cool[car.index] = 30.0  # the Ballast holds its fire for the picture
+			th._rpc_fly(i, RoadThreats.Fly.LATCHED, car.index, car.global_transform * RoadThreats.GLASS)
+			await _wait(1.6)
+			await _capture_to(out_dir.path_join("46l_town_flyer_on_glass.png"))
+			th._rpc_fly(i, RoadThreats.Fly.GONE, -1, th.pos[i])
+			th._cool[car.index] = 0.0
+			break
+	car.autopilot = []
+	car.locked = true
+	await _wait(1.0)
+	t.strider.active = true
+	t.strider.s = car.progress - 16.0
+	await _wait(4.0)
+	await _capture_to(out_dir.path_join("46f_town_strider_mirror.png"))
+	t.debug_cam_free = true
+	var fwd: Vector3 = t.route_tangent(car.progress)
+	await _free_cam("46g_town_strider", car.global_position + fwd * 5.0 + Vector3(0.0, 2.2, 0.0), t.strider.head_point())
+	await _free_cam("46h_town_strider_close", t.route_point(t.strider.s + 9.0) + Vector3(2.5, 3.0, 0.0), t.strider.head_point() - Vector3(0.0, 1.0, 0.0))
+	car.locked = false
+	t.debug_hold_strider = false
+	t.debug_cam_free = false
 
 
 ## The Loading Lot (--arena --shots=DIR): the lot, the fence, the crowd at the gap, a Launcher

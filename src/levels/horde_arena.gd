@@ -2166,7 +2166,7 @@ func _tick_boarding(players: Array[Player]) -> void:
 		heli_departing = true  # it climbs away with the Line in the cabin; the Stack takes it from here
 		airlift.call()
 		return
-	GameState.set_escaped("Airlifted off Carrow Heights. Next stop: Level 4, Ashgrave Manor.")
+	GameState.set_escaped("Airlifted off Carrow Heights. Next stop: Level 4, Kettle Hollow.")
 
 
 ## Server: the Stack has set the Line down at the manor. The helicopter goes back to waiting

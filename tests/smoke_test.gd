@@ -613,7 +613,7 @@ func _test_run_save() -> void:
 	for i in _stack.manor_checkpoint_index() + 1:
 		names.append(RunSave.place(i))
 	var named: bool = names[1] == "Level 1, B3" and names[YellowRooms.FLOORS] == "Level 2, the Dining Hall" and names[_stack.lot.checkpoint_index] == "Level 3, the roof" \
-		and names[_stack.lot.helipad_checkpoint_index()] == "Level 3, the helipad" and names[_stack.manor_checkpoint_index()] == "Level 4, Ashgrave Manor"
+		and names[_stack.lot.helipad_checkpoint_index()] == "Level 3, the helipad" and names[_stack.town_checkpoint_index()] == "Level 4, Kettle Hollow" and names[_stack.manor_checkpoint_index()] == "Level 5, Ashgrave Manor"
 	var ages: bool = RunSave.age(int(Time.get_unix_time_from_system()) - 7300) == "2 hours ago" and RunSave.age(int(Time.get_unix_time_from_system())) == "just now"
 	_check("the run save: written and read back, B4's start isn't saved, cleared is gone, every checkpoint has a name", back and at_start and cleared and named and ages,
 		"back %s %s, start %s, cleared %s, ages %s, names %s" % [back, run, at_start, cleared, ages, names])
@@ -623,6 +623,8 @@ func _test_run_save() -> void:
 func _level_for(index: int) -> int:
 	if index >= _stack.manor_checkpoint_index():
 		return 3
+	if index >= _stack.town_checkpoint_index():
+		return 4
 	if index >= _stack.lot.checkpoint_index:
 		return 2
 	return 1 if index >= YellowRooms.FLOORS else 0
@@ -640,8 +642,13 @@ func _test_resumed() -> void:
 	await _wait(2.5)
 	var at := GameState.checkpoint_position
 	var off := ""
+	var in_town := want >= _stack.town_checkpoint_index() and want < _stack.manor_checkpoint_index()
 	for b in Net.get_chain_bodies():
 		var r := b.global_position - at
+		if in_town:
+			if b.seat == null:
+				off += " %s not in a car" % b.name
+			continue  # in the cars on the start line, a few car lengths up the road from the spot
 		if Vector2(r.x, r.z).length() > 4.5 or absf(r.y) > 1.2:
 			off += " %s %s" % [b.name, r]
 	var lvl := _stack.level_index_at(_host.global_position)
@@ -653,7 +660,7 @@ func _test_resumed() -> void:
 	if want >= YellowRooms.FLOORS and want < _stack.manor_checkpoint_index():
 		ready = ready and car != null and car.has_arrived()  # the car waits upstairs, filling the shaft
 		detail += ", car up %s" % (car != null and car.has_arrived())
-	if want > _stack.lot.checkpoint_index and want < _stack.manor_checkpoint_index():
+	if want > _stack.lot.checkpoint_index and want < _stack.town_checkpoint_index():
 		ready = ready and GameState.task_done(0) and GameState.task_done(1)
 		detail += ", fence and gap done %s" % (GameState.task_done(0) and GameState.task_done(1))
 	if want >= _stack.manor_checkpoint_index():
@@ -684,7 +691,9 @@ func _run_client_resumed(me: Player) -> void:
 		stack = get_tree().get_first_node_in_group("level") as LevelStack
 		if GameState.checkpoint_index >= 1 and stack != null and is_instance_valid(me):
 			var at := GameState.checkpoint_position
-			ok = me.global_position.distance_to(at) < 5.5 and stack.level_index_at(me.global_position) == stack.level_index_at(at)
+			var seated := (me.synced_flags & Player.SFLAG_SEATED) != 0
+			var near := me.global_position.distance_to(at) < 5.5 or (seated and stack.level_index_at(at) == 4)  # the town puts you in a car up the road
+			ok = near and stack.level_index_at(me.global_position) == stack.level_index_at(at)
 	_check("client: joined the continued run at its checkpoint (%d), on its level" % GameState.checkpoint_index, ok,
 		"me %s, checkpoint at %s" % [me.global_position if is_instance_valid(me) else Vector3.INF, GameState.checkpoint_position])
 	t = 0.0
@@ -2273,7 +2282,165 @@ func _escape_by_helicopter(lot: HordeArena, tp: Dictionary, prefix: String) -> v
 		p._apply_input(Vector2.ZERO, 0.0, 0.0, 0)
 	await _wait(0.3)
 	if lot.airlift.is_valid():
+		await _test_town()
 		await _test_airlift()
+
+
+## Level 4, Kettle Hollow: the helicopter comes down and the Line is in the rally cars, two to a car
+## with the chain in pairs; the countdown holds them, then the driver's keys drive; a navigator's call
+## (or the solo co-driver's) reaches the driver; a car that sits still is caught by the Strider (a
+## layoff, everyone back in the cars at the start); and every car driven through the route's corners
+## and over the finish takes the Line on to the manor. Quick run: --town --solo --smoke --smoke-only=town
+func _test_town() -> void:
+	var t := _stack.town
+	_keeper_slept = _stack.manor.keeper.asleep  # read here: the Line lands at the manor at the end of this test
+	var cp := _stack.town_checkpoint_index()
+	for i in 80:
+		if GameState.checkpoint_index >= cp:
+			break
+		await _wait(0.1)
+	await _wait(0.8)
+	var bodies := Net.get_chain_bodies()
+	var seated := 0
+	for b in bodies:
+		if b.seat != null:
+			seated += 1
+	var used := 0
+	for c in t.cars:
+		if c.in_use:
+			used += 1
+	var at := _host.global_position
+	_check("the helicopter comes down in Kettle Hollow: checkpoint %d, everyone in the rally cars two to a car, the chain in pairs, the town's list" % cp,
+		GameState.checkpoint_index == cp and seated == bodies.size() and used == clampi(bodies.size() / 2, 1, Town.CARS) and GameState.chain_config == GameState.ChainConfig.PAIRS
+			and String(GameState.tasks[0][0]).begins_with("Two to a car") and _stack.level_index_at(at) == 4 and _stack.floor_name(at.y) == Town.FLOOR_NAME and t.active,
+		"checkpoint %d, %d of %d seated, %d cars, chain %d, tasks %s, level %d" % [GameState.checkpoint_index, seated, bodies.size(), used, GameState.chain_config, str(GameState.tasks), _stack.level_index_at(at)])
+	var car := t.cars[0]
+	var start := car.global_position
+	var calls0 := t.calls_seen  # the first corner may be called the moment it says GO
+	_bot(Vector2(0.0, -1.0), 0.0, 0)  # full throttle on the line: held by the countdown
+	await _wait(1.0)
+	var held := car.global_position.distance_to(start) < 0.3
+	for i in 40:
+		if t.countdown < 0.0:
+			break
+		await _wait(0.1)
+	await _wait(2.2)
+	var went := car.global_position.distance_to(start)
+	_check("the countdown holds the car on the line; on GO the driver's keys drive it", held and went > 12.0 and car.speed > 8.0, "held %s, then %.1f m at %.1f m/s" % [held, went, car.speed])
+	# A call to the driver: the navigator's keys in co-op, the co-driver's in solo.
+	var nav := _mate as Player
+	if nav != null and car.occupants.size() > 1 and car.occupants[1] == nav.peer_id:
+		nav._apply_input(Vector2(-1.0, 0.0), 0.0, 0.0, 0)
+		await _wait(0.3)
+		nav._apply_input(Vector2.ZERO, 0.0, 0.0, 0)
+	else:
+		for i in 40:
+			if t.calls_seen > calls0:
+				break
+			await _wait(0.1)
+	await _wait(0.3)
+	_check("a call reaches the driver (the navigator's keys, or the solo co-driver before a corner)", t.calls_seen > calls0, "%d calls" % (t.calls_seen - calls0))
+	var th := t.threats
+	var mirror_ok := t._panel != null and t._panel._mirror_frame.visible and t._panel._mirror_cam.global_position.distance_to(car.global_position) < 4.0 and (-t._panel._mirror_cam.global_basis.z).dot(car.global_basis.z) > 0.9
+	_check("the road has things in it (Shamblers and Flyers along the route), and the driver has a mirror looking back", th.count(RoadThreats.Kind.SHAMBLER) >= 4 and th.count(RoadThreats.Kind.FLYER) >= 2 and mirror_ok,
+		"%d shamblers, %d flyers, mirror %s" % [th.count(RoadThreats.Kind.SHAMBLER), th.count(RoadThreats.Kind.FLYER), mirror_ok])
+	# Sit still and it comes: a catch is a layoff, and everyone is back in the cars on the line.
+	_bot(Vector2.ZERO, 0.0, Player.FLAG_BRACE)
+	var wipes0 := GameState.wipes
+	var saw_it := false
+	for i in 300:
+		if t.strider.active:
+			saw_it = true
+		if GameState.wipes > wipes0:
+			break
+		await _wait(0.1)
+	await _wait(1.6)
+	seated = 0
+	for b in Net.get_chain_bodies():
+		if b.seat != null:
+			seated += 1
+	_check("a car that stops is run down: the Strider catches it (a layoff), and the Line is back in the cars on the start line",
+		saw_it and GameState.wipes > wipes0 and GameState.checkpoint_index == cp and seated == Net.get_chain_bodies().size() and car.global_position.distance_to(start) < 1.5 and t.countdown > 0.0,
+		"saw it %s, wipes %d -> %d, %d seated, car %.1f m from the line, countdown %.1f" % [saw_it, wipes0, GameState.wipes, seated, car.global_position.distance_to(start), t.countdown])
+	_bot(Vector2.ZERO, 0.0, 0)
+	# Every car through the corners and over the finish (driven by the test, the Strider held back):
+	# out of town, and on to the manor.
+	for i in 40:
+		if t.countdown < 0.0:
+			break
+		await _wait(0.1)
+	t.debug_hold_strider = true
+	# Wrong turns end in a building down across the street: something solid higher than a car.
+	var walled := 0
+	var space := t.get_world_3d().direct_space_state
+	for cpt in t.collapse_points:
+		var hit := space.intersect_ray(PhysicsRayQueryParameters3D.create(cpt + Vector3.UP * 6.0, cpt + Vector3.DOWN * 1.0, 1))
+		if not hit.is_empty() and (hit.position as Vector3).y > cpt.y + 3.0:
+			walled += 1
+	_check("the wrong turns: side streets end in a collapsed building, higher than a car", walled >= 6 and walled == t.collapse_points.size(),
+		"%d of %d collapses solid" % [walled, t.collapse_points.size()])
+	# The mountain: bends graded like pace notes, and one taken flat out ends in the rock: the
+	# engine dies for a moment.
+	var grades := {}
+	for mc in t.mountain_corners:
+		grades[int(mc[3])] = true
+	var mc: Array = t.mountain_corners[0]
+	for m in t.mountain_corners:  # the first tight one
+		if int(m[3]) <= 2:
+			mc = m
+			break
+	var sm := float(mc[0]) - 25.0  # flat out at a tight bend, nobody turning the wheel
+	var home_xf := car.global_transform
+	car.server_park(Transform3D(Basis.looking_at(t.route_tangent(sm), Vector3.UP), t.route_point(sm) + Vector3.UP * 0.05))
+	for i in t.threats.alive.size():
+		t.threats.alive[i] = 0  # nothing on the glass or under the wheels for this one
+	var crashes0 := car.crashes
+	var falls0 := t.falls
+	car.progress = sm
+	car.speed = 24.0
+	var stalled := false
+	for i in 50:
+		await _wait(0.1)
+		if car.crashes > crashes0 or t.falls > falls0:
+			stalled = car.stall_t > 0.0 or t.falls > falls0
+			break
+	_check("the mountain road: %d bends graded like pace notes (%d grades), and one taken flat out ends in the trees, the fence or over the edge" % [t.mountain_corners.size(), grades.size()],
+		t.mountain_corners.size() >= 10 and grades.size() >= 3 and stalled and not t.cliffs.is_empty() and t.road_blocks.size() >= 3 and t.mountain_start_s > 0.0 and t.finish_s > t.mountain_start_s + Town.MOUNTAIN_LEN,
+		"%d bends, grades %s, crashes %d -> %d, falls %d -> %d, %d cliffs, %d road blocks" % [t.mountain_corners.size(), grades.keys(), crashes0, car.crashes, falls0, t.falls, t.cliffs.size(), t.road_blocks.size()])
+	for i in 40:  # a fall is a layoff: wait for everyone to be back on the line
+		if t.countdown > 0.0 or t.falls == falls0:
+			break
+		await _wait(0.1)
+	for i in 50:
+		if t.countdown < 0.0:
+			break
+		await _wait(0.1)
+	car.server_park(home_xf)
+	t.threats.server_reset()
+	var path: Array = []
+	for k in range(1, t.route_pts.size()):
+		path.append(t.origin + t.route_pts[k])
+	th.debug_auto_gun = true  # a co-op test's navigator is a bot that never presses F
+	for c in t.cars:
+		if c.in_use:
+			c.autopilot = path.duplicate()
+	var timer := 0.0
+	var top := 0.0
+	while timer < 260.0 and GameState.checkpoint_index < _stack.manor_checkpoint_index():
+		await _wait(0.5)
+		timer += 0.5
+		top = maxf(top, car.speed)
+	var bump := ""
+	for c in t.cars:
+		if c.in_use and c.progress < t.finish_s:
+			bump += " car %d stuck at %.0f m of %.0f, at %s" % [c.index, c.progress, t.finish_s, c.global_position - t.origin]
+	_check("on the way through the navigator's gun (the Ballast's, solo) shot things in the road", th.shots_seen > 0 and th.kills_seen > 0,
+		"%d shots, %d down (%d of %d still standing)" % [th.shots_seen, th.kills_seen, th.alive_count(), th.kinds.size()])
+	_check("every car driven through all %d corners and over the finish (%.0f m) takes the Line on, out of town, to the manor" % [t.turns.size(), t.finish_s],
+		GameState.checkpoint_index == _stack.manor_checkpoint_index() and not t.active and GameState.chain_config == GameState.ChainConfig.LINE,
+		"%.0f s, top %.0f m/s, checkpoint %d;%s" % [timer, top, GameState.checkpoint_index, bump])
+	t.debug_hold_strider = false
+	th.debug_auto_gun = false
 
 
 ## Level 3 to Level 4 in the Stack: the helicopter sets the Line down at the manor's stables (the
@@ -2283,7 +2450,7 @@ func _escape_by_helicopter(lot: HordeArena, tp: Dictionary, prefix: String) -> v
 func _test_airlift() -> void:
 	var m := _stack.manor
 	_manor = m
-	var asleep_before := m.keeper.asleep
+	var asleep_before := _keeper_slept
 	var cp := _stack.manor_checkpoint_index()
 	for i in 80:
 		if GameState.checkpoint_index >= cp:
@@ -3459,7 +3626,7 @@ func _run_client() -> void:
 	var saw_manor := false
 	var saw_keeper_grab := false
 	t = 0.0
-	while t < 380.0 and not GameState.escaped:
+	while t < 600.0 and not GameState.escaped:  # the whole building, the town and its mountain road, the manor
 		await _wait(0.2)
 		t += 0.2
 		if stack != null and me != null and stack.level_index_at(me.global_position) == 3 and stack.manor.visible:
@@ -3680,6 +3847,7 @@ func _drive_mate(move: Vector2, flags: int, jump: bool) -> void:
 # --- Level 4: Ashgrave Manor (--manor) ------------------------------------------------------------
 
 var _manor: Manor
+var _keeper_slept: bool = false  # the Groundskeeper asleep while the Line was in the town
 
 
 ## The manor suite: the layout and the Groundskeeper's grid, repairing an engine, the wrench, a

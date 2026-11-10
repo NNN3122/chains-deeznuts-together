@@ -761,6 +761,52 @@ const MANOR_SURFACES: Dictionary = {
 }
 
 
+const TOWN_TEXTURES: String = "res://assets/textures/town/"
+## Kettle Hollow's photo surfaces (Level 4), through the same shader: key -> [folder (under
+## TOWN_TEXTURES, or "manor/..." for a manor set), tint, span m, bump, grime, moss, saturation,
+## roughness bias]. Night colours; the asphalt is wet (low roughness, so the fires and lamps lie in it).
+const TOWN_SURFACES: Dictionary = {
+	"town_asphalt": ["asphalt", Color(0.07, 0.07, 0.075), 4.5, 1.1, 0.55, 0.0, 0.15, -0.38],
+	"town_brick": ["brick", Color(0.2, 0.085, 0.06), 2.2, 1.4, 0.35, 0.12, 0.45, 0.0],
+	"town_brick_dark": ["brick", Color(0.1, 0.075, 0.065), 2.2, 1.4, 0.3, 0.1, 0.3, 0.0],
+	"town_stone": ["stone", Color(0.2, 0.18, 0.15), 3.2, 1.3, 0.3, 0.15, 0.35, 0.0],
+	"town_concrete": ["concrete", Color(0.17, 0.17, 0.165), 3.5, 1.2, 0.4, 0.08, 0.2, 0.0],
+	"town_paving": ["paving", Color(0.15, 0.145, 0.135), 2.6, 1.2, 0.55, 0.12, 0.25, -0.15],
+	"town_stucco": ["manor/plaster_painted", Color(0.15, 0.16, 0.14), 2.6, 1.2, 0.35, 0.1, 0.3, 0.0],
+	"town_stucco_warm": ["manor/plaster_painted", Color(0.2, 0.15, 0.1), 2.6, 1.2, 0.35, 0.1, 0.3, 0.0],
+	"town_rust": ["manor/rust", Color(0.13, 0.07, 0.045), 1.6, 1.2, 0.4, 0.0, 0.5, 0.0],
+	"town_rock": ["manor/rock", Color(0.15, 0.145, 0.14), 4.0, 1.5, 0.45, 0.35, 0.25, 0.0],
+	"town_gravel": ["manor/gravel", Color(0.13, 0.125, 0.12), 1.6, 1.2, 0.3, 0.0, 0.2, 0.0],
+	"town_forest": ["manor/earth_moss", Color(0.06, 0.065, 0.045), 3.0, 1.2, 0.4, 0.3, 0.4, 0.0],
+	"town_wood": ["manor/planks", Color(0.1, 0.07, 0.05), 2.0, 1.0, 0.45, 0.0, 0.25, 0.0],
+}
+
+
+static func _town_surface(key: String) -> ShaderMaterial:
+	var spec: Array = TOWN_SURFACES[key]
+	var folder := String(spec[0])
+	var m := _textured(MANOR_PBR_SHADER, ("res://assets/textures/" + folder + "/") if folder.begins_with("manor/") else (TOWN_TEXTURES + folder + "/"))
+	_apply_surface(m, spec)
+	return m
+
+
+## The town's surfaces measure their moss and damp from its streets (1500 m down in the Stack).
+static func set_town_ground(y: float) -> void:
+	for key in TOWN_SURFACES.keys():
+		(mat(String(key)) as ShaderMaterial).set_shader_parameter("ground_y", y)
+
+
+static func _apply_surface(m: ShaderMaterial, spec: Array) -> void:
+	var c: Color = spec[1]
+	m.set_shader_parameter("tint", Vector3(c.r, c.g, c.b))
+	m.set_shader_parameter("span", float(spec[2]))
+	m.set_shader_parameter("bump", float(spec[3]))
+	m.set_shader_parameter("grime", float(spec[4]))
+	m.set_shader_parameter("moss", float(spec[5]))
+	m.set_shader_parameter("saturation", float(spec[6]))
+	m.set_shader_parameter("rough_bias", float(spec[7]))
+
+
 static func _manor_surface(key: String) -> ShaderMaterial:
 	var spec: Array = MANOR_SURFACES[key]
 	var m := _textured(MANOR_PBR_SHADER, MANOR_TEXTURES + String(spec[0]) + "/")
@@ -821,6 +867,8 @@ static func _beacon() -> StandardMaterial3D:
 
 
 static func _make(key: String) -> Material:
+	if TOWN_SURFACES.has(key):
+		return _town_surface(key)
 	match key:
 		"wall": return _shader_mat(WALL_SHADER)
 		"ceiling": return _textured(CEILING_SHADER, "res://assets/textures/ceiling_tiles/")
@@ -928,6 +976,10 @@ static func _make(key: String) -> Material:
 		# Level 3 tech: the Loading Lot and the infected.
 		"asphalt": return _std(Color(0.09, 0.09, 0.1), 0.97)
 		"paint": return _std(Color(0.85, 0.8, 0.5), 0.8)
+		# Level 4, Kettle Hollow: the town the helicopter comes down in.
+		"road_line": return _std(Color(0.62, 0.6, 0.52), 0.85)
+		"checker_dark": return _std(Color(0.04, 0.04, 0.045), 0.8)
+		"embers": return _emissive(Color(1.0, 0.35, 0.06), 3.0)
 		"hoarding": return _std(Color(0.2, 0.32, 0.26), 0.55, 0.4)
 		"dumpster": return _std(Color(0.1, 0.3, 0.18), 0.6, 0.3)
 		"van": return _std(Color(0.7, 0.7, 0.68), 0.45, 0.5)
@@ -939,6 +991,21 @@ static func _make(key: String) -> Material:
 		"billboard": return _emissive(Color(0.95, 0.85, 0.3), 0.9)
 		"tank": return _std(Color(0.3, 0.2, 0.15), 0.85)
 		"street_lamp": return _emissive(Color(1.0, 0.6, 0.2), 4.0)
+		"town_glass": return _std(Color(0.012, 0.014, 0.018), 0.06, 0.6)  # black panes that hold the fires
+		"town_glass_lit": return _emissive(Color(1.0, 0.62, 0.3), 0.75)  # a lamp left on behind a curtain
+		"town_glass_tv": return _emissive(Color(0.45, 0.6, 1.0), 0.5)  # a television nobody is watching
+		"town_void": return _std(Color(0.0, 0.0, 0.0), 1.0)  # a pane gone: the dark room behind it
+		"town_sign_red": return _std(Color(0.22, 0.03, 0.03), 0.6, 0.2)
+		"town_sign_green": return _std(Color(0.03, 0.12, 0.07), 0.6, 0.2)
+		"town_sign_cream": return _std(Color(0.3, 0.27, 0.2), 0.7)
+		"town_awning_red": return _std(Color(0.18, 0.025, 0.02), 0.95)
+		"town_awning_green": return _std(Color(0.02, 0.09, 0.05), 0.95)
+		"town_awning_stripe": return _std(Color(0.28, 0.26, 0.22), 0.95)
+		"town_neon_red": return _emissive(Color(1.0, 0.08, 0.06), 2.6)
+		"town_neon_blue": return _emissive(Color(0.2, 0.5, 1.0), 2.2)
+		"town_bag": return _std(Color(0.015, 0.015, 0.017), 0.25, 0.1)  # bin bags, wet
+		"town_blood": return _std(Color(0.09, 0.0, 0.0), 0.2)
+		"town_chevron": return _std(Color(0.65, 0.5, 0.04), 0.25, 0.1)  # reflective yellow: it lights up in the headlights and nowhere else
 		"jumper_shell": return _std(Color(0.14, 0.16, 0.12), 0.3, 0.2)
 		"jumper_fur": return _std(Color(0.24, 0.2, 0.14), 0.95)
 		"helipad": return _std(Color(0.12, 0.12, 0.13), 0.9)
@@ -963,6 +1030,8 @@ static func _make(key: String) -> Material:
 static func make_environment(quality: int, level: int = 0) -> Environment:
 	if level == 3:
 		return _manor_environment(quality)
+	if level == 4:
+		return _town_environment(quality)
 	var env := Environment.new()
 	var pizzeria := level == 1
 	var outdoors := level == 2  # the roof: a night sky over the city, no bounce light to speak of
@@ -1076,6 +1145,49 @@ static func _manor_environment(quality: int) -> Environment:
 	env.adjustment_enabled = true
 	env.adjustment_contrast = 1.08
 	env.adjustment_saturation = 0.72
+	env.adjustment_brightness = Settings.brightness
+	return env
+
+
+## Kettle Hollow at night: a sodium-and-fire town after rain. The wet road mirrors the lamps and the
+## burning wrecks (screen-space reflections from Medium up), smoke hangs in the streets, the fires
+## bloom, and the colour is drained toward a sick green-amber.
+static func _town_environment(quality: int) -> Environment:
+	var env := Environment.new()
+	env.background_mode = Environment.BG_SKY
+	env.sky = make_night_sky()
+	env.reflected_light_source = Environment.REFLECTION_SOURCE_SKY
+	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+	env.ambient_light_color = Color(0.4, 0.42, 0.5)
+	env.ambient_light_energy = 0.07
+	env.tonemap_mode = Environment.TONE_MAPPER_AGX
+	env.tonemap_exposure = 1.05
+	env.glow_enabled = true
+	env.glow_intensity = 0.9
+	env.glow_bloom = 0.08
+	env.glow_hdr_threshold = 0.95
+	env.ssao_enabled = quality >= 1
+	env.ssr_enabled = quality >= 1
+	env.ssr_max_steps = 48
+	env.ssr_fade_in = 0.1
+	env.ssr_fade_out = 2.5
+	env.ssr_depth_tolerance = 0.4
+	env.fog_enabled = true
+	env.fog_light_color = Color(0.07, 0.065, 0.06)
+	env.fog_density = 0.012 if quality >= 1 else 0.035
+	env.fog_sky_affect = 0.8
+	env.fog_height = 3.0
+	env.fog_height_density = 0.02 if quality >= 1 else 0.06
+	env.volumetric_fog_enabled = quality >= 1
+	env.volumetric_fog_density = 0.018
+	env.volumetric_fog_albedo = Color(0.7, 0.68, 0.64)
+	env.volumetric_fog_emission = Color(0.006, 0.005, 0.004)
+	env.volumetric_fog_length = 80.0
+	env.volumetric_fog_anisotropy = 0.55  # lamps and fires halo when you look toward them
+	env.volumetric_fog_ambient_inject = 0.2
+	env.adjustment_enabled = true
+	env.adjustment_contrast = 1.12
+	env.adjustment_saturation = 0.68
 	env.adjustment_brightness = Settings.brightness
 	return env
 

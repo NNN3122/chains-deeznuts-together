@@ -88,7 +88,7 @@ const NATIVE: Dictionary = {
 ## Cover too small and too many for shadows to be worth their cost.
 const SHADOWLESS: Array[String] = ["manor_grass", "manor_tuft", "manor_twigs", "manor_leaves", "manor_fungus", "manor_bones", "manor_stones"]
 ## m: how far off small cover is still drawn (props default to BoxBatch.PROP_DRAW_RANGE).
-const DRAW_RANGE: Dictionary = {"manor_tuft": 28.0, "manor_twigs": 18.0, "manor_fungus": 18.0, "manor_bones": 22.0, "manor_stones": 30.0, "manor_leaves": 32.0}
+const DRAW_RANGE: Dictionary = {"town_tree": 120.0, "manor_tuft": 28.0, "manor_twigs": 18.0, "manor_fungus": 18.0, "manor_bones": 22.0, "manor_stones": 30.0, "manor_leaves": 32.0}
 const BONE: Color = Color(0.58, 0.54, 0.44)
 const LEAF_BROWN: Color = Color(0.24, 0.15, 0.07)
 const LEAF_DARK: Color = Color(0.12, 0.08, 0.05)

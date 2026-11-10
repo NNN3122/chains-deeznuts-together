@@ -3,9 +3,10 @@ extends Node3D
 ## The Stack: every level of the building, built at once on every peer before connecting, so
 ## node paths match everywhere and nobody ever loads mid-game. Level 2 sits directly on top of
 ## Level 1: the freight car on B1 rides 5 m up its shaft into the pizzeria's Receiving room.
-## Level 3, the roof, is on top; its helicopter flies the Line to Level 4, Ashgrave Manor, which is
-## built far below the building (MANOR_Y: nothing of either is ever drawn, lit or heard from the
-## other, and every question asked by height alone still has one answer).
+## Level 3, the roof, is on top; its helicopter comes down in Level 4, Kettle Hollow (the car chase),
+## and the road out of town goes on to Level 5, Ashgrave Manor. Both are built far below the building
+## (TOWN_Y under MANOR_Y: nothing of one is ever drawn, lit or heard from another, and every
+## question asked by height alone still has one answer).
 ## This node is the "level" the rest of the game talks to (group "level"): floors, layoffs,
 ## regroups, scare pools. It forwards each question to whichever level a position is in.
 
@@ -15,6 +16,9 @@ const REGROUP_COOLDOWN_MS: int = 15000
 const CULL_INTERVAL: float = 0.25  # s between local visibility passes
 const MANOR_Y: float = -600.0  # m: the manor's ground
 const MANOR_TOP: float = 100.0  # m over the manor's ground that still counts as the manor
+const TOWN_Y: float = -1500.0  # m: Kettle Hollow's streets
+const TOWN_TOP: float = 300.0  # m over the town's streets that still counts as the town
+const CRASH_SECONDS: float = 1.4  # s into the black before the Line is in the cars
 const DEPART_SECONDS: float = 2.4  # s the helicopter climbs away with the Line before the fade
 const AIRLIFT_FADE: float = 1.1  # s into the fade to black when the Line is set down at the manor
 
@@ -22,7 +26,8 @@ var seed_value: int = YellowRooms.DEFAULT_SEED  # set before add_child; the offi
 var yellow: YellowRooms
 var pizzeria: Pizzeria
 var lot: HordeArena  # Level 3's first block, on the roof: the pizzeria's prop-loft hatch climbs out onto its pad
-var manor: Manor  # Level 4, far below: the roof's helicopter sets the Line down at its stables
+var town: Town  # Level 4, far below: the roof's helicopter comes down here, and the cars race out
+var manor: Manor  # Level 5, far below: the road out of town ends at its stables
 var last_layoff_msec: int = -100000
 var spawn_position: Vector3 = Vector3.ZERO
 var spawn_facing: float = PI
@@ -65,6 +70,14 @@ func _ready() -> void:
 	pizzeria.top_y = roof_y - 0.5
 	pizzeria.roof = Callable(self, "_climb_to_roof")
 	lot.airlift = Callable(self, "_airlift")
+	town = Town.new()
+	town.name = "Town"
+	town.seed_value = seed_value
+	town.origin = Vector3(0.0, TOWN_Y, 0.0)
+	town.checkpoint_index = town_checkpoint_index()
+	town.escaped = Callable(self, "_drive_out")
+	town.layoff = Callable(self, "request_layoff")
+	add_child(town)
 	manor = Manor.new()
 	manor.name = "Manor"
 	manor.embedded = true
@@ -77,6 +90,8 @@ func _ready() -> void:
 	test_points.merge(pizzeria.test_points)
 	for key in lot.test_points:
 		test_points["l_" + String(key)] = lot.test_points[key]
+	for key in town.test_points:
+		test_points[String(key)] = town.test_points[key]
 	for key in manor.test_points:
 		test_points[String(key) if String(key).begins_with("m_") else "m_" + String(key)] = manor.test_points[key]
 	refresh_environment()
@@ -88,8 +103,11 @@ func first_objective() -> String:
 
 
 ## Which level a world position is in: 0 The Yellow Rooms, 1 the pizzeria, 2 the roof lot,
-## 3 Ashgrave Manor (everything far enough down).
+## 3 Ashgrave Manor, 4 Kettle Hollow (the indices are the order they were built in, not the order
+## you play them: the town comes between the roof and the manor).
 func level_index_at(p: Vector3) -> int:
+	if _at_town(p.y):
+		return 4
 	if _at_manor(p.y):
 		return 3
 	if p.y > lot.origin.y - 1.0 or lot.in_district(p):
@@ -99,6 +117,8 @@ func level_index_at(p: Vector3) -> int:
 
 func level_at(p: Vector3) -> Node3D:
 	match level_index_at(p):
+		4:
+			return town
 		3:
 			return manor
 		2:
@@ -109,12 +129,18 @@ func level_at(p: Vector3) -> Node3D:
 
 
 func _at_manor(y: float) -> bool:
-	return y < MANOR_Y + MANOR_TOP
+	return y < MANOR_Y + MANOR_TOP and not _at_town(y)
+
+
+func _at_town(y: float) -> bool:
+	return y < TOWN_Y + TOWN_TOP
 
 
 ## Floor number across the whole Stack (B4 = 0 ... B1 = 3, Dining Hall = 4 ... the roof = 8,
 ## one past the stage so the culling never draws the two together; the manor 10, clear of both).
 func floor_of(y: float) -> int:
+	if _at_town(y):
+		return manor_floor() + 2
 	if _at_manor(y):
 		return manor_floor()
 	if y > lot.origin.y - 1.0:
@@ -128,12 +154,19 @@ func manor_floor() -> int:
 	return YellowRooms.FLOORS + Pizzeria.FLOORS + 3
 
 
-## The checkpoint the helicopter sets the Line down on: one past the helipad's.
-func manor_checkpoint_index() -> int:
+## The checkpoint the helicopter comes down on, in Kettle Hollow: one past the helipad's.
+func town_checkpoint_index() -> int:
 	return lot.helipad_checkpoint_index() + 1
 
 
+## The checkpoint the road out of town ends on, at the manor's stables.
+func manor_checkpoint_index() -> int:
+	return lot.helipad_checkpoint_index() + 2
+
+
 func floor_name(y: float) -> String:
+	if _at_town(y):
+		return Town.FLOOR_NAME
 	if _at_manor(y):
 		return Manor.FLOOR_NAME
 	if y > lot.origin.y - 1.0:
@@ -169,24 +202,69 @@ func _rpc_roof_fx() -> void:
 
 
 ## Server: everyone is in the helicopter's cabin (HordeArena._tick_boarding). It climbs away off the
-## tower with the Line aboard, the screen goes black, and it sets them down at the manor's stables:
-## the next checkpoint, the manor's list, its pickups, and the Groundskeeper wakes.
+## tower with the Line aboard, the screen goes black, and it comes down in Kettle Hollow: the Line
+## is in the rally cars on the start line, the next checkpoint, and the Strider coming.
 func _airlift() -> void:
 	if not multiplayer.is_server() or _airlifting:
 		return
 	_airlifting = true
 	GameState.post_message("EVERYONE'S IN. HOLD ON.", 3.0)
 	await get_tree().create_timer(DEPART_SECONDS).timeout
+	_rpc_crash_fx.rpc()
+	await get_tree().create_timer(CRASH_SECONDS).timeout
+	server_crash_in_town()
+	_airlifting = false
+
+
+## Server: the Line into the rally cars at Kettle Hollow's crash site, now (the tests call it straight).
+func server_crash_in_town() -> void:
+	if not multiplayer.is_server():
+		return
+	var bodies := Net.get_chain_bodies()
+	var spots := GameState.line_spots(bodies.size(), town.spawn_position, town.spawn_facing)
+	for i in bodies.size():
+		bodies[i].teleport_to(spots[i] + Vector3(0.0, 0.2, 0.0), town.spawn_facing)
+	# A jetpack over the rooftops is no way to get out of a town: they went down with the helicopter.
+	var took := false
+	for p in Net.get_players():
+		p.set_unchained(false)
+		if p.server_take_items("jetpack"):
+			took = true
+	lot.server_airlifted()
+	GameState.set_checkpoint(town_checkpoint_index(), town.spawn_position, town.spawn_facing, town.first_objective())
+	town.server_arrive()
+	if took:
+		GameState.post_message("The jetpacks went down with the helicopter.", 3.0)
+	_rpc_manor_fx.rpc()
+
+
+## Server: every car is over the finish: out of town, the road goes on through the night to the manor.
+func _drive_out() -> void:
+	if not multiplayer.is_server() or _airlifting:
+		return
+	_airlifting = true
 	_rpc_airlift_fx.rpc()
 	await get_tree().create_timer(AIRLIFT_FADE).timeout
 	server_land_at_manor()
 	_airlifting = false
 
 
+@rpc("authority", "call_local", "reliable")
+func _rpc_crash_fx() -> void:
+	Sfx.play(self, "boom", 2.0, 0.6)
+	var me := Net.get_local_player()
+	if me != null:
+		me.add_shake(0.8)
+	var hud := get_tree().get_first_node_in_group("hud")
+	if hud != null and hud.has_method("show_card"):
+		hud.call("show_card", "KETTLE HOLLOW\nThe helicopter comes down at the edge of a town.\nSomething huge is already running.")
+
+
 ## Server: the Line onto the manor's stables, now (the tests and the bench call it straight).
 func server_land_at_manor() -> void:
 	if not multiplayer.is_server():
 		return
+	town.server_depart()  # out of the cars
 	var spawn := manor.spawn_position
 	var facing := manor.spawn_facing
 	var bodies := Net.get_chain_bodies()
@@ -219,6 +297,9 @@ func server_resume(index: int) -> void:
 	if index >= manor_checkpoint_index():
 		server_land_at_manor()
 		return
+	if index >= town_checkpoint_index():
+		server_crash_in_town()
+		return
 	if index >= lot.checkpoint_index:
 		_climb_to_roof()
 		if index == lot.checkpoint_index:
@@ -243,7 +324,7 @@ func _checkpoint(index: int) -> Checkpoint:
 func _rpc_airlift_fx() -> void:
 	var hud := get_tree().get_first_node_in_group("hud")
 	if hud != null and hud.has_method("show_card"):
-		hud.call("show_card", "ASHGRAVE MANOR\nThe helicopter sets you down in the fog\nand is gone.")
+		hud.call("show_card", "ASHGRAVE MANOR\nThe road out of town runs out of petrol\nat an estate in the fog.")
 
 
 @rpc("authority", "call_local", "reliable")
@@ -267,6 +348,8 @@ func is_safe_spot(p: Vector3) -> bool:
 ## Underside of the ceiling over a position (for falling tiles).
 func ceiling_y(p: Vector3) -> float:
 	match level_index_at(p):
+		4:
+			return town.ceiling_y(p)
 		3:
 			return manor.ceiling_y(p)
 		2:
@@ -279,6 +362,8 @@ func ceiling_y(p: Vector3) -> float:
 ## The procedural scares that make sense where the target stands: [[kind, weight], ...].
 func scare_pool(p: Vector3) -> Array:
 	match level_index_at(p):
+		4:
+			return []  # the chase is scare enough
 		3:
 			return Manor.SCARE_POOL
 		2:
@@ -290,7 +375,7 @@ func scare_pool(p: Vector3) -> Array:
 
 ## The roof paces its own scares (RoofDread); the building's are the ScareDirector's.
 func paces_own_scares(p: Vector3) -> bool:
-	return level_index_at(p) == 2
+	return level_index_at(p) == 2 or level_index_at(p) == 4
 
 
 ## A level's own scare visuals (the pizzeria's); the office has none of its own.
@@ -307,6 +392,8 @@ func refresh_environment() -> void:
 	var env := LevelKit.make_environment(Settings.quality, lvl)
 	if lvl == 3:
 		env.fog_height += MANOR_Y  # height fog is in world metres, and the manor's ground is down here
+	elif lvl == 4:
+		env.fog_height += TOWN_Y
 	_we.environment = env
 
 
@@ -344,7 +431,7 @@ func regroup(requester: String) -> void:
 		return
 	_last_regroup_msec = now
 	_respawn_group()
-	var where := "the stables" if GameState.checkpoint_index >= manor_checkpoint_index() else "the Break Room"
+	var where := "the stables" if GameState.checkpoint_index >= manor_checkpoint_index() else ("the start line" if GameState.checkpoint_index >= town_checkpoint_index() else "the Break Room")
 	GameState.post_message("%s called everyone back to %s." % [requester, where], 3.5)
 
 
@@ -359,6 +446,8 @@ func _respawn_group() -> void:
 	pizzeria.server_on_respawn()
 	if GameState.checkpoint_index >= manor_checkpoint_index():
 		manor.server_on_respawn()
+	elif GameState.checkpoint_index >= town_checkpoint_index():
+		town.server_on_respawn()
 	elif GameState.checkpoint_index >= lot.checkpoint_index:
 		lot.server_on_respawn()
 
@@ -374,7 +463,8 @@ func _physics_process(_delta: float) -> void:
 	for b in Net.get_chain_bodies():
 		var y := b.global_position.y
 		var at_manor := _at_manor(y)
-		if y < (MANOR_Y if at_manor else 0.0) + KILL_Y:
+		var floor_y := TOWN_Y if _at_town(y) else (MANOR_Y if at_manor else 0.0)
+		if y < floor_y + KILL_Y:
 			request_layoff("Someone fell off the edge of the world. Somehow." if at_manor else "Someone fell out of the building. Somehow.")
 			break
 
@@ -398,6 +488,7 @@ func _process(delta: float) -> void:
 	var lvl := level_index_at(cam.global_position)
 	lot.set_shown(lvl == 2)
 	manor.set_shown(lvl == 3)
+	town.set_shown(lvl == 4)
 	if lvl != _local_level:
 		_local_level = lvl
 		refresh_environment()

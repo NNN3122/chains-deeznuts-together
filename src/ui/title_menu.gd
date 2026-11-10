@@ -14,7 +14,7 @@ var _join_box: VBoxContainer
 var _title: Label
 var _footer: Label
 var _level_button: Button
-var _choice: int = 0  # what PLAY SOLO / HOST build: 0 the building, 1 the roof on its own, 2 the manor (Level 4), 3 Continue
+var _choice: int = 0  # what PLAY SOLO / HOST build: 0 the building, 1 the roof on its own, 2 the manor (Level 5), 3 the car chase (Level 4, in the building), 4 Continue
 var _run: Dictionary = {}  # the saved building run (RunSave), or {} when there's nothing to continue
 var _t: float = 0.0
 
@@ -100,7 +100,7 @@ func _process(delta: float) -> void:
 	# The sign is on the same dodgy circuit as everything else.
 	var f := sin(_t * 17.0) * sin(_t * 5.3)
 	_title.modulate.a = 0.35 if f > 0.93 else 1.0
-	var where: String = ["Levels 1-4 of 6: The Yellow Rooms, the Night Shift, the roof, Ashgrave Manor", "Level 3 of 6 straight in: the roof lot", "Level 4 of 6 straight in: Ashgrave Manor", "Your last run, the same building: %d layoffs so far" % int(_run.get("wipes", 0))][_choice]
+	var where: String = ["Levels 1-5 of 7: The Yellow Rooms, the Night Shift, the roof, Kettle Hollow, Ashgrave Manor", "Level 3 of 7 straight in: the roof lot", "Level 5 of 7 straight in: Ashgrave Manor", "Level 4 of 7 straight in: the car chase out of Kettle Hollow", "Your last run, the same building: %d layoffs so far" % int(_run.get("wipes", 0))][_choice]
 	_footer.text = "%s   |   Remote Controls: %s (Settings)   |   Esc pauses in game   |   build %s" % [where, "ON" if Settings.remote_mode else "OFF", Net.get_build_id()]
 
 
@@ -109,7 +109,8 @@ func show_status(text: String) -> void:
 
 
 ## Which world PLAY SOLO and HOST build: the building (a new layout every run), the roof on
-## its own, or Ashgrave Manor (Level 4, for testing it straight in). The button cycles them.
+## its own, Ashgrave Manor (Level 5) or the car chase (Level 4), for testing them straight in. The
+## button cycles them.
 func arena_selected() -> bool:
 	return _choice == 1
 
@@ -118,9 +119,14 @@ func manor_selected() -> bool:
 	return _choice == 2
 
 
+## The car chase straight in: a new building, flown straight to Kettle Hollow's start line.
+func town_selected() -> bool:
+	return _choice == 3
+
+
 ## Pick the last building run up at its checkpoint (RunSave). Offered only while there is one.
 func continue_selected() -> bool:
-	return _choice == 3 and not _run.is_empty()
+	return _choice == 4 and not _run.is_empty()
 
 
 ## Reads the save again (a run just ended, or saved). select: put the button on CONTINUE when
@@ -128,14 +134,14 @@ func continue_selected() -> bool:
 func refresh_continue(select: bool) -> void:
 	_run = RunSave.load_run()
 	if not _run.is_empty() and select:
-		_choice = 3
-	elif _run.is_empty() and _choice == 3:
+		_choice = 4
+	elif _run.is_empty() and _choice == 4:
 		_choice = 0
 	_refresh_level_button()
 
 
 func _choices() -> int:
-	return 3 if _run.is_empty() else 4
+	return 4 if _run.is_empty() else 5
 
 
 func set_choice(c: int) -> void:
@@ -148,13 +154,14 @@ func _on_level_toggle() -> void:
 
 
 func _refresh_level_button() -> void:
-	if _level_button != null and _choice == 3:
+	if _level_button != null and _choice == 4:
 		_level_button.text = "CONTINUE:  %s  (saved %s)" % [RunSave.place(int(_run.get("checkpoint", 0))).to_upper(), RunSave.age(int(_run.get("saved_unix", 0)))]
 	elif _level_button != null:
 		_level_button.text = [
 			"START:  THE BUILDING, B4  (a new layout every run)",
 			"START:  THE ROOF, LEVEL 3  (Carrow Heights, straight in)",
-			"START:  ASHGRAVE MANOR, LEVEL 4  (straight in)",
+			"START:  ASHGRAVE MANOR, LEVEL 5  (straight in)",
+			"START:  KETTLE HOLLOW, LEVEL 4  (the car chase, straight in)",
 		][_choice]
 
 

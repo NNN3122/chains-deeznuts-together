@@ -16,6 +16,7 @@ static var fullscreen: bool = false
 static var quality: int = 2  # 0 low, 1 medium, 2 high
 static var brightness: float = 1.0  # post-process brightness; dark scenes turn to mud over a video stream
 static var show_fps: bool = false
+static var body_cam: bool = true  # the picture through a chest camera: fisheye, fringing, grain, a timestamp
 static var first_person: bool = false  # the camera you start with; V still flips it in play
 static var captions: bool = true  # on-screen captions for important sounds, with direction
 static var hud_mode: int = 0  # 0 auto (shows only when needed), 1 always, 2 off (messages only)
@@ -46,6 +47,7 @@ static func load_settings() -> void:
 	quality = int(cfg.get_value("video", "quality", quality))
 	brightness = float(cfg.get_value("video", "brightness", brightness))
 	show_fps = bool(cfg.get_value("video", "show_fps", show_fps))
+	body_cam = bool(cfg.get_value("video", "body_cam", body_cam))
 	first_person = bool(cfg.get_value("video", "first_person", first_person))
 	captions = bool(cfg.get_value("audio", "captions", captions))
 	hud_mode = clampi(int(cfg.get_value("video", "hud_mode", hud_mode)), 0, 2)
@@ -68,6 +70,7 @@ static func save_settings() -> void:
 	cfg.set_value("video", "quality", quality)
 	cfg.set_value("video", "brightness", brightness)
 	cfg.set_value("video", "show_fps", show_fps)
+	cfg.set_value("video", "body_cam", body_cam)
 	cfg.set_value("video", "first_person", first_person)
 	cfg.set_value("audio", "captions", captions)
 	cfg.set_value("video", "hud_mode", hud_mode)

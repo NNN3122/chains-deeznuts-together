@@ -57,7 +57,9 @@ static func place(index: int) -> String:
 		return "Level 3, roof %d" % HordeArena.CHECKPOINT_ROOFS[r - 1]
 	if r == HordeArena.CHECKPOINT_ROOFS.size() + 1:
 		return "Level 3, the helipad"
-	return "Level 4, Ashgrave Manor"
+	if r == HordeArena.CHECKPOINT_ROOFS.size() + 2:
+		return "Level 4, Kettle Hollow"
+	return "Level 5, Ashgrave Manor"
 
 
 ## "2 hours ago", "yesterday", for the title.

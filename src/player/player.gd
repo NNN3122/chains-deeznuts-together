@@ -55,6 +55,7 @@ const ITEM_SLOTS: int = 3  # the ones pickups go in
 const KEY_SLOT: int = 3  # the Shackle Key's own (the second player clocks in with it; 4 selects it)
 const KEY_HOLDER: int = 1  # join index that clocks in with the Shackle Key: the second player
 const SFLAG_UNCHAINED: int = 2048  # off the Line (the Shackle Key)
+const SFLAG_SEATED: int = 4096  # riding in a seat (a rally car): the body is hidden inside it
 const SLIDE_MIN_SPEED: float = 4.5  # m/s: you have to be sprinting for Ctrl to drop you into a slide (a walk is 4.2)
 const SLIDE_SPEED: float = 8.4  # m/s at the start of a slide (a sprint is 7)
 const SLIDE_TIME: float = 1.0  # s the slide carries before it ends
@@ -641,7 +642,10 @@ func _update_visuals(delta: float) -> void:
 	_down_amt = lerpf(_down_amt, down_want, 1.0 - exp(-10.0 * delta))
 	model.rotation.x = 1.45 * _down_amt
 	# Flashlight beam follows your view (local) or the replicated aim (everyone else).
-	var on := held_item_id == "flashlight" and using
+	var seated := (synced_flags & SFLAG_SEATED) != 0
+	model.visible = not seated  # inside a car: its glass is dark, and a body poking through the roof isn't
+	_name_label.visible = not seated and not is_local
+	var on := held_item_id == "flashlight" and using and not seated
 	_flashlight.visible = on
 	if on:
 		_flashlight.light_volumetric_fog_energy = beam_fog
@@ -688,6 +692,8 @@ func _on_landed(strength: float) -> void:
 
 func _send_input() -> void:
 	var raw := input.move_vector()
+	if (synced_flags & SFLAG_SEATED) != 0:
+		raw.x = clampf(raw.x + input._axis("turn_left", "turn_right"), -1.0, 1.0)  # at the wheel the turn keys steer too
 	var dir := Vector3(raw.x, 0.0, raw.y).rotated(Vector3.UP, _yaw)
 	var move := Vector2(dir.x, dir.z).limit_length(1.0)
 	var flags := 0
@@ -783,18 +789,24 @@ func _server_tick(delta: float) -> void:
 	_jump_buffer = maxf(0.0, _jump_buffer - delta)
 	_tick_buff(delta)
 	_tick_items(delta)
-	match state:
-		State.MANTLE:
-			_tick_mantle(delta)
-		State.GRABBED:
-			velocity = Vector3.ZERO
-			external_velocity = Vector3.ZERO
-			_tick_orphan_grab(delta)
-		_:
-			if _knock_t > 0.0:
-				_tick_knocked(delta)
-			else:
-				_tick_normal(delta)
+	var riding := ride_tick()
+	if riding:
+		body_yaw = seat.global_rotation.y
+		state = State.NORMAL
+		_knock_t = 0.0
+	else:
+		match state:
+			State.MANTLE:
+				_tick_mantle(delta)
+			State.GRABBED:
+				velocity = Vector3.ZERO
+				external_velocity = Vector3.ZERO
+				_tick_orphan_grab(delta)
+			_:
+				if _knock_t > 0.0:
+					_tick_knocked(delta)
+				else:
+					_tick_normal(delta)
 	_tick_noise(delta, dragged)
 	synced_position = global_position
 	synced_yaw = body_yaw
@@ -819,6 +831,8 @@ func _server_tick(delta: float) -> void:
 		f |= SFLAG_WINDED
 	if unchained:
 		f |= SFLAG_UNCHAINED
+	if riding:
+		f |= SFLAG_SEATED
 	if _knock_t > 0.0 and state == State.NORMAL:
 		f |= SFLAG_KNOCKED
 		if _downed:
@@ -831,7 +845,7 @@ func _server_tick(delta: float) -> void:
 ## The selected item gets the use input (held, plus any taps that arrived); the others idle
 ## so their cooldowns and fuel still tick.
 func _tick_items(delta: float) -> void:
-	var hands_free := state != State.GRABBED and _knock_t <= 0.0  # nothing in your hands works while you're thrown
+	var hands_free := state != State.GRABBED and _knock_t <= 0.0 and seat == null  # nothing in your hands works while you're thrown or sat in a car (the navigator's F is the car's gun)
 	var use_held := (input_flags & FLAG_USE) != 0 and hands_free
 	var taps := _use_taps if hands_free else 0
 	_use_taps = 0

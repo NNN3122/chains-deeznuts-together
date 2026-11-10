@@ -12,7 +12,8 @@ extends Node
 ##   --shots=DIR                                              save screenshots (tests/screenshots.gd)
 ##   --gallery=DIR                                            close-ups of the player and every monster, lit (tests/screenshots.gd)
 ##   --arena [--horde=N]           the Loading Lot: the Level 3 horde test block instead of the building
-##   --manor                       Level 4, Ashgrave Manor, on its own
+##   --manor                       Level 5, Ashgrave Manor, on its own
+##   --town                        (the building) start at Level 4, Kettle Hollow's car chase
 ##   --seed=N                      build the building from this seed (the title picks a random one;
 ##                                 command-line runs default to the fixed test seed)
 ##   --bench=SECONDS               print the frame rate after that long, then quit
@@ -46,6 +47,7 @@ var _bench_sample_t: float = 1.0
 var _bench_samples: Array[int] = []
 var _save_runs: bool = false  # this session's building run is the host's to save (RunSave) at every checkpoint
 var _save_forced: bool = false  # --save-path: command-line runs save too (tests)
+const TOWN_START: int = -2  # _continue_run's checkpoint for "straight in at Kettle Hollow"
 var _continue_run: Dictionary = {}  # the run to pick up once the world is up (Continue, --resume)
 
 
@@ -168,6 +170,8 @@ func _handle_cmdline(args: PackedStringArray) -> void:
 			cfg["arena"] = true
 		elif a == "--manor":
 			cfg["manor"] = true
+		elif a == "--town":
+			_continue_run = {"checkpoint": TOWN_START}
 		elif a.begins_with("--horde="):
 			cfg["horde"] = clampi(a.trim_prefix("--horde=").to_int(), 0, Horde.MAX_AGENTS)
 		elif a.begins_with("--seed="):
@@ -230,13 +234,16 @@ func _start(mode: String, player_name: String, ip: String, port: int, from_title
 		_continue_run = {}
 		if mode == "join":
 			Net.world_config = Net.default_world_config()
+		elif title.town_selected():
+			Net.world_config = Net.random_world_config(false, false)
+			_continue_run = {"checkpoint": TOWN_START}
 		elif title.continue_selected():
 			_continue_run = RunSave.load_run()
 			Net.world_config = Net.default_world_config()
 			Net.world_config["seed"] = int(_continue_run.get("seed", YellowRooms.DEFAULT_SEED))  # the same building as last time
 		else:
 			Net.world_config = Net.random_world_config(title.arena_selected(), title.manor_selected())
-	_save_runs = (from_title or _save_forced) and mode != "join" and Net.level_choice(Net.world_config) == 0
+	_save_runs = (from_title or _save_forced) and mode != "join" and Net.level_choice(Net.world_config) == 0 and int(_continue_run.get("checkpoint", 0)) != TOWN_START
 	_rejoined = false
 	_join_ip = ip
 	_join_port = port
@@ -428,7 +435,10 @@ func _resume_run(stack: LevelStack, run: Dictionary) -> void:
 		await get_tree().physics_frame
 	if world == null or not is_instance_valid(stack) or not multiplayer.is_server():
 		return
-	var index := clampi(int(run.get("checkpoint", 0)), 0, stack.manor_checkpoint_index())
+	var index := int(run.get("checkpoint", 0))
+	if index == TOWN_START:
+		index = stack.town_checkpoint_index()
+	index = clampi(index, 0, stack.manor_checkpoint_index())
 	GameState.wipes = int(run.get("wipes", 0))
 	GameState.run_seconds = float(run.get("seconds", 0.0))
 	stack.server_resume(index)
