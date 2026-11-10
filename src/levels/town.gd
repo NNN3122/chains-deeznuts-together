@@ -80,6 +80,13 @@ const ROAD_BLOCKS: int = 7  # things across half the road on the mountain
 const FALL_LAYOFF: float = 6.0  # m under the road: that car's gone over
 const PACE_RADIUS: Array[float] = [0.0, 13.0, 18.0, 24.0, 31.0]  # grade 1 (a hairpin) to 4: tighter than this; looser is a 5
 const PACE_WORDS: Array[String] = ["", "HAIRPIN", "2", "3", "4", "5"]
+const CAM_BACK: float = 6.2  # m the chase camera sits behind the car at rest
+const CAM_BACK_FAST: float = 1.8  # m more at top speed
+const CAM_UP: float = 2.7  # m above the road
+const CAM_TURN: float = 5.5  # /s its heading eases round after the car
+const CAM_SLIDE: float = 0.5  # of the way from the car's nose to where it is really going that it looks
+const CAM_FOV: float = 64.0
+const CAM_FOV_FAST: float = 18.0  # degrees wider at top speed
 const CALL_WORDS: Array[String] = ["", "LEFT", "RIGHT", "STRAIGHT ON", "BRAKE!", "GO GO GO"]
 const TASKS: Array[String] = [
 	"Two to a car: the DRIVER drives, the NAVIGATOR has the map and calls every turn",
@@ -131,6 +138,9 @@ var _moon: DirectionalLight3D
 var _wind: AudioStreamPlayer
 var _fires: Array[OmniLight3D] = []
 var _cam: Camera3D
+var _cam_yaw: float = 0.0  # the chase camera's heading, eased
+var _cam_far: float = 6.6  # m behind the car, eased
+var _cam_clear: float = 1.0  # of that distance a wall leaves it
 var _panel: RallyPanel
 var _pairs_on: bool = false
 var _run_t: float = 0.0  # server: s since GO
@@ -1595,18 +1605,16 @@ func _process(delta: float) -> void:
 	if _cam == null:
 		_cam = Camera3D.new()
 		_cam.name = "ChaseCam"
-		_cam.fov = 70.0
+		_cam.fov = CAM_FOV
 		_cam.far = 400.0
 		add_child(_cam)
-		_cam.global_transform = _cam_target(car)
+		var f0 := -car.view_xform().basis.z
+		_cam_yaw = atan2(-f0.x, -f0.z)
+		_cam_far = CAM_BACK
+		_cam_clear = 1.0
 	if not debug_cam_free:
 		_cam.current = true
-	var want := _cam_target(car)
-	var k := clampf(delta * 6.0, 0.0, 1.0)
-	_cam.global_position = _cam.global_position.lerp(want.origin, k)
-	_cam.global_basis = _cam.global_basis.slerp(want.basis, clampf(delta * 8.0, 0.0, 1.0)).orthonormalized()
-	# Speed is something you see: the view widens and the car pulls away from the camera a little.
-	_cam.fov = lerpf(_cam.fov, 66.0 + 20.0 * clampf(absf(car.speed) / RallyCar.MAX_SPEED, 0.0, 1.0), clampf(delta * 3.0, 0.0, 1.0))
+	_place_camera(car, delta)
 	if _panel == null:
 		var hud := get_tree().get_first_node_in_group("hud")
 		if hud != null:
@@ -1615,15 +1623,37 @@ func _process(delta: float) -> void:
 			hud.add_child(_panel)
 
 
-func _cam_target(car: RallyCar) -> Transform3D:
-	var fwd := -car.global_basis.z
+## The chase camera, the way racing games hang one: fixed to the car as it is DRAWN this frame (never
+## chasing the physics body, which steps), a set distance behind along a heading that eases round
+## after the car and leans toward where the car is actually going (so in a slide you see the car's
+## angle), further back and wider the faster it goes, and pulled in when a wall is in the way.
+func _place_camera(car: RallyCar, delta: float) -> void:
+	var xf := car.view_xform()
+	var fwd := -xf.basis.z
 	fwd.y = 0.0
 	fwd = fwd.normalized()
+	var aim := fwd
+	var vel := car.ground_velocity()
+	vel.y = 0.0
+	if car.speed > 4.0 and vel.length() > 4.0:
+		aim = fwd.slerp(vel.normalized(), CAM_SLIDE)
+	_cam_yaw = lerp_angle(_cam_yaw, atan2(-aim.x, -aim.z), 1.0 - exp(-CAM_TURN * delta))
 	var pace := clampf(absf(car.speed) / RallyCar.MAX_SPEED, 0.0, 1.0)
-	var right := Vector3(-fwd.z, 0.0, fwd.x)
-	var eye := car.global_position - fwd * (6.6 + 1.6 * pace) + Vector3.UP * (3.0 - 0.5 * pace)
-	var look := car.global_position + fwd * 6.0 + right * tan(car.wheel) * 9.0 + Vector3.UP * 1.0  # it looks into the bend
-	return Transform3D(Basis.looking_at(look - eye, Vector3.UP), eye)
+	_cam_far = lerpf(_cam_far, CAM_BACK + CAM_BACK_FAST * pace + 0.5 * clampf(car.pedal, -1.0, 1.0), 1.0 - exp(-2.5 * delta))  # it drops back under power, closes up under the brakes
+	var dir := Vector3(-sin(_cam_yaw), 0.0, -cos(_cam_yaw))
+	var focus := xf.origin + Vector3.UP * 1.2
+	var eye := xf.origin - dir * _cam_far + Vector3.UP * (CAM_UP - 0.4 * pace)
+	var q := PhysicsRayQueryParameters3D.create(focus, eye, ChainBody.LAYER_WORLD)
+	q.exclude = [car.get_rid()]
+	var hit := get_world_3d().direct_space_state.intersect_ray(q)
+	var clear := 1.0
+	if not hit.is_empty():
+		clear = clampf(focus.distance_to(hit.position) / maxf(focus.distance_to(eye), 0.01) - 0.06, 0.25, 1.0)
+	_cam_clear = minf(clear, _cam_clear + delta * 1.2)  # in at once, back out slowly
+	eye = focus.lerp(eye, _cam_clear)
+	var look := xf.origin + dir * 7.0 + Vector3.UP * 1.0
+	_cam.global_transform = Transform3D(Basis.looking_at(look - eye, Vector3.UP), eye)
+	_cam.fov = lerpf(_cam.fov, CAM_FOV + CAM_FOV_FAST * pace, 1.0 - exp(-3.0 * delta))
 
 
 func _release_camera() -> void:

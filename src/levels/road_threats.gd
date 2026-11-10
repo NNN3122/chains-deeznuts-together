@@ -346,7 +346,7 @@ func _rpc_shot(car: int, at: Vector3, target: int, left: int) -> void:
 	ammo[car] = maxi(0, left)
 	shots_seen += 1
 	var c := town.cars[car]
-	var muzzle := c.global_transform * Vector3(0.95, 1.25, -0.3)
+	var muzzle := c.view_xform() * Vector3(0.95, 1.25, -0.3)
 	Sfx.play_at(self, "shot", muzzle, 4.0, randf_range(0.8, 0.95), 80.0)
 	_flash(muzzle)
 	_tracer(muzzle, at)
@@ -412,11 +412,11 @@ func _process(delta: float) -> void:
 			n.rotation.x = 0.07 * sin(_t * 0.9 + ph * 2.0) + 0.05
 		else:
 			if fly[i] == Fly.DIVE and fly_car[i] >= 0:
-				var glass := town.cars[fly_car[i]].global_transform * GLASS
+				var glass := town.cars[fly_car[i]].view_xform() * GLASS
 				if not multiplayer.is_server():
 					pos[i] = _fly_step(pos[i], glass, delta)
 			elif fly[i] == Fly.LATCHED and fly_car[i] >= 0:
-				pos[i] = town.cars[fly_car[i]].global_transform * GLASS
+				pos[i] = town.cars[fly_car[i]].view_xform() * GLASS
 			var bob := Vector3.UP * (0.35 * sin(_t * 2.1 + ph)) if fly[i] == Fly.HOVER else Vector3.ZERO
 			n.global_position = pos[i] + bob
 			var look := cam.global_position if cam != null and fly[i] == Fly.HOVER else (town.cars[fly_car[i]].global_position if fly_car[i] >= 0 else n.global_position - Vector3.FORWARD)

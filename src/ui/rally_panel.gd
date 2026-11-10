@@ -150,10 +150,10 @@ func _process(delta: float) -> void:
 		_sat_frame += 1
 		if _sat_frame % 2 == 0:
 			_sat_vp.render_target_update_mode = SubViewport.UPDATE_ONCE
-		var fwd := -car.global_basis.z
+		var fwd := -car.view_xform().basis.z
 		fwd.y = 0.0
 		fwd = fwd.normalized()
-		var look_at := car.global_position + fwd * (VIEW * 2.0 * 0.12)
+		var look_at := car.view_xform().origin + fwd * (VIEW * 2.0 * 0.12)
 		_sat_cam.global_transform = Transform3D(Basis.looking_at(Vector3.DOWN, fwd), look_at + Vector3.UP * 200.0)
 		# The next bend's note, for the navigator to read out.
 		var nt := town.next_turn(car.progress, 220.0)
@@ -210,10 +210,10 @@ func _process(delta: float) -> void:
 		_mirror_frame.size = Vector2(mw, mh)
 		_mirror.position = Vector2(6.0, 6.0)
 		_mirror.size = Vector2(mw - 12.0, mh - 12.0)
-		var back := car.global_basis.z
+		var back := car.view_xform().basis.z
 		back.y = 0.0
 		back = back.normalized()
-		var eye := car.global_position + Vector3.UP * 1.55 + back * (RallyCar.LENGTH * 0.5 + 0.2)
+		var eye := car.view_xform().origin + Vector3.UP * 1.55 + back * (RallyCar.LENGTH * 0.5 + 0.2)
 		_mirror_cam.global_transform = Transform3D(Basis.looking_at(back + Vector3.DOWN * 0.06, Vector3.UP), eye)
 	_call.position.y = size.y * 0.16 + (60.0 if show_mirror else 0.0)
 	# The navigator's rounds.
@@ -236,8 +236,8 @@ func _draw_map() -> void:
 	var side := _map.size.x
 	var centre := Vector2(side * 0.5, side * 0.62)
 	var k := side / (VIEW * 2.0)
-	var at := car.global_position - town.origin
-	var yaw := car.global_rotation.y
+	var at := car.view_xform().origin - town.origin
+	var yaw := car.view_xform().basis.get_euler().y
 	var cs := cos(yaw)
 	var sn := sin(yaw)
 	var to_map := func(p: Vector3) -> Vector2:

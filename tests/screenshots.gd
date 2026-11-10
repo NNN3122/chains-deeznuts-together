@@ -377,6 +377,46 @@ func _tour_town() -> void:
 	t.debug_cam_free = false
 	await _wait(0.3)
 	await _capture_to(out_dir.path_join("46c_town_driving.png"))
+	# How smooth the car is on screen: every frame, how far the DRAWN car moved against how far its
+	# speed says it should have, and where it sits in the camera's view. A car drawn only at physics
+	# ticks moves in steps (0 one frame, double the next); a camera chasing it makes it shudder.
+	var steps: Array[float] = []
+	var seen: Array[Vector3] = []
+	var last := car.view_xform().origin
+	var raw_last := car.global_position
+	var raw_steps: Array[float] = []
+	for i in 240:
+		await RenderingServer.frame_pre_draw  # after everything has moved for this frame, the camera too
+		var now := car.view_xform().origin
+		var dt := get_process_delta_time()  # the frame time the engine itself is working to
+		if dt > 0.0005 and absf(car.speed) > 3.0:
+			steps.append(now.distance_to(last) / (absf(car.speed) * dt))
+			seen.append(get_viewport().get_camera_3d().to_local(now))
+			raw_steps.append(car.global_position.distance_to(raw_last) / (absf(car.speed) * dt))
+		last = now
+		raw_last = car.global_position
+	if steps.size() > 20:
+		var mean := 0.0
+		for q in steps:
+			mean += q
+		mean /= float(steps.size())
+		var dev := 0.0
+		var worst := 0.0
+		for q in steps:
+			dev += (q - mean) * (q - mean)
+			worst = maxf(worst, absf(q - mean))
+		var shake := 0.0
+		for i in range(1, seen.size()):
+			shake = maxf(shake, seen[i].distance_to(seen[i - 1]))
+		var raw_mean := 0.0
+		for q in raw_steps:
+			raw_mean += q
+		raw_mean /= float(raw_steps.size())
+		var raw_dev := 0.0
+		for q in raw_steps:
+			raw_dev += (q - raw_mean) * (q - raw_mean)
+		print("[tour] for comparison, the physics body itself (what was drawn and chased before): deviation %.3f" % sqrt(raw_dev / float(raw_steps.size())))
+		print("[tour] smoothness over %d frames at %.0f fps: drawn step / expected step mean %.3f, deviation %.3f, worst %.3f; the car moved at most %.3f m in the camera's view between frames" % [steps.size(), Engine.get_frames_per_second(), mean, sqrt(dev / float(steps.size())), worst, shake])
 	t.debug_cam_free = true
 	await _free_cam("46d_town_streets_above", t.route_point(car.progress - 25.0) + Vector3(0.0, 34.0, 0.0), car.global_position + Vector3(0.0, 0.0, 0.0) + (car.global_position - t.route_point(car.progress - 25.0)) * 1.5)
 	t.debug_cam_free = false

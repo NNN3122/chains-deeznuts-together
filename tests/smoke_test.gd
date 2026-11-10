@@ -4372,3 +4372,245 @@ func _run_client_manor(m: Manor) -> void:
 	_check("client: engine progress, the Groundskeeper's catch and the gate opening replicate, and the escape arrives", saw_progress and saw_grab and saw_open and GameState.escaped,
 		"progress %s, grab %s, gate %s, escaped %s after %.0f s" % [saw_progress, saw_grab, saw_open, GameState.escaped, t])
 	_finish()
+
+
+## The rally car's road test (--town --solo --smoke --smoke-only=drive): the car on an open pad far
+## above the town, put through the manoeuvres a road test uses, with the numbers printed ("[drive]")
+## and the ones that make a car feel right checked. Driven by RallyCar.debug_input (steer right +,
+## throttle + / brake -, handbrake), eight times faster than life.
+func _test_drive() -> void:
+	var t := _stack.town
+	for i in 100:
+		if t.active and t.countdown < 0.0:
+			break
+		await _wait(0.1)
+	t.debug_hold_strider = true
+	var car: RallyCar = t.cars[0]
+	# The keys, pressed for real, with the driver looking somewhere else entirely (v27 read the keys
+	# turned by the look direction: move the mouse and W steered): W is the throttle and only the
+	# throttle, W with A is all of both (not 70% of each), and S is the brake.
+	var was_remote := Settings.remote_mode
+	Settings.remote_mode = false
+	_host.bot_controlled = false
+	_host._yaw = 2.0
+	await _wait(0.2)
+	_key(KEY_W, true, false)
+	await _wait(0.5)
+	var w_pedal := car.pedal
+	var w_wheel := absf(car.wheel)
+	_key(KEY_A, true, false)
+	await _wait(0.5)
+	var wa_pedal := car.pedal
+	var wa_wheel := car.wheel
+	var looked := _host._yaw
+	_key(KEY_W, false, false)
+	_key(KEY_A, false, false)
+	await _wait(0.1)
+	_key(KEY_S, true, false)
+	await _wait(0.35)
+	var s_pedal := car.pedal
+	_key(KEY_S, false, false)
+	await _wait(0.2)
+	_host.bot_controlled = true
+	_bot(Vector2.ZERO, 0.0, 0)
+	Settings.remote_mode = was_remote
+	_check("the real keys drive the car wherever the driver is looking: W is all throttle and no steering, W with A is full throttle and left lock together, S is the brake",
+		w_pedal > 0.95 and w_wheel < 0.01 and wa_pedal > 0.95 and wa_wheel < -0.1 and s_pedal < -0.9,
+		"looking %.1f rad off: W pedal %.2f wheel %.3f; W+A pedal %.2f wheel %.2f; S pedal %.2f" % [looked, w_pedal, w_wheel, wa_pedal, wa_wheel, s_pedal])
+	var pad := StaticBody3D.new()
+	var cs := CollisionShape3D.new()
+	var bs := BoxShape3D.new()
+	bs.size = Vector3(8000.0, 1.0, 8000.0)
+	cs.shape = bs
+	pad.add_child(cs)
+	get_tree().current_scene.add_child(pad)
+	pad.global_position = Vector3(0.0, 2999.5, 0.0)
+	# Eight times faster than life with the same 1/60 s step: eight times the ticks a second, and
+	# time itself eight times faster (a tick's delta is time_scale / ticks per second).
+	Engine.physics_ticks_per_second = 480
+	Engine.time_scale = 8.0
+	Engine.max_physics_steps_per_frame = 32
+	var kmh := 3.6
+	# Off the line, flat out.
+	var s := await _drive(car, 0.0, 32.0, func(_k: float, _c: RallyCar) -> Vector3: return Vector3(0.0, 1.0, 0.0))
+	var t50 := _d_first(s, func(e: Dictionary) -> bool: return e.u >= 50.0 / kmh)
+	var t100 := _d_first(s, func(e: Dictionary) -> bool: return e.u >= 100.0 / kmh)
+	var vmax: float = s[s.size() - 1].u
+	print("[drive] launch: 0-50 km/h %.2f s, 0-100 km/h %.2f s, after 32 s %.0f km/h" % [t50, t100, vmax * kmh])
+	# The brakes from 100.
+	s = await _drive(car, 100.0 / kmh, 6.0, func(_k: float, _c: RallyCar) -> Vector3: return Vector3(0.0, -1.0, 0.0))
+	var t_stop := _d_first(s, func(e: Dictionary) -> bool: return e.u < 0.2)
+	var d_stop := 0.0
+	for e in s:
+		if e.t <= t_stop:
+			d_stop = -e.pos.z
+	print("[drive] brake 100-0: %.2f s, %.1f m; then holding S: %.1f km/h (reverse)" % [t_stop, d_stop, s[s.size() - 1].u * kmh])
+	var brake_reverses: bool = s[s.size() - 1].u < -1.0
+	# Lifting off: it rolls on.
+	s = await _drive(car, 100.0 / kmh, 4.0, func(_k: float, _c: RallyCar) -> Vector3: return Vector3.ZERO)
+	var coast2: float = _d_at(s, 2.0).u * kmh
+	print("[drive] coast from 100: %.0f km/h after 2 s, %.0f after 4 s, rolled %.0f m" % [coast2, s[s.size() - 1].u * kmh, -s[s.size() - 1].pos.z])
+	# A key held hard over at three speeds: how much it turns, and does it hold a line.
+	var circle_g: Array[float] = []
+	var circle_beta: Array[float] = []
+	var circle_wobble: Array[float] = []
+	for v0: float in [10.0, 20.0, 30.0]:
+		s = await _drive(car, v0, 8.0, func(_k: float, c: RallyCar) -> Vector3: return Vector3(1.0, clampf((v0 - c.speed) * 0.8 + 0.35, 0.0, 1.0), 0.0))
+		var g := 0.0
+		var beta := 0.0
+		var rates: Array[float] = []
+		var n := 0
+		var vm := 0.0
+		for e in s:
+			if e.t > 4.5:
+				g += absf(e.u * e.r) / 9.81
+				beta += absf(atan2(e.slip, maxf(e.u, 1.0)))
+				rates.append(e.r)
+				vm += e.u
+				n += 1
+		g /= float(n)
+		beta /= float(n)
+		vm /= float(n)
+		var mean := 0.0
+		for q in rates:
+			mean += q
+		mean /= float(n)
+		var dev := 0.0
+		for q in rates:
+			dev += (q - mean) * (q - mean)
+		dev = sqrt(dev / float(n)) / maxf(absf(mean), 0.001)
+		circle_g.append(g)
+		circle_beta.append(beta)
+		circle_wobble.append(dev)
+		print("[drive] full lock at %.0f km/h: %.2f g, radius %.0f m, body slip %.1f deg, yaw wobble %.1f%%, skid %.2f" % [vm * kmh, g, vm / maxf(absf(mean), 0.001), rad_to_deg(beta), dev * 100.0, s[s.size() - 1].skid])
+	# Turn in and let go at 90: it should come straight by itself, without weaving.
+	s = await _drive(car, 25.0, 4.0, func(k: float, c: RallyCar) -> Vector3: return Vector3(1.0 if k < 1.0 else 0.0, 1.0 if c.speed < 25.0 else 0.0, 0.0))
+	var settle := _d_settle(s, 1.0)
+	var weave := _d_sign_changes(s, 1.0)
+	print("[drive] turn in 1 s and let go at 90: max body slip %.1f deg, straight again %.2f s after letting go, %d weaves" % [rad_to_deg(_d_max_beta(s)), settle, weave])
+	# Left-right flick at 108.
+	s = await _drive(car, 30.0, 4.0, func(k: float, c: RallyCar) -> Vector3: return Vector3(1.0 if k < 0.5 else (-1.0 if k < 1.0 else 0.0), 1.0 if c.speed < 30.0 else 0.0, 0.0))
+	var flick_beta := _d_max_beta(s)
+	var flick_settle := _d_settle(s, 1.0)
+	print("[drive] flick right-left at 108: max body slip %.1f deg, settled %.2f s after, %d weaves" % [rad_to_deg(flick_beta), flick_settle, _d_sign_changes(s, 1.0)])
+	# Braking hard while turning at 100.
+	s = await _drive(car, 28.0, 2.0, func(_k: float, _c: RallyCar) -> Vector3: return Vector3(1.0, -1.0, 0.0))
+	var trail_beta := _d_max_beta(s)
+	print("[drive] brake and turn together from 100: max body slip %.1f deg, turned %.0f deg, down to %.0f km/h in 2 s" % [rad_to_deg(trail_beta), absf(rad_to_deg(_d_heading(s))), s[s.size() - 1].u * kmh])
+	# Lifting off mid-bend at 90.
+	s = await _drive(car, 25.0, 5.5, func(k: float, c: RallyCar) -> Vector3: return Vector3(1.0, (1.0 if c.speed < 25.0 else 0.0) if k < 3.0 else 0.0, 0.0))
+	var lift_beta := _d_max_beta(s)
+	print("[drive] lift off mid-bend at 90: max body slip %.1f deg" % rad_to_deg(lift_beta))
+	# Full throttle out of a slow bend.
+	s = await _drive(car, 8.0, 4.0, func(_k: float, _c: RallyCar) -> Vector3: return Vector3(1.0, 1.0, 0.0))
+	var power_beta := _d_max_beta(s)
+	print("[drive] flat out with full lock from 30: max body slip %.1f deg, %.0f km/h after 4 s" % [rad_to_deg(power_beta), s[s.size() - 1].u * kmh])
+	# The handbrake at 60: the back comes round, and it can be caught.
+	s = await _drive(car, 17.0, 4.0, func(k: float, _c: RallyCar) -> Vector3: return Vector3(1.0 if k < 1.0 else 0.0, 0.0 if k < 1.0 else 1.0, 1.0 if k < 1.0 else 0.0))
+	var hand_turn := absf(rad_to_deg(_d_heading_at(s, 1.0)))
+	var hand_beta := _d_max_beta(s)
+	var hand_end := absf(atan2(s[s.size() - 1].slip, maxf(s[s.size() - 1].u, 1.0)))
+	print("[drive] handbrake turn at 60, 1 s: turned %.0f deg, max body slip %.0f deg, 3 s later slip %.1f deg at %.0f km/h" % [hand_turn, rad_to_deg(hand_beta), rad_to_deg(hand_end), s[s.size() - 1].u * kmh])
+	# Flat out in a straight line, hands off.
+	s = await _drive(car, 36.0, 4.0, func(_k: float, _c: RallyCar) -> Vector3: return Vector3(0.0, 1.0, 0.0))
+	var wander := 0.0
+	for e in s:
+		wander = maxf(wander, absf(e.pos.x))
+	print("[drive] hands off at 130: wandered %.3f m sideways in 4 s" % wander)
+	# Pulling away on full lock: through the change from turning by geometry to turning by grip.
+	s = await _drive(car, 0.0, 7.0, func(_k: float, _c: RallyCar) -> Vector3: return Vector3(1.0, 0.45, 0.0))
+	var jerk := 0.0
+	for i in range(1, s.size()):
+		jerk = maxf(jerk, absf(s[i].r - s[i - 1].r))
+	print("[drive] pulling away on full lock: biggest jump in turn rate between ticks %.3f rad/s, %.0f km/h after 7 s" % [jerk, s[s.size() - 1].u * kmh])
+	# A tap over a remote desktop: 0.45 of a key for 0.65 s at 100.
+	s = await _drive(car, 28.0, 3.0, func(k: float, c: RallyCar) -> Vector3: return Vector3(0.45 if k < 0.65 else 0.0, 1.0 if c.speed < 28.0 else 0.0, 0.0))
+	print("[drive] a remote-desktop tap (0.45 for 0.65 s) at 100: moved %.1f m sideways over %.0f m, heading changed %.1f deg" % [absf(s[s.size() - 1].pos.x), -s[s.size() - 1].pos.z, absf(rad_to_deg(_d_heading(s)))])
+	Engine.physics_ticks_per_second = 60
+	Engine.time_scale = 1.0
+	Engine.max_physics_steps_per_frame = 8
+	car.debug_input = null
+	pad.queue_free()
+	_check("the car pulls like a car: 0-100 km/h in 5 to 8 s, 0-50 in 1.8 to 3.5, and 120 to 142 flat out", t100 > 5.0 and t100 < 8.0 and t50 > 1.8 and t50 < 3.5 and vmax * kmh > 120.0 and vmax * kmh < 142.0,
+		"0-50 %.2f s, 0-100 %.2f s, top %.0f km/h" % [t50, t100, vmax * kmh])
+	_check("it stops like a car (100-0 in 35 to 50 m), S held at a standstill is reverse, and off the throttle it rolls on (over 85 km/h two seconds after lifting at 100)", d_stop > 35.0 and d_stop < 50.0 and brake_reverses and coast2 > 85.0,
+		"%.1f m in %.2f s, reverse %s, %.0f km/h after 2 s of coasting" % [d_stop, t_stop, brake_reverses, coast2])
+	_check("a key held hard over is the most turn there is at every speed (0.85 to 1.15 g), not a slide (body slip under 8 degrees), and steady (yaw wobble under 4%)",
+		circle_g.min() > 0.85 and circle_g.max() < 1.15 and circle_beta.max() < deg_to_rad(8.0) and circle_wobble.max() < 0.04,
+		"g %s, slip (rad) %s, wobble %s" % [circle_g, circle_beta, circle_wobble])
+	_check("it is stable: let go and it runs straight within a second without weaving; a flick, braking in a bend, lifting off and full power on lock never spin it (body slip under 20 degrees); hands off flat out it holds its line",
+		settle < 1.0 and weave <= 1 and flick_settle < 1.3 and flick_beta < deg_to_rad(20.0) and trail_beta < deg_to_rad(20.0) and lift_beta < deg_to_rad(20.0) and power_beta < deg_to_rad(20.0) and wander < 0.05 and jerk < 0.12,
+		"settle %.2f s (%d weaves), flick %.1f deg / %.2f s, trail %.1f, lift %.1f, power %.1f deg, wander %.3f m, jerk %.3f" % [settle, weave, rad_to_deg(flick_beta), flick_settle, rad_to_deg(trail_beta), rad_to_deg(lift_beta), rad_to_deg(power_beta), wander, jerk])
+	_check("the handbrake brings the back round (over 60 degrees of turn in a second at 60 km/h, the body well sideways) and the car comes back straight afterwards", hand_turn > 60.0 and hand_beta > deg_to_rad(15.0) and hand_end < deg_to_rad(6.0),
+		"turned %.0f deg, max slip %.0f deg, %.1f deg 3 s later" % [hand_turn, rad_to_deg(hand_beta), rad_to_deg(hand_end)])
+
+
+## One manoeuvre: the car put on the pad heading -z at `v0` m/s, driven for `seconds` by
+## `control(seconds so far, car) -> Vector3`, sampled every physics tick.
+func _drive(car: RallyCar, v0: float, seconds: float, control: Callable) -> Array:
+	car.debug_input = Vector3.ZERO
+	car.server_park(Transform3D(Basis.IDENTITY, Vector3(0.0, 3000.02, 0.0)))
+	car.speed = v0
+	for g in RallyCar.GEAR_TOP.size():
+		car.gear = g
+		if v0 < RallyCar.GEAR_TOP[g] * RallyCar.SHIFT_UP:
+			break
+	var out: Array = []
+	var ticks := int(seconds * 60.0)
+	for i in ticks:
+		var k := float(i) / 60.0
+		car.debug_input = control.call(k, car)
+		await get_tree().physics_frame
+		out.append({"t": k, "u": car.speed, "slip": car.slip, "r": car.yaw_rate, "pos": car.global_position, "yaw": car.global_rotation.y, "skid": car.skid})
+	return out
+
+
+func _d_first(s: Array, test: Callable) -> float:
+	for e in s:
+		if test.call(e):
+			return e.t
+	return INF
+
+
+func _d_at(s: Array, at: float) -> Dictionary:
+	for e in s:
+		if e.t >= at:
+			return e
+	return s[s.size() - 1]
+
+
+func _d_max_beta(s: Array) -> float:
+	var m := 0.0
+	for e in s:
+		if e.u > 3.0:
+			m = maxf(m, absf(atan2(e.slip, e.u)))
+	return m
+
+
+## Seconds after `from` until the car is running straight and stays that way.
+func _d_settle(s: Array, from: float) -> float:
+	var last_bad := from
+	for e in s:
+		if e.t >= from and (absf(e.r) > 0.03 or absf(e.slip) > 0.3):
+			last_bad = e.t
+	return last_bad - from
+
+
+func _d_sign_changes(s: Array, from: float) -> int:
+	var n := 0
+	var prev := 0.0
+	for e in s:
+		if e.t < from or absf(e.r) < 0.02:
+			continue
+		if prev != 0.0 and signf(e.r) != signf(prev):
+			n += 1
+		prev = e.r
+	return n
+
+
+func _d_heading(s: Array) -> float:
+	return angle_difference(s[0].yaw, s[s.size() - 1].yaw)
+
+
+func _d_heading_at(s: Array, at: float) -> float:
+	return angle_difference(s[0].yaw, _d_at(s, at).yaw)

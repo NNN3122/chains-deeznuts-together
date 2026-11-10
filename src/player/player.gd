@@ -692,10 +692,14 @@ func _on_landed(strength: float) -> void:
 
 func _send_input() -> void:
 	var raw := input.move_vector()
-	if (synced_flags & SFLAG_SEATED) != 0:
-		raw.x = clampf(raw.x + input._axis("turn_left", "turn_right"), -1.0, 1.0)  # at the wheel the turn keys steer too
 	var dir := Vector3(raw.x, 0.0, raw.y).rotated(Vector3.UP, _yaw)
 	var move := Vector2(dir.x, dir.z).limit_length(1.0)
+	if (synced_flags & SFLAG_SEATED) != 0:
+		# In a car the keys are pedals and a wheel, not a direction to walk in: they go as they are
+		# (not turned by where you're looking, each axis on its own: W with A is all of both), and
+		# the turn keys steer too. No auto-walk: nobody wants a brick on the throttle.
+		move = Vector2(clampf(input._axis("move_left", "move_right") + input._axis("turn_left", "turn_right"), -1.0, 1.0),
+			clampf(input._axis("move_forward", "move_back") + input._axis("walk_forward_alt", "walk_back_alt"), -1.0, 1.0))
 	var flags := 0
 	if input.held("run"):
 		flags |= FLAG_RUN
@@ -729,7 +733,7 @@ func rpc_input(move: Vector2, yaw: float, pitch: float, flags: int) -> void:
 
 
 func _apply_input(move: Vector2, yaw: float, pitch: float, flags: int) -> void:
-	input_move = move.limit_length(1.0)
+	input_move = Vector2(clampf(move.x, -1.0, 1.0), clampf(move.y, -1.0, 1.0)) if seat != null else move.limit_length(1.0)  # seated: pedals and a wheel (see _send_input)
 	input_yaw = yaw
 	input_pitch = clampf(pitch, -PITCH_LIMIT, PITCH_LIMIT)
 	input_flags = flags
