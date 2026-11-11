@@ -90,6 +90,8 @@ const USE_SEQ_SHIFT: int = 24
 const SLOT_SEQ_SHIFT: int = 32
 const SLOT_REQ_SHIFT: int = 40
 const RELOAD_SEQ_SHIFT: int = 43
+const GEAR_SEQ_SHIFT: int = 51  # a count of presses on the gear lever (driving)
+const GEAR_REQ_SHIFT: int = 59  # what the last one asked: 4 bits, RallyCar.REQ_*
 
 # Replicated state bits, server -> clients.
 const SFLAG_GROUNDED: int = 1
@@ -141,6 +143,8 @@ var _last_slot_seq: int = 0
 var _last_reload_seq: int = 0
 var _use_taps: int = 0  # taps not yet handed to the item
 var _reload_taps: int = 0
+var _last_gear_seq: int = 0
+var _gear_requests: PackedInt32Array = PackedInt32Array()  # server: lever presses the car hasn't taken yet
 
 # --- Server-side simulation --------------------------------------------------------
 var state: State = State.NORMAL
@@ -698,8 +702,10 @@ func _send_input() -> void:
 		# In a car the keys are pedals and a wheel, not a direction to walk in: they go as they are
 		# (not turned by where you're looking, each axis on its own: W with A is all of both), and
 		# the turn keys steer too. No auto-walk: nobody wants a brick on the throttle.
-		move = Vector2(clampf(input._axis("move_left", "move_right") + input._axis("turn_left", "turn_right"), -1.0, 1.0),
+		# Left and right arrows steer too; Q and E are the gear lever in here.
+		move = Vector2(clampf(input._axis("move_left", "move_right") + input._axis("steer_left_alt", "steer_right_alt"), -1.0, 1.0),
 			clampf(input._axis("move_forward", "move_back") + input._axis("walk_forward_alt", "walk_back_alt"), -1.0, 1.0))
+	input.driving = (synced_flags & SFLAG_SEATED) != 0
 	var flags := 0
 	if input.held("run"):
 		flags |= FLAG_RUN
@@ -713,6 +719,8 @@ func _send_input() -> void:
 	flags |= (input.slot_count() & 0xFF) << SLOT_SEQ_SHIFT
 	flags |= (input.slot_request() & 0x7) << SLOT_REQ_SHIFT
 	flags |= (input.reload_count() & 0xFF) << RELOAD_SEQ_SHIFT
+	flags |= (input.gear_count() & 0xFF) << GEAR_SEQ_SHIFT
+	flags |= (input.gear_request() & 0xF) << GEAR_REQ_SHIFT
 	if multiplayer.is_server():
 		_apply_input(move, _yaw, _pitch, flags)
 	else:
@@ -753,7 +761,7 @@ func _apply_input(move: Vector2, yaw: float, pitch: float, flags: int) -> void:
 	var slot := (flags >> SLOT_SEQ_SHIFT) & 0xFF
 	if slot != _last_slot_seq:
 		_last_slot_seq = slot
-		var req := (flags >> SLOT_REQ_SHIFT) & 0x7
+		var req := (flags >> SLOT_REQ_SHIFT) & 0x7 if seat == null else 0  # nothing in your hands in a car
 		match req:
 			1, 2, 3:
 				select_slot(req - 1)
@@ -768,6 +776,19 @@ func _apply_input(move: Vector2, yaw: float, pitch: float, flags: int) -> void:
 	if reload != _last_reload_seq:
 		_reload_taps += (reload - _last_reload_seq) & 0xFF
 		_last_reload_seq = reload
+	var lever := (flags >> GEAR_SEQ_SHIFT) & 0xFF
+	if lever != _last_gear_seq:
+		_last_gear_seq = lever
+		var asked := (flags >> GEAR_REQ_SHIFT) & 0xF
+		if asked != 0 and seat != null and _gear_requests.size() < 4:
+			_gear_requests.append(asked)
+
+
+## Server: the gear-lever presses since the last call (the car this player drives takes them).
+func take_gear_requests() -> PackedInt32Array:
+	var out := _gear_requests
+	_gear_requests = PackedInt32Array()
+	return out
 
 
 # --- Simulation ------------------------------------------------------------------------

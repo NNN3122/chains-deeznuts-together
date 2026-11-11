@@ -1,8 +1,10 @@
 class_name RallyCar
 extends CharacterBody3D
 ## A rally car from Kettle Hollow's night rally, keys still in it (Level 4, the chase). Two of the
-## Line ride in each: the driver (W the throttle, S the brake and then reverse, A/D to steer, Ctrl
-## the handbrake) and the navigator, who has the map and calls the turns.
+## Line ride in each: the driver (W the throttle, S the brake, A/D to steer, Ctrl the handbrake, and
+## the gear lever: E up, Q down, R reverse, N neutral, 1-6 straight to a gear; M hands the box to an
+## automatic, where S held at a standstill is reverse) and the navigator, who has the map and calls
+## the turns.
 ##
 ## The server drives it from the driver's input packets with the model racing games have used
 ## since Marco Monster's "Car Physics for Games": a single-track ("bicycle") car whose front and
@@ -52,9 +54,23 @@ const SUBSTEPS: int = 4  # tyre forces are stiff: four small steps a tick keep t
 # The engine and the box.
 const MAX_SPEED: float = 38.0  # m/s where top gear runs out (about 137 km/h)
 const REVERSE_SPEED: float = 7.0
-const GEAR_TOP: Array[float] = [13.0, 21.0, 28.0, 34.0, 39.5]  # m/s at the red line in each gear
-const GEAR_PULL: Array[float] = [8.6, 6.0, 4.3, 3.0, 2.05]  # m/s^2 at peak torque in each gear (0-100 km/h in about 6 s)
+const GEARS: int = 6
+const GEAR_REVERSE: int = -1
+const GEAR_NEUTRAL: int = 0
+const GEAR_TOP: Array[float] = [11.5, 18.0, 24.0, 29.5, 34.5, 39.5]  # m/s at the red line in first to sixth
+const GEAR_PULL: Array[float] = [9.0, 6.8, 5.1, 3.9, 2.9, 2.05]  # m/s^2 at peak torque in each gear (0-100 km/h in about 6 s)
+const CLUTCH_FLOOR: Array[float] = [0.85, 0.55, 0.36, 0.26, 0.2, 0.16]  # of peak torque with no revs at all: the clutch slips first away from a standstill, sixth barely creeps
 const REVERSE_PULL: float = 3.5
+const OVER_REV: float = 14.0  # m/s^2 the engine holds the car back with per red line's worth past it (a gear too low for the speed)
+const OVER_REV_MAX: float = 5.0  # m/s^2 at most
+const REVERSE_SHIFT_SPEED: float = 3.0  # m/s forward past which the lever won't go into reverse
+# What the lever can be asked (Player sends these from the driver's keys; see PlayerInput.GEAR_ACTIONS).
+const REQ_UP: int = 1
+const REQ_DOWN: int = 2
+const REQ_REVERSE: int = 3
+const REQ_NEUTRAL: int = 4
+const REQ_FIRST: int = 5  # 5..10: first to sixth
+const REQ_AUTO: int = 11  # manual <-> automatic
 const SHIFT_UP: float = 0.93  # of the red line: up a gear
 const SHIFT_DOWN: float = 0.62  # of the gear below's red line: down one
 const SHIFT_TIME: float = 0.14  # s with no drive while it changes
@@ -99,7 +115,8 @@ var occupants: PackedInt32Array = PackedInt32Array()  # replicated: peer ids, dr
 var progress: float = 0.0  # replicated: metres along the town's route it has got to (Town)
 var wheel: float = 0.0  # replicated: rad the front wheels are turned (+ right)
 var rpm: float = 0.0  # replicated: the engine, 0 to 1 (the red line)
-var gear: int = 0  # replicated: 0 is first
+var gear: int = 1  # replicated: -1 reverse, 0 neutral, 1 to 6
+var auto_box: bool = false  # replicated: the box changes gear by itself (M; the driver's lever does nothing then)
 var pedal: float = 0.0  # replicated: the throttle (+) or the brake (-)
 var skid: float = 0.0  # replicated: 0..1, how hard the tyres are sliding (the sound)
 var yaw_rate: float = 0.0  # server: rad/s, + turning left
@@ -132,6 +149,7 @@ var _ax: float = 0.0  # server: m/s^2 along the car, smoothed (the weight it mov
 var _assist: float = 1.0  # server: 0..1, how much of the stability assist is on
 var _last_speed: float = 0.0
 var _last_yaw: float = 0.0
+var _gear_seen: int = 1  # every peer: the gear last heard going in
 var _turn_vis: float = 0.0  # every peer: rad/s the body is seen to turn at
 var _lean: Vector2 = Vector2.ZERO  # pitch, roll
 
@@ -151,7 +169,7 @@ func _enter_tree() -> void:
 	var sync := MultiplayerSynchronizer.new()
 	sync.name = "Sync"
 	var cfg := SceneReplicationConfig.new()
-	for prop in ["in_use", "speed", "slip", "synced_xform", "occupants", "progress", "wheel", "rpm", "gear", "pedal", "skid"]:
+	for prop in ["in_use", "speed", "slip", "synced_xform", "occupants", "progress", "wheel", "rpm", "gear", "auto_box", "pedal", "skid"]:
 		var path := NodePath(".:" + prop)
 		cfg.add_property(path)
 		cfg.property_set_replication_mode(path, SceneReplicationConfig.REPLICATION_MODE_ALWAYS)
@@ -366,6 +384,58 @@ func _driver_input() -> Vector3:
 	return Vector3(clampf(driver.input_move.x, -1.0, 1.0), clampf(-driver.input_move.y, -1.0, 1.0), hand)
 
 
+## Server: the gear lever (a REQ_ code from the driver's keys). Manual: up and down go one place
+## through R, N, 1..6; R, N and the numbers go straight there. Reverse won't go in while the car is
+## still rolling forward at any pace. A gear too low for the speed is allowed: the engine screams
+## past its red line and holds the car back. With the automatic on the lever does nothing.
+func server_shift(req: int) -> void:
+	if req == REQ_AUTO:
+		auto_box = not auto_box
+		_reverse_t = 0.0
+		if auto_box and gear < 1:
+			gear = 1
+		_rpc_lever.rpc(1 if auto_box else 2)
+		return
+	if auto_box:
+		_rpc_lever.rpc(3)
+		return
+	var want := gear
+	if req == REQ_UP:
+		want = mini(gear + 1, GEARS)
+	elif req == REQ_DOWN:
+		want = maxi(gear - 1, GEAR_REVERSE)
+	elif req == REQ_REVERSE:
+		want = GEAR_REVERSE
+	elif req == REQ_NEUTRAL:
+		want = GEAR_NEUTRAL
+	elif req >= REQ_FIRST and req < REQ_FIRST + GEARS:
+		want = req - REQ_FIRST + 1
+	if want == gear:
+		return
+	if want == GEAR_REVERSE and speed > REVERSE_SHIFT_SPEED:
+		_rpc_lever.rpc(0)
+		return
+	gear = want
+	_shift_t = SHIFT_TIME
+
+
+## What the lever has to say, to whoever is driving this car.
+@rpc("authority", "call_local", "reliable")
+func _rpc_lever(what: int) -> void:
+	if occupants.is_empty() or occupants[0] != multiplayer.get_unique_id():
+		return
+	match what:
+		0:
+			Sfx.play_at(self, "scrape", global_position + Vector3.UP, -6.0, 1.6, 20.0)
+			GameState.post_message_local("TOO FAST FOR REVERSE. BRAKE FIRST.", 1.6)
+		1:
+			GameState.post_message_local("GEARBOX: AUTOMATIC (M for manual)", 2.0)
+		2:
+			GameState.post_message_local("GEARBOX: MANUAL. E up, Q down, R reverse, N neutral, 1-6.", 2.6)
+		3:
+			GameState.post_message_local("IT'S IN AUTOMATIC. M for manual.", 1.6)
+
+
 ## The tyre curve: 0 at no slip, 1 at TYRE_PEAK, a little less past it (a sliding tyre).
 static func tyre(slip_angle: float) -> float:
 	return sin(TYRE_C * atan(TYRE_B * slip_angle))
@@ -438,6 +508,9 @@ func _autopilot_input() -> Vector3:
 ## The car, one tick (see the top of the file for the model).
 func _server_drive(delta: float) -> void:
 	_bang_cool = maxf(0.0, _bang_cool - delta)
+	if in_use and driver != null and is_instance_valid(driver):
+		for req in driver.take_gear_requests():
+			server_shift(req)
 	if not in_use or locked:
 		speed = 0.0
 		slip = 0.0
@@ -445,7 +518,8 @@ func _server_drive(delta: float) -> void:
 		pedal = 0.0
 		skid = 0.0
 		rpm = 0.12 if in_use else 0.0
-		gear = 0
+		if not in_use:
+			gear = 1
 		_throttle = 0.0
 		_brake = 0.0
 		_ax = 0.0
@@ -456,18 +530,32 @@ func _server_drive(delta: float) -> void:
 	var hand := inp.z > 0.5
 	var want_go := maxf(inp.y, 0.0)
 	var want_stop := maxf(-inp.y, 0.0)
-	# Back on the brake at a standstill, held a moment: reverse.
-	if want_stop > 0.1 and speed < 0.6:
-		_reverse_t += delta
-	elif want_stop < 0.1:
+	var auto := auto_box or not autopilot.is_empty()
+	var reversing := false
+	if auto:
+		# Automatic: back on the brake at a standstill, held a moment, is reverse (S is its throttle).
+		if want_stop > 0.1 and speed < 0.6:
+			_reverse_t += delta
+		elif want_stop < 0.1:
+			_reverse_t = 0.0
+		reversing = _reverse_t > REVERSE_HOLD and speed < 0.6
+		if reversing:
+			gear = GEAR_REVERSE
+			want_go = want_stop
+			want_stop = 0.0
+		else:
+			if gear < 1:
+				gear = 1
+			if speed < -0.3 and inp.y > 0.1:
+				want_stop = want_go  # rolling backwards with the throttle down: it's the brake first
+				want_go = 0.0
+	else:
+		# Manual: the lever says which way W goes. S is only ever the brake.
 		_reverse_t = 0.0
-	var reversing := _reverse_t > REVERSE_HOLD and speed < 0.6
-	if reversing:
-		want_go = want_stop
-		want_stop = 0.0
-	elif speed < -0.3 and inp.y > 0.1:
-		want_stop = want_go  # rolling backwards with the throttle down: it's the brake first
-		want_go = 0.0
+		reversing = gear == GEAR_REVERSE
+		if want_go > 0.1 and ((gear > 0 and speed < -0.3) or (reversing and speed > 0.3)):
+			want_stop = maxf(want_stop, want_go)  # still rolling the other way: the tyres stop it first
+			want_go = 0.0
 	if stall_t > 0.0:
 		stall_t -= delta
 		want_go = 0.0  # the engine coughs and won't catch
@@ -477,23 +565,30 @@ func _server_drive(delta: float) -> void:
 	# The gearbox.
 	var pace := absf(speed)
 	_shift_t = maxf(0.0, _shift_t - delta)
-	if not reversing and _shift_t <= 0.0:
-		if gear < GEAR_TOP.size() - 1 and pace > GEAR_TOP[gear] * SHIFT_UP:
+	if auto and not reversing and _shift_t <= 0.0:
+		if gear < GEARS and pace > GEAR_TOP[gear - 1] * SHIFT_UP:
 			gear += 1
 			_shift_t = SHIFT_TIME
-		elif gear > 0 and pace < GEAR_TOP[gear - 1] * SHIFT_DOWN:
+		elif gear > 1 and pace < GEAR_TOP[gear - 2] * SHIFT_DOWN:
 			gear -= 1
 			_shift_t = SHIFT_TIME * 0.6
-	if reversing:
-		gear = 0
-	var top: float = REVERSE_SPEED * 1.6 if reversing else GEAR_TOP[gear]
-	var rev := clampf(pace / top, 0.0, 1.05)
+	var in_gear := gear != GEAR_NEUTRAL
+	var top: float = REVERSE_SPEED * 1.6 if reversing else GEAR_TOP[maxi(gear, 1) - 1]
+	var over := maxf(pace / top - 1.0, 0.0) if in_gear else 0.0  # how far past the red line the wheels are turning the engine
+	var rev := clampf(pace / top, 0.0, 1.05) if in_gear else 0.12 + 0.9 * _throttle  # out of gear it revs free
 	rpm = lerpf(rpm, maxf(maxf(rev, 0.12), 0.35 * _throttle if pace < 4.0 else 0.0), clampf(delta * 14.0, 0.0, 1.0))  # the clutch slips off the line
 	# What the engine and the brakes ask of the tyres, as accelerations of the whole car.
 	var drive := 0.0
-	if _throttle > 0.0 and _shift_t <= 0.0 and rev < 1.02:
-		var torque := clampf(1.0 - 1.7 * (rev - 0.62) * (rev - 0.62), 0.85 if gear == 0 and not reversing else 0.5, 1.0)  # off the line the clutch holds the revs where the engine pulls
-		drive = _throttle * (REVERSE_PULL if reversing else GEAR_PULL[gear]) * torque * (-1.0 if reversing else 1.0)
+	if in_gear and _throttle > 0.0 and _shift_t <= 0.0 and rev < 1.02:
+		# The torque curve: most of it from the middle of the revs up, falling away near the red
+		# line, and little at the bottom (a gear too high bogs). Off the line the clutch slips to
+		# hold the revs up: in first that is nearly everything, in sixth nearly nothing.
+		var lug := lerpf(0.3, 1.0, smoothstep(0.05, 0.4, rev))
+		var torque := clampf((1.0 - 1.7 * (rev - 0.62) * (rev - 0.62)) * lug, CLUTCH_FLOOR[0] if reversing else CLUTCH_FLOOR[gear - 1], 1.0)
+		drive = _throttle * (REVERSE_PULL if reversing else GEAR_PULL[gear - 1]) * torque * (-1.0 if reversing else 1.0)
+	var engine_drag := 0.0  # m/s^2 the engine holds the car back with: off the throttle (more in the low gears), and hard past the red line
+	if in_gear:
+		engine_drag = ENGINE_BRAKE * (1.0 - _throttle) * (1.5 if reversing else 1.75 - 0.22 * float(gear)) + minf(over * OVER_REV, OVER_REV_MAX)
 	var surface := ROUGH_GRIP if rough else 1.0
 	var mu_f := GRIP_FRONT * surface
 	var mu_r := GRIP_REAR * surface
@@ -550,7 +645,7 @@ func _server_drive(delta: float) -> void:
 		var out := atan2(v, ahead)
 		var settle_spin := (signf(out) * maxf(absf(out) - STABILITY_FREE, 0.0) * STABILITY_PULL - (r - u * tan(wl) / WHEELBASE) * STABILITY_DAMP * clampf((absf(out) - STABILITY_FREE) * 12.0, 0.0, 1.0)) * _assist * dyn
 		# Drag: rolling, the air, the engine off the throttle, the dirt.
-		var resist := ROLL + DRAG * u * u + (ENGINE_BRAKE * (1.0 - _throttle) * (1.6 - 0.25 * float(gear)) if absf(u) > 1.0 else 0.0)
+		var resist := ROLL + DRAG * u * u + (engine_drag if absf(u) > 1.0 else 0.0)
 		if rough:
 			resist += ROUGH_DRAG + (9.0 if absf(u) > ROUGH_TOP else 0.0)
 		var along := (fx_f * cos(wl) + fx_r - fy_f * sin(wl)) / MASS - way * resist
@@ -685,6 +780,10 @@ func _animate(delta: float) -> void:
 		_body.rotation = Vector3(_lean.x, 0.0, _lean.y)
 		_body.position.y = -absf(_lean.x) * 0.2
 	_brake_mat.emission_energy_multiplier = 3.0 if (in_use and pedal < -0.08) else 0.6
+	if gear != _gear_seen:
+		_gear_seen = gear
+		if in_use:
+			Sfx.play_at(self, "click", global_position + Vector3.UP * 0.6, -7.0, 0.55, 18.0)  # the lever going home
 	if in_use:
 		Sfx.start_loop(_engine)
 		_engine.pitch_scale = 0.5 + 1.25 * clampf(rpm, 0.0, 1.05)
@@ -711,7 +810,8 @@ func server_park(at: Transform3D) -> void:
 	_vy = 0.0
 	_ax = 0.0
 	wheel = 0.0
-	gear = 0
+	gear = 1
+	_shift_t = 0.0
 	skid = 0.0
 	_throttle = 0.0
 	_brake = 0.0

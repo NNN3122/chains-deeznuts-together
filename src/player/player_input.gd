@@ -32,7 +32,15 @@ const PITCH_KEY_SPEED: float = 1.4  # rad/s with PageUp/PageDown
 const TRACKED: Array[String] = [
 	"move_forward", "move_back", "move_left", "move_right", "walk_forward_alt", "walk_back_alt",
 	"turn_left", "turn_right", "look_up", "look_down", "run", "brace", "use_item",
+	"steer_left_alt", "steer_right_alt",
 ]
+# The gear lever, while sat in a car (`driving`): the place in this list + 1 is the request sent to
+# the host (RallyCar.REQ_*).
+const GEAR_ACTIONS: Array[String] = [
+	"gear_up", "gear_down", "gear_reverse", "gear_neutral",
+	"gear_1", "gear_2", "gear_3", "gear_4", "gear_5", "gear_6", "gear_auto",
+]
+const GEAR_STEP_ACTIONS: int = 2  # the first two go one place each press: a remote desktop's key-repeat taps must not count
 
 const KEY_TURN_EASE: float = 18.0  # 1/s, how quickly keyboard turning reaches full speed
 const REMOTE_LOOK_RATE: float = 55.0  # 1/s, how fast a remote cursor's motion is fed into the view
@@ -65,6 +73,10 @@ var _use_count: int = 0
 var _slot_count: int = 0
 var _slot_request: int = 0  # 1..3 the slot last asked for, 0 none; wheel: 4 next, 5 previous; 6 the key slot
 var _reload_count: int = 0
+var driving: bool = false  # set by Player: sat in a car, so Q/E, R, N, M and the number keys are the gear lever
+var _gear_count: int = 0
+var _gear_request: int = 0  # the last thing asked of the lever (place in GEAR_ACTIONS + 1), 0 nothing
+var _gear_release: Dictionary = {}  # action -> msec the up or down key was last let go
 var _cursor_moved_at: int = -100000  # msec of the last mouse motion
 
 
@@ -99,8 +111,14 @@ func _input(event: InputEvent) -> void:
 			else:
 				_down[a] = false
 				_last_release[a] = now
+		if driving and not event.is_pressed():
+			for i in GEAR_STEP_ACTIONS:
+				if event.is_action(GEAR_ACTIONS[i]):
+					_gear_release[GEAR_ACTIONS[i]] = now
 		if event.is_pressed() and not event.is_echo():
-			if event.is_action("jump"):
+			if driving and _gear_key(event, now):
+				pass  # the lever: not an item slot, not auto-walk
+			elif event.is_action("jump"):
 				_jump_count += 1
 			elif event.is_action("drop_item"):
 				_drop_count += 1
@@ -139,6 +157,21 @@ func _input(event: InputEvent) -> void:
 			_request_slot(4)
 		elif b.pressed and b.button_index == MOUSE_BUTTON_WHEEL_UP and in_game:
 			_request_slot(5)
+
+
+## A key that is on the gear lever: note what it asks. Up and down are one place a press, so a
+## press that comes straight after that key's release (a remote desktop repeating a held key) is
+## not another one; the rest say where to go, and saying it twice is harmless.
+func _gear_key(event: InputEvent, now: int) -> bool:
+	for i in GEAR_ACTIONS.size():
+		if not event.is_action(GEAR_ACTIONS[i]):
+			continue
+		if i < GEAR_STEP_ACTIONS and now - int(_gear_release.get(GEAR_ACTIONS[i], -100000)) < FLICKER_GAP_MS:
+			return true
+		_gear_count += 1
+		_gear_request = i + 1
+		return true
+	return false
 
 
 func _request_slot(which: int) -> void:
@@ -301,6 +334,14 @@ func use_count() -> int:
 
 func reload_count() -> int:
 	return _reload_count
+
+
+func gear_count() -> int:
+	return _gear_count
+
+
+func gear_request() -> int:
+	return _gear_request
 
 
 func slot_count() -> int:

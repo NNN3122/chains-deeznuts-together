@@ -2326,7 +2326,7 @@ func _test_town() -> void:
 		await _wait(0.1)
 	await _wait(2.2)
 	var went := car.global_position.distance_to(start)
-	_check("the countdown holds the car on the line; on GO the throttle pulls it away like a car (not all at once)", held and went > 5.0 and went < 20.0 and car.speed > 6.0 and car.speed < 16.0 and car.gear <= 1, "held %s, then %.1f m at %.1f m/s" % [held, went, car.speed])
+	_check("the countdown holds the car on the line; on GO the throttle pulls it away like a car (not all at once)", held and went > 5.0 and went < 20.0 and car.speed > 6.0 and car.speed < 16.0 and car.gear <= 2, "held %s, then %.1f m at %.1f m/s" % [held, went, car.speed])
 	# A call to the driver: the navigator's keys in co-op, the co-driver's in solo.
 	var nav := _mate as Player
 	if nav != null and car.occupants.size() > 1 and car.occupants[1] == nav.peer_id:
@@ -4374,6 +4374,9 @@ func _run_client_manor(m: Manor) -> void:
 	_finish()
 
 
+var _d_gear: Variant = null  # _drive: null the automatic, else the manual box left in this gear
+
+
 ## The rally car's road test (--town --solo --smoke --smoke-only=drive): the car on an open pad far
 ## above the town, put through the manoeuvres a road test uses, with the numbers printed ("[drive]")
 ## and the ones that make a car feel right checked. Driven by RallyCar.debug_input (steer right +,
@@ -4411,6 +4414,50 @@ func _test_drive() -> void:
 	var s_pedal := car.pedal
 	_key(KEY_S, false, false)
 	await _wait(0.2)
+	# The gear lever, by the real keys, from a standstill: E up, Q down through neutral into
+	# reverse, a number straight to its gear (and not to an item slot), N, R, and M for the
+	# automatic. A held key repeated by a remote desktop (a press 30 ms after its release) is one
+	# change, not two. In reverse W backs the car up.
+	car.server_park(car.global_transform)
+	car.auto_box = false
+	await _wait(0.15)
+	var slot_was := _host.selected_slot
+	var lever: Array[int] = [car.gear]
+	await _tap(KEY_E)
+	lever.append(car.gear)
+	_key(KEY_E, true, false)
+	_key(KEY_E, false, false)
+	await _wait(0.03)
+	_key(KEY_E, true, false)
+	_key(KEY_E, false, false)
+	await _wait(0.15)
+	lever.append(car.gear)
+	await _tap(KEY_4)
+	lever.append(car.gear)
+	await _tap(KEY_N)
+	lever.append(car.gear)
+	await _tap(KEY_Q)
+	lever.append(car.gear)
+	_key(KEY_W, true, false)
+	await _wait(1.0)
+	var backed := car.speed
+	_key(KEY_W, false, false)
+	await _tap(KEY_E)
+	await _tap(KEY_E)
+	lever.append(car.gear)
+	await _tap(KEY_R)
+	lever.append(car.gear)
+	var walked: bool = _host.input.auto_run
+	await _tap(KEY_M)
+	var auto_on := car.auto_box
+	await _tap(KEY_3)
+	var auto_gear := car.gear
+	await _tap(KEY_M)
+	var auto_off := not car.auto_box
+	car.server_park(car.global_transform)
+	await _wait(0.1)
+	print("[drive] the lever by the keys: %s, W in reverse %.1f m/s, automatic on %s (3 pressed: gear %d) off %s" % [lever, backed, auto_on, auto_gear, auto_off])
+	var lever_ok: bool = lever == ([1, 2, 3, 4, 0, -1, 1, -1] as Array[int]) and backed < -0.5 and not walked and _host.selected_slot == slot_was and auto_on and auto_gear == 1 and auto_off
 	_host.bot_controlled = true
 	_bot(Vector2.ZERO, 0.0, 0)
 	Settings.remote_mode = was_remote
@@ -4526,11 +4573,61 @@ func _test_drive() -> void:
 	# A tap over a remote desktop: 0.45 of a key for 0.65 s at 100.
 	s = await _drive(car, 28.0, 3.0, func(k: float, c: RallyCar) -> Vector3: return Vector3(0.45 if k < 0.65 else 0.0, 1.0 if c.speed < 28.0 else 0.0, 0.0))
 	print("[drive] a remote-desktop tap (0.45 for 0.65 s) at 100: moved %.1f m sideways over %.0f m, heading changed %.1f deg" % [absf(s[s.size() - 1].pos.x), -s[s.size() - 1].pos.z, absf(rad_to_deg(_d_heading(s)))])
+	# The manual box. First gear held flat out runs into its limiter; neutral coasts whatever the
+	# throttle does; reverse goes backwards on W and S alone never does; sixth from a standstill
+	# bogs; a gear far too low for the speed holds the car back; reverse won't go in at speed;
+	# and changed up by hand at the red line it is as quick as the automatic.
+	var gas := func(_k: float, _c: RallyCar) -> Vector3: return Vector3(0.0, 1.0, 0.0)
+	var none := func(_k: float, _c: RallyCar) -> Vector3: return Vector3.ZERO
+	_d_gear = 1
+	s = await _drive(car, 0.0, 6.0, gas)
+	var first_top: float = s[s.size() - 1].u
+	var first_3s: float = _d_at(s, 3.0).u
+	_d_gear = 0
+	s = await _drive(car, 20.0, 2.0, gas)
+	var neutral_end: float = s[s.size() - 1].u
+	var neutral_rpm := car.rpm
+	_d_gear = -1
+	s = await _drive(car, 0.0, 2.0, gas)
+	var reverse_end: float = s[s.size() - 1].u
+	_d_gear = 1
+	s = await _drive(car, 0.0, 1.5, func(_k: float, _c: RallyCar) -> Vector3: return Vector3(0.0, -1.0, 0.0))
+	var s_only: float = s[s.size() - 1].u
+	_d_gear = 6
+	s = await _drive(car, 0.0, 3.0, gas)
+	var sixth_3s: float = s[s.size() - 1].u
+	s = await _drive(car, 30.0, 1.0, none)
+	var lost_6th: float = 30.0 - s[s.size() - 1].u
+	_d_gear = 2
+	s = await _drive(car, 30.0, 1.0, none)
+	var lost_2nd: float = 30.0 - s[s.size() - 1].u
+	_d_gear = 3
+	s = await _drive(car, 20.0, 0.2, gas)
+	car.server_shift(RallyCar.REQ_REVERSE)
+	var refused := car.gear == 3
+	car.server_shift(RallyCar.REQ_DOWN)
+	var stepped := car.gear == 2
+	_d_gear = 1
+	s = await _drive(car, 0.0, 12.0, func(_k: float, c: RallyCar) -> Vector3:
+		if c.rpm > 0.93 and c.gear < RallyCar.GEARS:
+			c.server_shift(RallyCar.REQ_UP)
+		return Vector3(0.0, 1.0, 0.0))
+	var hand_100 := _d_first(s, func(e: Dictionary) -> bool: return e.u >= 100.0 / kmh)
+	var hand_gear := car.gear
+	_d_gear = null
+	print("[drive] manual: first flat out %.0f km/h (%.0f after 3 s), neutral 72 -> %.0f km/h at %.2f revs, reverse %.0f km/h, S alone %.2f m/s, sixth from rest %.0f km/h after 3 s, a second off the throttle at 108 loses %.0f km/h in sixth and %.0f in second, reverse refused at speed %s, by hand 0-100 %.2f s (in gear %d after 12 s)" % [
+		first_top * kmh, first_3s * kmh, neutral_end * kmh, neutral_rpm, reverse_end * kmh, s_only, sixth_3s * kmh, lost_6th * kmh, lost_2nd * kmh, refused, hand_100, hand_gear])
 	Engine.physics_ticks_per_second = 60
 	Engine.time_scale = 1.0
 	Engine.max_physics_steps_per_frame = 8
 	car.debug_input = null
+	car.auto_box = false
 	pad.queue_free()
+	_check("the gear lever works by the real keys: E and Q step through R, N, 1-6 (a remote desktop's repeat is one change), the numbers, N and R go straight there without touching the item slots or auto-walk, W in reverse backs up, and M is the automatic (where the lever does nothing)", lever_ok,
+		"gears %s, %.1f m/s in reverse, slot %d -> %d, auto-walk %s, automatic %s / gear %d / off %s" % [lever, backed, slot_was, _host.selected_slot, walked, auto_on, auto_gear, auto_off])
+	_check("the manual box behaves like one: first runs into its limiter (38 to 44 km/h), neutral coasts on the throttle, reverse reverses and S alone doesn't, sixth bogs from rest (under 12 km/h in 3 s against over 32 in first), a gear too low holds the car back, reverse won't go in at speed, and changed by hand it does 0-100 in 5 to 8 s and reaches sixth",
+		first_top * kmh > 38.0 and first_top * kmh < 44.0 and neutral_end < 20.0 and neutral_end > 18.0 and neutral_rpm > 0.8 and reverse_end < -2.0 and absf(s_only) < 0.1 and sixth_3s * kmh < 12.0 and first_3s * kmh > 32.0 and lost_2nd > lost_6th + 3.0 and refused and stepped and hand_100 > 5.0 and hand_100 < 8.0 and hand_gear == 6,
+		"first %.0f km/h, neutral %.1f m/s, reverse %.1f m/s, S %.2f, sixth %.0f km/h, lost %.1f / %.1f m/s, refused %s, down %s, 0-100 %.2f s, gear %d" % [first_top * kmh, neutral_end, reverse_end, s_only, sixth_3s * kmh, lost_6th, lost_2nd, refused, stepped, hand_100, hand_gear])
 	_check("the car pulls like a car: 0-100 km/h in 5 to 8 s, 0-50 in 1.8 to 3.5, and 120 to 142 flat out", t100 > 5.0 and t100 < 8.0 and t50 > 1.8 and t50 < 3.5 and vmax * kmh > 120.0 and vmax * kmh < 142.0,
 		"0-50 %.2f s, 0-100 %.2f s, top %.0f km/h" % [t50, t100, vmax * kmh])
 	_check("it stops like a car (100-0 in 35 to 50 m), S held at a standstill is reverse, and off the throttle it rolls on (over 85 km/h two seconds after lifting at 100)", d_stop > 35.0 and d_stop < 50.0 and brake_reverses and coast2 > 85.0,
@@ -4551,10 +4648,14 @@ func _drive(car: RallyCar, v0: float, seconds: float, control: Callable) -> Arra
 	car.debug_input = Vector3.ZERO
 	car.server_park(Transform3D(Basis.IDENTITY, Vector3(0.0, 3000.02, 0.0)))
 	car.speed = v0
-	for g in RallyCar.GEAR_TOP.size():
-		car.gear = g
-		if v0 < RallyCar.GEAR_TOP[g] * RallyCar.SHIFT_UP:
-			break
+	car.auto_box = _d_gear == null
+	if _d_gear != null:
+		car.gear = _d_gear  # manual, left in this gear
+	else:
+		for g in RallyCar.GEARS:
+			car.gear = g + 1
+			if v0 < RallyCar.GEAR_TOP[g] * RallyCar.SHIFT_UP:
+				break
 	var out: Array = []
 	var ticks := int(seconds * 60.0)
 	for i in ticks:
@@ -4563,6 +4664,14 @@ func _drive(car: RallyCar, v0: float, seconds: float, control: Callable) -> Arra
 		await get_tree().physics_frame
 		out.append({"t": k, "u": car.speed, "slip": car.slip, "r": car.yaw_rate, "pos": car.global_position, "yaw": car.global_rotation.y, "skid": car.skid})
 	return out
+
+
+## A key pressed and let go, and a moment for the host to act on it.
+func _tap(code: Key) -> void:
+	_key(code, true, false)
+	await _wait(0.05)
+	_key(code, false, false)
+	await _wait(0.12)
 
 
 func _d_first(s: Array, test: Callable) -> float:

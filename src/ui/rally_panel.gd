@@ -182,7 +182,14 @@ func _process(delta: float) -> void:
 	var kmh := int(absf(car.speed) * 3.6)
 	# The dash: speed, the gear and the revs (a bar that fills to the red line).
 	var bars := int(round(clampf(car.rpm, 0.0, 1.0) * 12.0))
-	var dash := "%d km/h   %s   %s%s" % [kmh, "R" if car.speed < -0.5 else str(car.gear + 1), "|".repeat(bars), ".".repeat(12 - bars)]
+	var lever := "R" if car.gear < 0 else ("N" if car.gear == 0 else str(car.gear))
+	if car.auto_box:
+		lever = "AUTO " + lever
+	elif not navigator and car.gear >= 1 and car.gear < RallyCar.GEARS and car.rpm > 0.92 and fmod(_t, 0.3) < 0.18:
+		lever += "  SHIFT UP (E)"
+	elif not navigator and car.gear == 0 and car.in_use and town.countdown <= 0.0:
+		lever += "  (1 for first)"
+	var dash := "%d km/h   %s   %s%s" % [kmh, lever, "|".repeat(bars), ".".repeat(12 - bars)]
 	if town.strider.active:
 		_info.text = "IT'S %d m BEHIND    %s" % [maxi(0, int(behind)), dash]
 		var hot := behind < 40.0 and fmod(_t, 0.4) < 0.22
@@ -195,7 +202,7 @@ func _process(delta: float) -> void:
 	if navigator:
 		_hint.text = "YOU HAVE THE MAP AND THE GUN. Call the turns: talk, or A = LEFT, D = RIGHT, W = STRAIGHT ON, S = BRAKE. F or SPACE: SHOOT what's in the road, or the Strider when it's close."
 	else:
-		_hint.text = "YOU'RE DRIVING BLIND: listen to your navigator. W gas, S brake (hold it when stopped: reverse), A/D steer, Ctrl handbrake. The mirror shows what's behind."
+		_hint.text = "YOU'RE DRIVING BLIND: listen to your navigator. W gas, S brake, A/D steer, Ctrl handbrake. GEARS: E up, Q down, R reverse, N neutral, 1-6 (M: automatic). The mirror shows what's behind."
 	# The mirror (the driver's; the navigator has the map where it would be).
 	var show_mirror := not navigator
 	_mirror_frame.visible = show_mirror
