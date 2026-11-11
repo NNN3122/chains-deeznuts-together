@@ -39,14 +39,17 @@ const CG_HEIGHT: float = 0.4  # m: how much weight braking and power move
 const WHEELBASE: float = 2.6
 const GRAVITY: float = 9.81
 # The tyres: side force = grip x load x sin(C atan(B x slip angle)), which peaks at TYRE_PEAK.
-const GRIP_FRONT: float = 1.7  # peak friction: a racing game's tyres, not a road car's (1.1 felt like ice to the user)
-const GRIP_REAR: float = 2.0  # more at the back: it pushes wide before it spins
+const GRIP_FRONT: float = 2.0  # peak friction flat out: an arcade racer's tyres (1.1, a road car's, felt like ice to the user; 1.7 still wasn't sharp)
+const GRIP_REAR: float = 2.35  # more at the back: it pushes wide before it spins
+const GRIP_SLOW: float = 1.5  # times that at street-corner speeds: about 3 g, so a corner taken at 50 km/h is a tight one
+const GRIP_SLOW_SPEED: float = 14.0  # m/s up to which it has all of GRIP_SLOW
+const GRIP_FAST_SPEED: float = 40.0  # m/s by which it is down to the plain grip
 const TYRE_USE: float = 0.92  # of a tyre's grip that braking or driving may take: the rest is always there to steer with
 const CIRCLE_SHARE: float = 0.7  # of the brake or drive force that counts against side grip: flat on the brakes it still turns
 const TYRE_B: float = 11.0
 const TYRE_C: float = 1.5
 const TYRE_PEAK: float = 0.157  # rad (9 degrees): the slip angle with the most grip
-const ROUGH_GRIP: float = 0.55  # of the grip off the road
+const ROUGH_GRIP: float = 0.4  # of the grip off the road
 const ROUGH_DRAG: float = 2.5  # m/s^2 the dirt costs
 const ROUGH_TOP: float = 9.0  # m/s past which it costs a lot more
 const LOW_SPEED: float = 2.0  # m/s: below this the car turns by geometry alone
@@ -85,7 +88,10 @@ const ROLL: float = 0.15  # m/s^2 of rolling drag
 const DRAG: float = 0.00095  # /m of air drag (x speed squared)
 const REVERSE_HOLD: float = 0.3  # s on the brake at a standstill before it goes into reverse
 # The wheel in your hands.
-const STEER_LOCK: float = 0.6  # rad: full lock
+const STEER_LOCK: float = 0.72  # rad: full lock (a 3 m turning circle at a crawl)
+const LOCK_GRIP: float = 0.8  # the wheel never turns further than the lock that would ask this much of the tyres' grip at this speed (full lock at 35 km/h spun it in circles)
+const MAX_YAW: float = 2.0  # rad/s: nor further than the lock that turns the car this fast (a right angle in 0.8 s; more at 35 km/h is a doughnut)
+const LOCK_SLACK: float = 0.04  # rad on top of that: the slip the tyres work at
 const STEER_SPEED: float = 2.4  # rad/s the wheel turns at a crawl
 const STEER_SPEED_FAST: float = 1.0  # rad/s at pace: an eighth of a second to the tyres' best angle
 const FRONT_BALANCE: float = 1.05  # the front tyres never turn the car harder than this much of what the rears can hold (hard on the brakes the weight is all on the front: it used to swing the tail out)
@@ -596,8 +602,6 @@ func _server_drive(delta: float) -> void:
 	if in_gear:
 		engine_drag = ENGINE_BRAKE * (1.0 - _throttle) * (1.5 if reversing else 1.75 - 0.22 * float(gear)) + minf(over * OVER_REV, OVER_REV_MAX)
 	var surface := ROUGH_GRIP if rough else 1.0
-	var mu_f := GRIP_FRONT * surface
-	var mu_r := GRIP_REAR * surface
 	var u := speed  # along the nose
 	var v := -slip  # to the left
 	var r := yaw_rate  # turning left
@@ -608,13 +612,17 @@ func _server_drive(delta: float) -> void:
 	var h := delta / float(SUBSTEPS)
 	for i in SUBSTEPS:
 		var dyn := smoothstep(LOW_SPEED, HIGH_SPEED, u)  # 0: by geometry (and all of reverse); 1: by tyre forces
+		var hold := surface * lerpf(GRIP_SLOW, 1.0, smoothstep(GRIP_SLOW_SPEED, GRIP_FAST_SPEED, absf(u)))
+		var mu_f := GRIP_FRONT * hold
+		var mu_r := GRIP_REAR * hold
 		var ahead := maxf(u, 1.0)
 		# The wheel: toward the key, never past the angle the front tyres grip best at for the way
 		# the car is going; hands off, it castors back (and toward a slide).
 		var flow := atan2(v + CG_FRONT * r, ahead)  # which way the front axle is really travelling
 		# At pace the key asks for a front slip angle, up to the one with the most grip.
 		var at_pace := flow * COUNTER_ASSIST if absf(steer_in) < 0.05 else flow + steer_in * STEER_SLIP
-		var target := clampf(lerpf(steer_in * STEER_LOCK, at_pace, dyn), -STEER_LOCK, STEER_LOCK)
+		var lock := minf(STEER_LOCK, minf(atan(WHEELBASE * LOCK_GRIP * mu_f * GRAVITY / maxf(u * u, 1.0)), atan(WHEELBASE * MAX_YAW / maxf(absf(u), 1.0))) + LOCK_SLACK)
+		var target := clampf(lerpf(steer_in * STEER_LOCK, at_pace, dyn), -lock, lock)
 		var rate := STEER_BACK if absf(steer_in) < 0.05 else lerpf(STEER_SPEED, STEER_SPEED_FAST, smoothstep(4.0, 24.0, absf(u)))
 		wl = move_toward(wl, target, rate * h)
 		# The load on each axle: it moves forward under the brakes, back under power.

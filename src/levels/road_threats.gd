@@ -174,7 +174,7 @@ func server_tick(delta: float) -> void:
 			for c in town.cars:
 				if not c.in_use or absf(c.speed) < 3.0:
 					continue
-				if Vector2(c.global_position.x - pos[i].x, c.global_position.z - pos[i].z).length() < SHAMBLER_HIT:
+				if absf(c.global_position.y - pos[i].y) < 3.0 and Vector2(c.global_position.x - pos[i].x, c.global_position.z - pos[i].z).length() < SHAMBLER_HIT:  # (at its height: the road test's pad is far overhead)
 					var away := (pos[i] - c.global_position).normalized() + Vector3.UP * 0.8
 					c.speed *= RUN_OVER_KEEP
 					_rpc_kill.rpc(i, HOW_RUN_OVER, away * clampf(absf(c.speed) * 0.6, 4.0, 12.0))
