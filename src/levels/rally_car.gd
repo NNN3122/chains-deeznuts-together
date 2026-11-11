@@ -39,9 +39,10 @@ const CG_HEIGHT: float = 0.4  # m: how much weight braking and power move
 const WHEELBASE: float = 2.6
 const GRAVITY: float = 9.81
 # The tyres: side force = grip x load x sin(C atan(B x slip angle)), which peaks at TYRE_PEAK.
-const GRIP_FRONT: float = 1.1  # peak friction (wet asphalt on rally tyres)
-const GRIP_REAR: float = 1.3  # more at the back: it pushes wide before it spins
+const GRIP_FRONT: float = 1.7  # peak friction: a racing game's tyres, not a road car's (1.1 felt like ice to the user)
+const GRIP_REAR: float = 2.0  # more at the back: it pushes wide before it spins
 const TYRE_USE: float = 0.92  # of a tyre's grip that braking or driving may take: the rest is always there to steer with
+const CIRCLE_SHARE: float = 0.7  # of the brake or drive force that counts against side grip: flat on the brakes it still turns
 const TYRE_B: float = 11.0
 const TYRE_C: float = 1.5
 const TYRE_PEAK: float = 0.157  # rad (9 degrees): the slip angle with the most grip
@@ -78,7 +79,7 @@ const THROTTLE_DOWN: float = 7.0  # /s the pedal goes down (a key is all or noth
 const THROTTLE_UP: float = 10.0
 const BRAKE_DOWN: float = 9.0
 const BRAKE_UP: float = 12.0
-const BRAKE_FORCE: float = 9.4  # m/s^2 asked for with the pedal on the floor (the tyres decide what it gets)
+const BRAKE_FORCE: float = 12.5  # m/s^2 asked for with the pedal on the floor (the tyres decide what it gets)
 const ENGINE_BRAKE: float = 0.55  # m/s^2 off the throttle (more in the low gears): lift and it rolls on a long way
 const ROLL: float = 0.15  # m/s^2 of rolling drag
 const DRAG: float = 0.00095  # /m of air drag (x speed squared)
@@ -86,7 +87,9 @@ const REVERSE_HOLD: float = 0.3  # s on the brake at a standstill before it goes
 # The wheel in your hands.
 const STEER_LOCK: float = 0.6  # rad: full lock
 const STEER_SPEED: float = 2.4  # rad/s the wheel turns at a crawl
-const STEER_SPEED_FAST: float = 0.5  # rad/s at pace: a quarter of a second to the tyres' best angle, so a tap is a nudge
+const STEER_SPEED_FAST: float = 1.0  # rad/s at pace: an eighth of a second to the tyres' best angle
+const FRONT_BALANCE: float = 1.05  # the front tyres never turn the car harder than this much of what the rears can hold (hard on the brakes the weight is all on the front: it used to swing the tail out)
+const WHEEL_SHOWN: float = 1.6  # the front wheels are drawn turned this much further than they are (at pace the real angle is a few degrees and reads as nothing)
 const STEER_BACK: float = 3.2  # rad/s it comes back when let go
 const STEER_SLIP: float = 0.125  # rad: a key held is this much front slip angle, just short of the tyres' peak
 const COUNTER_ASSIST: float = 0.55  # hands off in a slide, the wheel castors this far toward the slide (opposite lock)
@@ -380,8 +383,11 @@ func _driver_input() -> Vector3:
 		return Vector3(0.0, 0.0, 1.0)  # nobody at the wheel: it rolls to a stop
 	# A seated player's packets carry the keys as they are (Player._send_input), each axis on its
 	# own: W with A is full throttle and full left, not 70% of each.
+	# A pedal key is all of the pedal at any strength (Remote Controls sends 0.45 for the first half
+	# second of a hold: that was half a brake when it mattered); the pedals ramp by themselves.
 	var hand := 1.0 if (driver.input_flags & Player.FLAG_BRACE) != 0 else 0.0
-	return Vector3(clampf(driver.input_move.x, -1.0, 1.0), clampf(-driver.input_move.y, -1.0, 1.0), hand)
+	var feet := -driver.input_move.y
+	return Vector3(clampf(driver.input_move.x, -1.0, 1.0), signf(feet) if absf(feet) > 0.2 else 0.0, hand)
 
 
 ## Server: the gear lever (a REQ_ code from the driver's keys). Manual: up and down go one place
@@ -495,7 +501,7 @@ func _autopilot_input() -> Vector3:
 			var bend := absf(d1.signed_angle_to(d2, Vector3.UP))
 			if bend > 0.02:
 				var r := minf(d1.length(), d2.length()) / bend
-				var hold := maxf(6.0, sqrt(0.55 * GRIP_FRONT * GRAVITY * r))
+				var hold := maxf(6.0, sqrt(0.6 * GRAVITY * r))
 				if bend > 0.6:
 					hold = 8.0  # a street corner: a right angle all at once
 				want = minf(want, sqrt(hold * hold + 2.0 * 5.5 * maxf(dist - 4.0, 0.0)))
@@ -595,7 +601,7 @@ func _server_drive(delta: float) -> void:
 	var u := speed  # along the nose
 	var v := -slip  # to the left
 	var r := yaw_rate  # turning left
-	var steer_in := -inp.x  # left +
+	var steer_in := -inp.x  # left + (a part-strength key, a remote desktop's first half second of a hold, is that part of the turn: it used to be the square of it, a fifth)
 	var wl := -wheel  # the front wheels' angle, left +
 	var turned := 0.0
 	var worst := 0.0
@@ -606,9 +612,8 @@ func _server_drive(delta: float) -> void:
 		# The wheel: toward the key, never past the angle the front tyres grip best at for the way
 		# the car is going; hands off, it castors back (and toward a slide).
 		var flow := atan2(v + CG_FRONT * r, ahead)  # which way the front axle is really travelling
-		# At pace the key asks for a front slip angle, up to the one with the most grip (a
-		# part-strength key, as over a remote desktop, asks for much less: the square of it).
-		var at_pace := flow * COUNTER_ASSIST if absf(steer_in) < 0.05 else flow + signf(steer_in) * steer_in * steer_in * STEER_SLIP
+		# At pace the key asks for a front slip angle, up to the one with the most grip.
+		var at_pace := flow * COUNTER_ASSIST if absf(steer_in) < 0.05 else flow + steer_in * STEER_SLIP
 		var target := clampf(lerpf(steer_in * STEER_LOCK, at_pace, dyn), -STEER_LOCK, STEER_LOCK)
 		var rate := STEER_BACK if absf(steer_in) < 0.05 else lerpf(STEER_SPEED, STEER_SPEED_FAST, smoothstep(4.0, 24.0, absf(u)))
 		wl = move_toward(wl, target, rate * h)
@@ -634,10 +639,13 @@ func _server_drive(delta: float) -> void:
 		# Across them: from each axle's slip angle, with what the friction circle has left.
 		var slip_f := wl - atan2(v + CG_FRONT * r, ahead)
 		var slip_r := -atan2(v - CG_REAR * r, ahead)
-		var left_f := sqrt(maxf(1.0 - pow(fx_f / (mu_f * load_f), 2.0), 0.06))
-		var left_r := sqrt(maxf(1.0 - pow(fx_r / (mu_r * load_r), 2.0), 0.06)) * (HAND_GRIP if hand else 1.0)
+		var left_f := sqrt(maxf(1.0 - pow(CIRCLE_SHARE * fx_f / (mu_f * load_f), 2.0), 0.06))
+		var left_r := sqrt(maxf(1.0 - pow(CIRCLE_SHARE * fx_r / (mu_r * load_r), 2.0), 0.06)) * (HAND_GRIP if hand else 1.0)
 		var fy_f := mu_f * load_f * left_f * tyre(slip_f) * dyn  # (slow, it turns by geometry: no slip, no side force)
 		var fy_r := mu_r * load_r * left_r * tyre(slip_r) * dyn
+		if _assist > 0.0:
+			var most := CG_REAR * mu_r * load_r * left_r / CG_FRONT * FRONT_BALANCE / _assist
+			fy_f = clampf(fy_f, -most, most)
 		# The stability assist: once the body is more than a few degrees out of line with the way
 		# it is going, it is turned back toward it (what the electronics do with single brakes).
 		# The handbrake switches it off, and it comes back in over a moment after.
@@ -768,7 +776,7 @@ func _animate(delta: float) -> void:
 	_wheel_spin += speed * delta / 0.34
 	for k in _wheels.size():
 		var w := _wheels[k]
-		w.rotation.y = -wheel if k < 2 else 0.0
+		w.rotation.y = clampf(-wheel * WHEEL_SHOWN, -STEER_LOCK, STEER_LOCK) if k < 2 else 0.0
 		(w.get_child(0) as Node3D).rotation.x = -_wheel_spin
 	# The body on its springs: the nose up under power and down under the brakes, and it leans out
 	# of a bend (by how hard it is really turning).

@@ -4542,7 +4542,7 @@ func _test_drive() -> void:
 	print("[drive] flick right-left at 108: max body slip %.1f deg, settled %.2f s after, %d weaves" % [rad_to_deg(flick_beta), flick_settle, _d_sign_changes(s, 1.0)])
 	# Braking hard while turning at 100.
 	s = await _drive(car, 28.0, 2.0, func(_k: float, _c: RallyCar) -> Vector3: return Vector3(1.0, -1.0, 0.0))
-	var trail_beta := _d_max_beta(s)
+	var trail_beta := _d_max_beta(s, 9.0)
 	print("[drive] brake and turn together from 100: max body slip %.1f deg, turned %.0f deg, down to %.0f km/h in 2 s" % [rad_to_deg(trail_beta), absf(rad_to_deg(_d_heading(s))), s[s.size() - 1].u * kmh])
 	# Lifting off mid-bend at 90.
 	s = await _drive(car, 25.0, 5.5, func(k: float, c: RallyCar) -> Vector3: return Vector3(1.0, (1.0 if c.speed < 25.0 else 0.0) if k < 3.0 else 0.0, 0.0))
@@ -4630,13 +4630,13 @@ func _test_drive() -> void:
 		"first %.0f km/h, neutral %.1f m/s, reverse %.1f m/s, S %.2f, sixth %.0f km/h, lost %.1f / %.1f m/s, refused %s, down %s, 0-100 %.2f s, gear %d" % [first_top * kmh, neutral_end, reverse_end, s_only, sixth_3s * kmh, lost_6th, lost_2nd, refused, stepped, hand_100, hand_gear])
 	_check("the car pulls like a car: 0-100 km/h in 5 to 8 s, 0-50 in 1.8 to 3.5, and 120 to 142 flat out", t100 > 5.0 and t100 < 8.0 and t50 > 1.8 and t50 < 3.5 and vmax * kmh > 120.0 and vmax * kmh < 142.0,
 		"0-50 %.2f s, 0-100 %.2f s, top %.0f km/h" % [t50, t100, vmax * kmh])
-	_check("it stops like a car (100-0 in 35 to 50 m), S held at a standstill is reverse, and off the throttle it rolls on (over 85 km/h two seconds after lifting at 100)", d_stop > 35.0 and d_stop < 50.0 and brake_reverses and coast2 > 85.0,
+	_check("it stops like a racing game's car (100-0 in 26 to 38 m), S held at a standstill is reverse, and off the throttle it rolls on (over 85 km/h two seconds after lifting at 100)", d_stop > 26.0 and d_stop < 38.0 and brake_reverses and coast2 > 85.0,
 		"%.1f m in %.2f s, reverse %s, %.0f km/h after 2 s of coasting" % [d_stop, t_stop, brake_reverses, coast2])
-	_check("a key held hard over is the most turn there is at every speed (0.85 to 1.15 g), not a slide (body slip under 8 degrees), and steady (yaw wobble under 4%)",
-		circle_g.min() > 0.85 and circle_g.max() < 1.15 and circle_beta.max() < deg_to_rad(8.0) and circle_wobble.max() < 0.04,
+	_check("a key held hard over is the most turn there is at every speed (1.45 to 1.85 g: it grips), not a slide (body slip under 8 degrees), and steady (yaw wobble under 4%)",
+		circle_g.min() > 1.45 and circle_g.max() < 1.85 and circle_beta.max() < deg_to_rad(8.0) and circle_wobble.max() < 0.04,
 		"g %s, slip (rad) %s, wobble %s" % [circle_g, circle_beta, circle_wobble])
-	_check("it is stable: let go and it runs straight within a second without weaving; a flick, braking in a bend, lifting off and full power on lock never spin it (body slip under 20 degrees); hands off flat out it holds its line",
-		settle < 1.0 and weave <= 1 and flick_settle < 1.3 and flick_beta < deg_to_rad(20.0) and trail_beta < deg_to_rad(20.0) and lift_beta < deg_to_rad(20.0) and power_beta < deg_to_rad(20.0) and wander < 0.05 and jerk < 0.12,
+	_check("it is stable: let go and it runs straight within a second without weaving; a flick, braking in a bend, lifting off and full power on lock never slide it (body slip under 12 degrees); hands off flat out it holds its line",
+		settle < 1.0 and weave <= 1 and flick_settle < 1.3 and flick_beta < deg_to_rad(12.0) and trail_beta < deg_to_rad(12.0) and lift_beta < deg_to_rad(12.0) and power_beta < deg_to_rad(12.0) and wander < 0.05 and jerk < 0.12,
 		"settle %.2f s (%d weaves), flick %.1f deg / %.2f s, trail %.1f, lift %.1f, power %.1f deg, wander %.3f m, jerk %.3f" % [settle, weave, rad_to_deg(flick_beta), flick_settle, rad_to_deg(trail_beta), rad_to_deg(lift_beta), rad_to_deg(power_beta), wander, jerk])
 	_check("the handbrake brings the back round (over 60 degrees of turn in a second at 60 km/h, the body well sideways) and the car comes back straight afterwards", hand_turn > 60.0 and hand_beta > deg_to_rad(15.0) and hand_end < deg_to_rad(6.0),
 		"turned %.0f deg, max slip %.0f deg, %.1f deg 3 s later" % [hand_turn, rad_to_deg(hand_beta), rad_to_deg(hand_end)])
@@ -4688,10 +4688,12 @@ func _d_at(s: Array, at: float) -> Dictionary:
 	return s[s.size() - 1]
 
 
-func _d_max_beta(s: Array) -> float:
+## The most the body was out of line with its travel, counted above `above` m/s (slower, on full
+## lock, the body is 20 degrees out by geometry alone: that is not a slide).
+func _d_max_beta(s: Array, above: float = 3.0) -> float:
 	var m := 0.0
 	for e in s:
-		if e.u > 3.0:
+		if e.u > above:
 			m = maxf(m, absf(atan2(e.slip, e.u)))
 	return m
 
